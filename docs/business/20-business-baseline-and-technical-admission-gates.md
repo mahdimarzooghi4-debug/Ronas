@@ -2,6 +2,8 @@
 
 **Status:** DRAFT / REVIEW PACKAGE — **NO ENGINE HAS PASSED ITS BUSINESS GATE**  
 
+**RON-DEC-025 — Operations and Governance strategic direction APPROVED:** پنج محور [OPS-GOV-MACRO-01](56-operations-governance-macro-business-decision-package.md) فقط در سطح Business مصوب شد: استقلال زنجیره‌های عملیاتی Domestic/Export، تفکیک پیشنهاد/مدرک/بازبینی/تصمیم صاحب اختیار/اجرا، شرکای قراردادی، رسیدگی مبتنی بر شواهد و نظارت/تغییر کنترل‌شده. **RON-OPEN-015** برای اختیارات واقعی و نمایندگی، صلاحیت متخصص/QC، قرارداد شریک و شکایت/رسیدگی و مرز داده هنوز OPEN است؛ مصوبه نه ساختار سازمانی/سیاست اجرایی است، نه ورود به Technical.
+
 **RON-DEC-024 — Integrated Finance strategic direction APPROVED:** پنج محور [FIN-MACRO-01](55-finance-macro-business-decision-package.md) با استثناها تصویب شد: استقلال P&L و جریان نقدی Domestic / هر قرارداد Export، درآمد بر مبنای قرارداد و شاهد، طبقه‌بندی سرمایه و رشد مرحله‌ای، کنترل وجوه وصولی/تعهدات/ارز، و اقتصاد واحد/ریسک. **FIN-001..007، ارقام سرمایه اولیه، مبنای حسابداری/نرخ‌ها، قرارداد بانکی/PSP و بودجه واقعی هنوز OPEN هستند؛ Finance Gate #4 نگذشته و هیچ پرداخت/Technical تأیید نشده است.**
 
 **RON-DEC-023 — Export strategic direction APPROVED:** پنج محور [EXP-MACRO-01](54-export-macro-business-decision-package.md) صرفاً در سطح راهبردی تصویب شده‌اند: بازیگران حرفه‌ای و خریدار خارجی، فرصت محصول–مقصد و فرآوری ارزش‌افزا، قراردادهای مستقل نامزد، ورود مرحله‌ای با شواهد و گیت، و مالی/جریان نقدی مستقل هر قرارداد. **پیش‌نیازهای واقعی محصول/مقصد، مجوز/طرف قانونی، قرارداد/QC، مالکیت کالا، ارز/وصول و Finance Gate #4 همچنان OPEN هستند**؛ Export Gate #3 نگذشته است.

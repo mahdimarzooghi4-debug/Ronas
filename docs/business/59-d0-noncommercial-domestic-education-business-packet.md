@@ -64,3 +64,8 @@
 **Approver / real specialist / source right / buyer / location:** **UNASSIGNED / UNVERIFIED**.  
 **Gate #2:** **OPEN — no scoped admission**.  
 **Next allowed action:** دریافت/ارزیابی شواهد واقعی D0 و تدوین Contract Business محدود برای تصمیم جدا؛ **نه شروع خدمت آموزشی/Technical/Code**.
+
+
+## پیوست آماده‌سازی AI در سطح Business — سند ۶۷ / بدون انتخاب Task
+
+[سند ۶۷: نامزد وظیفه نخست آموزش و ارزیابی مستقل](67-first-ai-learning-task-and-independent-evaluation-business-packet.md) یک نامزد **AI-TASK-D0-TEXT** برای پاسخ‌های عمومی آموزشی فارسی، مستند و غیرشخصی تعریف می‌کند. این فقط **پرونده پرسش و شواهد** است: نه اولین Task قطعی، نه حق استخراج/Training از FAO، نه محتوای تأییدشده، نه حق دریافت تصویر/اطلاعات خانوار، نه مجوز ارائه برنامه کشت اختصاصی. شواهد D0-EV-01..05، متخصص واقعی، حق ترجمه/آموزش/انتشار و مجموعه مستقل Evaluation هنوز **NOT VERIFIED** هستند. گیت Domestic #2 **OPEN**؛ RON-DEC-028 مسیر کلی Open-Weight+Fine-tuning داخلی را تصویب کرده، نه Model/Training Run.

@@ -51,6 +51,13 @@ The data-correction and expert-data-validation principles in RON-DEC-017..019 st
 
 **Still OPEN:** determining real input errors and their significance; review/notice and correction evidence; specialist approval standards; the status of prior work and stage reports across plan versions; how to resume guidance; material risk escalation; data permissions, AI models/evaluations and all technical execution contracts. Domestic Business Gate remains OPEN, with no Code or Production authorization.
 
+## RON-DEC-021 — AI-proposed historical stage evidence mapping, with expert authorization for reuse (choice 3)
+**APPROVED — Domestic household cultivation plan revision / historical evidence governance direction.** The user selected **option 3**: when the expert-approved household cultivation plan is revised (RON-DEC-020), **AI proposes which previously submitted cultivation-stage reports, photos, and observations could be relevant and reused as evidence for stages of the revised plan**. **Only a qualified Ronas specialist can decide whether each proposed evidence reuse/mapping is acceptable**. An AI match alone is not proof of adequacy, not transfer or certification, and cannot automatically alter the revised plan's status or quality assessment.
+
+**Historical lineage rule:** previously recorded evidence must remain attributable to its original household, cultivation episode, plan version/stage and origin as applicable, without silent deletion, replacement, rewriting or changing the historical meaning of that record. A specialist-approved reference/reuse against a *new* plan does not turn an old observation into a new observation. Specific retention/deletion obligations and evidence field requirements must be decided under the data rights contract; historical preservation is not an unlimited retention license.
+
+**Non-decisions and open dependencies:** no proposed scientific equivalence or product-specific mapping criteria, automatic migration algorithm, need for fresh reports, authenticity test, retention period, mandatory regulatory tests, rights to use crop photographs for AI training, or software versioning/storage model has been approved. For evidence that is not adequately matched or validated, reuse cannot be presumed. The corrected plan still requires **independent explicit expert reapproval** (RON-DEC-020) and market publication still separately requires producer permission and valid food-safety/quality proof (RON-DEC-011). No Code/Technical Admission/Production authorization.
+
 ## Existing commitments
 - RON-DEC-009: Ronas acts as intermediary for eligible Domestic household-produce sellers.
 - RON-DEC-010: producer determines or confirms the final price; Ronas may suggest but not impose prices.

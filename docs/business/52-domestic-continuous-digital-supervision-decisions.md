@@ -35,6 +35,13 @@ The user chose option 2 of the supervision-method question: Ronas follows cultiv
 
 **Still OPEN:** exact required and optional fields, consistency/completeness rules, evidence standards, how corrections/versions and review are recorded, review of disputed/uncertain fields, response when the household cannot resolve a gap, timelines, human specialist qualifications, model choice, false-positive/negative assessment, data storage/access/retention/deletion, separate AI training consent and technical implementation. No Business Gate admission or Code authorization.
 
+## RON-DEC-019 — stop plan approval until unresolved household data issues are corrected and validated (choice 1)
+**APPROVED — fail-closed Business rule for household-specific Domestic cultivation-plan approval.** The user explicitly selected option 1: **where information required for an individualized plan remains missing or contradictory, approval of that cultivation plan is halted until the relevant deficiency is resolved and the corrected information's validity and adequacy are verified by the qualified Ronas specialist**. Under RON-DEC-018, AI flags potentially incomplete/inconsistent input and the household can correct or supplement it; **neither AI suggestions nor household correction alone clears the approval block**. The specialist must verify the data; explicit approval of the proposed cultivation plan remains a *separate human decision* under RON-DEC-015/016.
+
+**Boundary:** The approval block is for a **not-yet-approved individual cultivation plan**. This decision does not define consequences of discovering new problematic information after a plan was previously approved, a remediation deadline, number of correction attempts, dispute-handling, educational-only access, or what fields are mandatory. AI may not invent missing facts, suppress contradictory evidence or self-clear the condition. Data origin/informed consent obligations in RON-DEC-017 remain intact, as do quality and producer-publication conditions in RON-DEC-011.
+
+**Still OPEN:** product-/household-specific required input and evidence, what constitutes a resolved contradiction, expert review criteria and lineage, correction submission and notification process, revised already-approved plans, escalation and time limits, AI model/evaluation, privacy/access/retention/deletion and any software contract. No Technical Admission, Code or real-world food-trade authorization.
+
 ## Existing commitments
 - RON-DEC-009: Ronas acts as intermediary for eligible Domestic household-produce sellers.
 - RON-DEC-010: producer determines or confirms the final price; Ronas may suggest but not impose prices.

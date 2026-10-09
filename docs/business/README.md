@@ -73,6 +73,7 @@
 63. [غربال مقدماتی منابع رسمی آموزشی/تجارت و حقوق استفاده](62-d0-e0-official-source-screening-and-usage-rights.md): بررسی وجود منابع FAO، UN Comtrade، WITS، Trade Map، FAOSTAT و WTO ePing و هشدار حق ترجمه/بازنشر؛ **SOURCE PAGE CHECKED / DOMAIN EVIDENCE & RIGHTS NOT VERIFIED**. نه محصول/مقصد انتخاب شده و نه گیت پاس شده است.
 64. [طرح پیشنهادی AI-first و موانع آماده‌سازی دانش/Training روناس](63-ai-first-knowledge-and-training-readiness-proposal.md): تحقیق منابع رسمی AGROVOC/FAO/NASA POWER/NIST و شروط حقوق داده و پنج مانع تصمیم صاحب کسب‌وکار **PROPOSED / NOT APPROVED**؛ بدون Dataset ingestion، آموزش مدل، Technical یا Code.
 65. [سیاست مصوب هوش کاملاً داخلی و اختصاصی روناس](64-ronas-internal-ai-progressive-learning-business-direction.md): **RON-DEC-027 APPROVED / BUSINESS DIRECTION ONLY**؛ دیتاست اولیه، یادگیری تدریجی تحت کنترل داده/متخصص/ارزیابی و ارتقای انسانی؛ مدل از صفر در برابر وزن پایه، داده/مجوز، زیرساخت و گیت Technical **OPEN**.
+66. [نقشه مقدماتی شواهد دیتاست اولیه و چرخه یادگیری](65-initial-ai-dataset-and-controlled-learning-evidence-blueprint.md): **DRAFT EVIDENCE BLUEPRINT / NOT TRAINING AUTHORIZED**؛ نامزدهای منبع D0/E0، ثبت حقوق خاص Training، منشأ/بازبینی علمی، جداسازی Evaluation، کنترل نسخه و بازآموزی تا تأیید انسانی؛ روش مدل و Task اول هنوز OPEN.
 
 ## اصول تفسیر
 

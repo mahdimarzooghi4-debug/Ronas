@@ -60,6 +60,12 @@ Disposition: EVIDENCE REQUESTED / NOT VERIFIED
 Related Business Gate: #2 | #3 | #4 (independent)
 ```
 
+## ۴الف. یافته منبع‌شناسی و حقوق استفاده — پیوست 2026-10-09
+
+[دفتر غربال منابع رسمی D0/E0](62-d0-e0-official-source-screening-and-usage-rights.md) وضعیت **SOURCE PAGE CHECKED / RIGHTS NOT CLEARED** را برای FAO آموزش خانگی و UN Comtrade/WITS/ITC Trade Map/FAOSTAT/WTO ePing ثبت کرده است. **این تنها شناسایی منابع برای کار مطالعاتی است**؛ حق ترجمه/اقتباس/نشر محتوای FAO و مجوز بازنشر داده UN Comtrade/FAOSTAT طبق مورد استفاده روناس هنوز نیازمند بررسی و در موارد لازم درخواست مجوز است. بررسی [FAO Terms](https://www.fao.org/contact-us/terms/) و [UN Comtrade Policy](https://uncomtrade.org/docs/policy-on-comtrade-data-use/) نشان می‌دهد آزادی مشاهده وب به معنی حق استفاده تجاری و بازتوزیع نیست.
+
+**اثر بر شواهد:** FL-EV-01، FL-EV-02، FL-EV-04 و حقوق محتوای/داده **NOT VERIFIED** می‌مانند؛ هیچ قرارداد یا رأی حقوقی درباره ایران، شریک، PSP، مالیات یا مجوز صادرات از این غربال استخراج نشده است. **FIN-001..007 نیز همچنان OPEN** هستند؛ منبع‌شناسی تغییری در طبقه‌بندی سرمایه، مبلغ بودجه یا سود/وجه واقعی ایجاد نکرده است.
+
 ## ۵. وضعیت و تحویل
 
 **Finance Gate #4 = OPEN**، قراردادهای عمومی/صادراتی و بانک/PSP = NOT SELECTED، **RON-OPEN-001/013/014/015 = OPEN یا PARTIALLY RESOLVED در سطح جهت‌گیری**. بسته حاضر به‌طور عمدی Scopeهای آموزشی/پژوهشی را از معامله و QC اجرایی جدا کرده است.

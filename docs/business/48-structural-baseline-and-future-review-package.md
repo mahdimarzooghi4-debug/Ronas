@@ -1,4 +1,4 @@
-# روناس — بسته تحویل ساختار Business و مبنای مرور نهایی آینده | Structural Draft v0.15
+# روناس — بسته تحویل ساختار Business و مبنای مرور نهایی آینده | Structural Draft v0.16
 
 **Status:** READING/HANDOFF PACKAGE PREPARED / **FINAL REVIEW NOT STARTED** / BUSINESS GATES STILL OPEN.  
 **Authority:** RON-DEC-001 دو موتور مستقل؛ RON-DEC-003 جهت‌گیری قراردادهای مستقل Export؛ RON-DEC-007 ترتیب اجرای محصول؛ RON-DEC-008 تکمیل ساختار، بعداً چک نهایی. هیچ تصمیم محصولی تازه در این سند تصویب نشده است.  
@@ -18,6 +18,10 @@
 | H — ثبت نتیجه آتی | [۲۰ — Business Gates](20-business-baseline-and-technical-admission-gates.md)، [۲۳](23-business-decision-evidence-review.md)، [۲۸](28-structural-coverage-and-deferred-final-review.md) | نتیجه واقعی برای هر **Scope و موتور مستقل**، نه تصویب یکجا |
 
 **این جدول فقط ترتیب پیشنهادیِ مطالعه در آینده است**؛ به معنی درخواست اجرای همین حالای چک نهایی نیست.
+
+### ضمیمه مطالعه راهبردیِ افزوده در v0.16
+
+برای بخش فرصت بازار، ریسک و موضع رقابتی، [زمینه محیطی/ریسک منبع](49-strategic-environment-and-risk-structure.md) و [پنج نیرو/ذی‌نفعان/جایگاه‌یابی](50-competition-stakeholder-and-positioning-structure.md) را به بررسی آینده اضافه کنید. این دو سند **اثبات بازار یا تصحیح ادعاهای قدیمی نیستند**؛ تنها جایگاه آنها را در ساختار و شواهد مورد نیازشان مشخص می‌کنند. چک نهایی همچنان آغاز نشده است.
 
 ## ۲. تعریف ساختاری «چه چیزی آماده مطالعه است؟»
 

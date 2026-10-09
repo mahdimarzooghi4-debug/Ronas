@@ -1,4 +1,4 @@
-# روناس — نقشه مرجع یکپارچه ساختار کسب‌وکار | Structural Draft v0.15
+# روناس — نقشه مرجع یکپارچه ساختار کسب‌وکار | Structural Draft v0.16
 
 **Status:** INTEGRATED VIEW OF EXISTING BUSINESS DRAFTS / NOT A FINAL SOURCE AUDIT, APPROVED CONTRACT OR TECHNICAL ARCHITECTURE.  
 **Goal:** خواندن تمام نمای محصول از **یک نقشه مرجع** با حفظ جزییات در اسناد تخصصی، بدون ایجاد موتور تجاری سوم و بدون اعلام تکمیل نهایی.  
@@ -90,7 +90,11 @@ RONAS (product/business concept)
 - **گزارش:** نمای Domestic و Export مستقل، تلفیق تنها در صورت قرارداد/روش معتبر آینده. [۳۶](36-management-reporting-and-metric-candidates.md)، [۳۷](37-economic-flow-and-report-boundaries.md).
 - **کنترل تغییر نرم‌افزار:** RON-DEC-007 فرآیند Business → Technical → Product Backlog → Sprint → Code → Code Review → Stage → QA/Testing → Release Approval → Production → Monitoring → Improvement است؛ این سند تنها Business است.
 
-## ۶. وضعیت تحویل و رجوع به اقلام بی‌پاسخ
+## ۶. زمینه راهبرد و ذی‌نفعان — تکمیل نمای ساختاری v0.16
+
+[تحلیل محیط/ریسک](49-strategic-environment-and-risk-structure.md) مدعیات PESTEL، SWOT و چرخه عمر سه **بازوی تحلیلی** در متن را به Domestic، Export و توانمندسازهای هوشمند وصل می‌کند. [رقابت/ذی‌نفعان](50-competition-stakeholder-and-positioning-structure.md) پنج نیروی پورتر، ماتریس Power–Interest و ادعاهای مقایسه برندها را در حد **فرض منبع و سؤال تحقیق** ثبت می‌کند. «سه بازوی چرخه عمر» **سه موتور اقتصادی مستقل نیست**؛ ساختار روناس همچنان دو موتور دارد. آمار ادعایی، تضمین‌های قیمت/تازگی و مقصدهای نمونه اعتبارسنجی یا تصویب نشده‌اند.
+
+## ۷. وضعیت تحویل و رجوع به اقلام بی‌پاسخ
 
 [دفتر مسائل باز ۴۷](47-open-structure-gaps-and-evidence-register.md) و [بسته بازبینی موکول ۴۸](48-structural-baseline-and-future-review-package.md) همراه نقشه حاضر خوانده شوند. 
 

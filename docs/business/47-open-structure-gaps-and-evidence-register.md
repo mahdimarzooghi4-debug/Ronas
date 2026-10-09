@@ -1,4 +1,4 @@
-# روناس — دفتر یکپارچه ناتمام‌ها، تصمیم‌های باز و شواهد موردنیاز | Structural Draft v0.15
+# روناس — دفتر یکپارچه ناتمام‌ها، تصمیم‌های باز و شواهد موردنیاز | Structural Draft v0.16
 
 **Status:** KNOWN GAP INDEX / NOT A FINAL GAP AUDIT / NONE OF THESE QUESTIONS ARE CLOSED BY THIS FILE.  
 **Sources of status:** [دفتر تصمیم‌ها](04-decisions-and-open-questions.md)، [FIN-001..FIN-007](03-financial-assumptions-and-gaps.md)، [گیت Domestic و Export](20-business-baseline-and-technical-admission-gates.md)، [دفتر پوشش](28-structural-coverage-and-deferred-final-review.md).  
@@ -62,6 +62,18 @@
 | AI، باشگاه/RXP و محتوای تخصصی | [۲۷](27-shared-services-and-external-boundaries.md)، [۳۱](31-conceptual-experience-navigation-map.md) | سیاست داده، مدل/ارزیابی، محتوای مجاز، قواعد امتیاز |
 | تجربه، کانال و دسترس‌پذیری | [۲۵](25-actors-channels-and-workspaces.md)، [۳۱](31-conceptual-experience-navigation-map.md) | پژوهش نقش، نیاز موبایل/وب/آفلاین و زبان مخاطب |
 | قرارداد فنی و امنیت/زیرساخت | [۲۰](20-business-baseline-and-technical-admission-gates.md) | **پس از Business Gate** گزینه‌های معماری و ADR، نه اکنون |
+
+### ریسک‌ها و فرضیات راهبردیِ مستند در نسخه v0.16
+
+| فرض/ابهام منبع | اثر بر ساختار | شاهدی که در چک نهایی آینده لازم می‌شود |
+| --- | --- | --- |
+| کاهش واسطه/ضایعات و برتری قیمت/تازگی در بازار داخلی | D-07/08/10 و نقش هاب | مطالعه قیمت، هزینه لجستیک، کیفیت واقعی و رضایت مشتری — [۴۹](49-strategic-environment-and-risk-structure.md) و [۵۰](50-competition-stakeholder-and-positioning-structure.md) |
+| آلودگی هوا/آب و استفاده از فضای مشاع کشت | D-02/03/05/06/07 | حقوق استفاده فضا و مرجع واقعی سلامت/کیفیت — [۴۹](49-strategic-environment-and-risk-structure.md) |
+| تعهد خرید و بانک همکار در متن طرح | E-04 و D/E مالی | قرارداد/اهلیت شریک و استقلال دو موتور — [۵۰](50-competition-stakeholder-and-positioning-structure.md) |
+| تقاضا/سود بالای محصولات فرآوری‌شده و مقصدهای نمونه | E-02/03/04/06/07/09 | تحقیق محصول–مقصد، هزینه فرآوری، QC، بازار و وصول — [۴۹](49-strategic-environment-and-risk-structure.md) |
+| رتبه‌بندی قدرت/علاقه ذی‌نفعان و مقایسه چندبازویی برندها | شبکه شرکا و تجربه هر موتور | روش رتبه‌بندی، شواهد واقعی و رفع ناسازگاری در چک نهایی — [۵۰](50-competition-stakeholder-and-positioning-structure.md) |
+
+این‌ها **شناسه تصمیم جدید یا نتیجه ممیزی نهایی نیستند**. همه RON-OPEN-001..016 و FIN-001..007 همچنان وضع قبلی را دارند.
 
 ## ۵. شیوه استفاده؛ بدون گرفتن تصمیم امروز
 

@@ -3,7 +3,9 @@
 **وضعیت:** DRAFT — گیت‌ها هنوز OPEN؛ تصمیم‌های محدود RON-DEC-009..021 شامل بازارگاه و نظارت دیجیتال، برنامه کشت اختصاصی با تأیید متخصص، بازنگری در صورت خطای اطلاعات و **پیشنهاد AI برای استفاده مجدد از گزارش‌های تاریخی تنها پس از بررسی و تأیید متخصص** هستند؛ معیارهای کیفیت/حقوق داده/عملیات هنوز بازند.  
 **تصمیم مالی تصویب‌شده:** RON-DEC-024 پنج محور کلان FIN-MACRO-01 را در سطح راهبرد Business تصویب کرده؛ Finance Gate/بودجه/پرداخت واقعی هنوز OPEN هستند.
 **تصمیم بسته‌ای جدید:** RON-DEC-022 پنج محور کلان Domestic را تصویب کرده است؛ هیچ گیت اجرا/Technical را نمی‌گذراند.
-**نسخه بسته تصمیم:** v0.36 — RON-DEC-027 INTERNAL RONAS AI + INITIAL DATASET AND GOVERNED PROGRESSIVE RETRAINING | ۱۴۰۵/۰۷/۱۷ (2026-10-09)  
+**نسخه بسته تصمیم:** v0.37 — RON-DEC-028 LICENSED OPEN-WEIGHT BASE + FULLY INTERNAL FINE-TUNING (RON-DEC-027 GOVERNED LEARNING UNCHANGED) | ۱۴۰۵/۰۷/۱۷ (2026-10-09)  
+
+**یادداشت جاری پس از RON-DEC-028:** مدل پایه Open-Weight دارای مجوز معتبر با Fine-tuning و استنتاج کاملاً داخلی **APPROVED در سطح Business** است. این تصمیم نه مدل مشخص/مجوز واقعی و نه دیتاست/Training/معماری/Code را تصویب کرده؛ گیت‌های #2/#3/#4 بازند. اسناد پیش از مصوبه که انتخاب الف/ب را OPEN یا پیشنهادی می‌خوانند تاریخی‌اند.
 **منبع پایه:** «طرح نامه جامع روناس»، مرداد ۱۴۰۵، ۳۷ صفحه فایل (۳۶ صفحه شماره‌گذاری داخلی)، سفارش معاونت اشتغال کمیته امداد امام خمینی(ره)، طراح خانه خلاق و نوآوری آینه.
 
 ## ترتیب مطالعه
@@ -72,8 +74,8 @@
 62. [پیگیری مالی و حقوقی شواهد D0/E0](61-finance-legal-evidence-workstreams-for-d0-e0.md): FIN-001..007 و شواهد صلاحیت/محتوا/داده **REQUESTED / NOT VERIFIED**.
 63. [غربال مقدماتی منابع رسمی آموزشی/تجارت و حقوق استفاده](62-d0-e0-official-source-screening-and-usage-rights.md): بررسی وجود منابع FAO، UN Comtrade، WITS، Trade Map، FAOSTAT و WTO ePing و هشدار حق ترجمه/بازنشر؛ **SOURCE PAGE CHECKED / DOMAIN EVIDENCE & RIGHTS NOT VERIFIED**. نه محصول/مقصد انتخاب شده و نه گیت پاس شده است.
 64. [طرح پیشنهادی AI-first و موانع آماده‌سازی دانش/Training روناس](63-ai-first-knowledge-and-training-readiness-proposal.md): تحقیق منابع رسمی AGROVOC/FAO/NASA POWER/NIST و شروط حقوق داده و پنج مانع تصمیم صاحب کسب‌وکار **PROPOSED / NOT APPROVED**؛ بدون Dataset ingestion، آموزش مدل، Technical یا Code.
-65. [سیاست مصوب هوش کاملاً داخلی و اختصاصی روناس](64-ronas-internal-ai-progressive-learning-business-direction.md): **RON-DEC-027 APPROVED / BUSINESS DIRECTION ONLY**؛ دیتاست اولیه، یادگیری تدریجی تحت کنترل داده/متخصص/ارزیابی و ارتقای انسانی؛ مدل از صفر در برابر وزن پایه، داده/مجوز، زیرساخت و گیت Technical **OPEN**.
-66. [نقشه مقدماتی شواهد دیتاست اولیه و چرخه یادگیری](65-initial-ai-dataset-and-controlled-learning-evidence-blueprint.md): **DRAFT EVIDENCE BLUEPRINT / NOT TRAINING AUTHORIZED**؛ نامزدهای منبع D0/E0، ثبت حقوق خاص Training، منشأ/بازبینی علمی، جداسازی Evaluation، کنترل نسخه و بازآموزی تا تأیید انسانی؛ روش مدل و Task اول هنوز OPEN.
+65. [سیاست مصوب هوش کاملاً داخلی و اختصاصی روناس](64-ronas-internal-ai-progressive-learning-business-direction.md): **RON-DEC-027 APPROVED / BUSINESS DIRECTION ONLY**؛ دیتاست اولیه، یادگیری تدریجی تحت کنترل داده/متخصص/ارزیابی و ارتقای انسانی؛ **انتخاب روش کلان اکنون با RON-DEC-028 حل شده**: مدل پایه Open-Weight مجاز و Fine-tuning کاملاً داخلی؛ **مدل/نسخه/مجوز دقیق، داده، زیرساخت و Technical OPEN**.
+66. [نقشه مقدماتی شواهد دیتاست اولیه و چرخه یادگیری](65-initial-ai-dataset-and-controlled-learning-evidence-blueprint.md): **DRAFT EVIDENCE BLUEPRINT / NOT TRAINING AUTHORIZED**؛ نامزدهای منبع D0/E0، ثبت حقوق خاص Training، منشأ/بازبینی علمی، جداسازی Evaluation، کنترل نسخه و بازآموزی تا تأیید انسانی؛ **روش کلان مدل با RON-DEC-028 تصویب شده**؛ مدل پایه دقیق/حقوق و Task اول هنوز OPEN.
 
 ## اصول تفسیر
 

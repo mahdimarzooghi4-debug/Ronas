@@ -13,7 +13,9 @@ Status: UNREVIEWED / under discussion (not a production status)
 Commercial arrangement under review: Principal | Agent | Service | Joint | other (requires explicit review)
 Specific obligations and independent contract references:
 Parties and verified legal identities:
-Ronas contracting entity and delegated signatory:
+Ronas intended corporate structure direction: independent entity (RON-DEC-004; not proof of registration)
+Ronas verified legal entity / registry / jurisdiction / permitted representation: [OPEN]
+Ronas contracting entity and delegated signatory: [OPEN]
 Producer / processor / exporter-of-record / buyer:
 Product / processing specifications / lot or batch scope:
 Destination country and governing rules:
@@ -23,7 +25,7 @@ Approval evidence / signatures:
 Unresolved dependencies and excluded capabilities:
 ```
 
-**تذکر:** عبارات این قالب «فیلدهای مورد نیاز برای تکمیل Business» هستند؛ تعریف داده، اعتبارسنجی API و فرایند امضای نرم‌افزاری نیستند.
+**تذکر:** جهت‌گیری شخصیت مستقل RON-DEC-004، جایگزین مشخصات **شرکت ثبت‌شده یا وکالت/سمت قانونی امضاکننده** نیست. اگر تشکیل شخصیت و اختیار احراز نشده باشد، پرونده واقعی با وضعیت OPEN باقی می‌ماند. عبارات این قالب «فیلدهای مورد نیاز برای تکمیل Business» هستند؛ تعریف داده، اعتبارسنجی API و فرایند امضای نرم‌افزاری نیستند.
 
 ## ۲. جدول مسئولیت برای تکمیل توسط صاحبان اختیار
 

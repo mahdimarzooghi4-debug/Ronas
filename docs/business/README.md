@@ -3,7 +3,7 @@
 **وضعیت:** DRAFT — گیت‌ها هنوز OPEN؛ تصمیم‌های محدود RON-DEC-009..021 شامل بازارگاه و نظارت دیجیتال، برنامه کشت اختصاصی با تأیید متخصص، بازنگری در صورت خطای اطلاعات و **پیشنهاد AI برای استفاده مجدد از گزارش‌های تاریخی تنها پس از بررسی و تأیید متخصص** هستند؛ معیارهای کیفیت/حقوق داده/عملیات هنوز بازند.  
 **تصمیم مالی تصویب‌شده:** RON-DEC-024 پنج محور کلان FIN-MACRO-01 را در سطح راهبرد Business تصویب کرده؛ Finance Gate/بودجه/پرداخت واقعی هنوز OPEN هستند.
 **تصمیم بسته‌ای جدید:** RON-DEC-022 پنج محور کلان Domestic را تصویب کرده است؛ هیچ گیت اجرا/Technical را نمی‌گذراند.
-**نسخه بسته تصمیم:** v0.32 — FIN-MACRO-01 FIVE-AXIS FINANCIAL BUSINESS STRATEGY APPROVED | ۱۴۰۵/۰۷/۱۷ (2026-10-09)  
+**نسخه بسته تصمیم:** v0.33 — OPS-GOV-MACRO-01 APPROVED / FOUR-MACRO INTEGRATED REVIEW RECORDED | ۱۴۰۵/۰۷/۱۷ (2026-10-09)  
 **منبع پایه:** «طرح نامه جامع روناس»، مرداد ۱۴۰۵، ۳۷ صفحه فایل (۳۶ صفحه شماره‌گذاری داخلی)، سفارش معاونت اشتغال کمیته امداد امام خمینی(ره)، طراح خانه خلاق و نوآوری آینه.
 
 ## ترتیب مطالعه
@@ -64,7 +64,8 @@
 54. [بسته کلان مصوب Business بازار داخلی](53-domestic-macro-business-decision-package.md): پنج محور DOM-MACRO-A..E و استثناهای صریح، با **تصویب RON-DEC-022 در سطح جهت‌گیری Business**؛ گیت Domestic همچنان OPEN.
 55. [بسته کلان مصوب جهت‌گیری Business صادرات](54-export-macro-business-decision-package.md): پنج محور EXP-MACRO-A..E و استثناهای صریح با مصوبه RON-DEC-023 در سطح راهبرد؛ **گیت Export و قراردادها و مالی همچنان OPEN**.
 56. [بسته کلان مصوب جهت‌گیری اقتصادی و مالی](55-finance-macro-business-decision-package.md): پنج محور FIN-MACRO-A..E با استثناهای صریح، **RON-DEC-024 APPROVED / STRATEGY ONLY**؛ FIN-001..007 و Finance Gate #4 همچنان OPEN.
-57. [بسته پیشنهادی تصمیم کلان عملیات و حکمرانی](56-operations-governance-macro-business-decision-package.md): پنج محور OPS-GOV-MACRO-A..E برای تصویب یکجای کارفرما؛ **PROPOSED / NOT APPROVED**، بدون انتصاب مدیر/شریک، سیاست اجرایی یا عبور از گیت.
+57. [بسته کلان مصوب عملیات و حکمرانی](56-operations-governance-macro-business-decision-package.md): پنج محور OPS-GOV-MACRO-A..E با استثناهای صریح **RON-DEC-025 APPROVED / STRATEGY ONLY**؛ بدون انتصاب صاحب اختیار، قرارداد یا گیت اجرایی.
+58. [بازبینی یکپارچه پس از چهار مصوبه کلان و نقشه گیت‌ها](57-post-macro-integrated-business-review-and-gate-map.md): تطبیق RON-DEC-022..025 با REV-01..12، موارد حل‌شده در سطح جهت‌گیری، دامنه‌های نامزد شروع محدود و چهار پرونده تجمیعی شواهد؛ **REVIEW RECORDED / NO BUSINESS GATE PASS**.
 
 ## اصول تفسیر
 

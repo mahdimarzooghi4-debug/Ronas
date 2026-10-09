@@ -73,3 +73,8 @@ Related Business Gate: #2 | #3 | #4 (independent)
 **Next Business review:** فقط پس از دریافت شواهد واقعی، پرونده‌های D0/E0 جداگانه برای *تصمیم محدود Business* و در صورت نیاز Finance/Legal بررسی شوند؛ مجوز Technical/Code، مرحله Stage یا Trade بدون گیت واقعی مجاز نیست.
 
 **Status: EVIDENCE REQUEST PREPARED / NO INDEPENDENT EXTERNAL EVIDENCE VERIFIED / ALL RELEVANT BUSINESS GATES OPEN.**
+
+
+## پیوست تکمیلی حقوق داده و ارزیابان — سند ۶۸
+
+[غربال رسمی حقوق منابع و شواهد صلاحیت متخصص AI](68-ai-source-rights-expert-review-and-first-task-decision-readiness.md) برای D0 و E0 تمایز **حق Training داخلی، بازنشر/ارائه بیرونی خروجی، ترجمه/اقتباس و آثار شخص ثالث** را دقیق‌تر کرده است. شروط Comtrade، FAOSTAT، FAO، AGROVOC و WITS نیازمند تطبیق نسخه و Scope واقعی‌اند؛ نه مجوز یا هزینه‌ای به نام روناس اخذ/تعیین شده و نه متخصصی منصوب شده است. FL-EV-01/02/04/06 و FIN-001..007 همچنان **NOT VERIFIED / OPEN** و Finance Gate #4 باز است.

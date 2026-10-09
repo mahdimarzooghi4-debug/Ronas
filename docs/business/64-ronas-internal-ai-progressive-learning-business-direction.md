@@ -89,3 +89,6 @@ Monitored advisory use ---> validated feedback (not automatic promotion)
 **Still OPEN:** starting model from scratch vs adapting permitted base; actual dataset provenance/rights, task and data split; human reviewer; technical stack/infrastructure; model family/size; training algorithm and evaluation criteria; costs; actual Training Run; all three Business Gates #2/#3/#4.
 
 **FINAL: STRATEGIC OWNER DECISION RON-DEC-027 REGISTERED — NO DATA INGESTION, TRAINING, TECHNICAL ADMISSION OR PRODUCTION AUTHORIZED.**
+
+
+**پیوست آماده‌سازی شواهد (غیرمصوب و غیر اجرایی):** [نقشه شواهد دیتاست اولیه و چرخه یادگیری تحت کنترل، سند ۶۵](65-initial-ai-dataset-and-controlled-learning-evidence-blueprint.md) — ثبت نامزدهای منبع و اقلام لازم برای راستی‌آزمایی حقوق خاص Training، متخصص و Evaluation؛ این پیوست RON-DEC-027 را تغییر نمی‌دهد و هیچ Task، مدل یا گیتی را تصویب نمی‌کند.

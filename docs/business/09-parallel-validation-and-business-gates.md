@@ -1,4 +1,4 @@
-# برنامه اعتبارسنجی موازی و گیت‌های Business | v0.8
+# برنامه اعتبارسنجی موازی و گیت‌های Business | v0.9
 
 **Status:** PROPOSED / NO DATES OR TARGETS APPROVED  
 **Approved direction:** طراحی Domestic و Export به‌صورت موازی، با گیت‌های مستقل. **RON-DEC-007:** تا پیش از تصویب Business/Technical/Backlog/Sprint هیچ Code جدیدی مجاز نیست؛ PR #6 در HOLD می‌ماند.
@@ -21,7 +21,7 @@
 
 **تذکر:** «LOI»، مذاکرات و آزمایش‌ها به‌خودی‌خود تضمین فروش/پذیرش نیستند. نوع تعامل و اجازه آزمایش باید توسط کارفرما و مشاور حقوقی مشخص شود. هیچ محل، زمان، نمونه، درصد یا آستانه‌ای در این سند تصویب نشده است.
 
-**بسته جزئیات قابل بررسی:** [کاتالوگ ۱۹ جریان](18-dual-engine-business-requirements.md) و [گیت مستقل ورود به Technical](20-business-baseline-and-technical-admission-gates.md). هیچ محصول/مقصد/نرخ/آستانه یا تصمیم انسانی به جای کارفرما تعیین نشده است.
+**بسته جزئیات قابل بررسی:** [کاتالوگ ۱۹ جریان](18-dual-engine-business-requirements.md)، [نقشه سفر Domestic](21-domestic-service-blueprints.md)، [نقشه سفر Export](22-export-service-blueprints.md)، [ماتریس شواهد و جلسه تصمیم](23-business-decision-evidence-review.md) و [گیت مستقل ورود به Technical](20-business-baseline-and-technical-admission-gates.md). هیچ محصول/مقصد/نرخ/آستانه یا تصمیم انسانی به جای کارفرما تعیین نشده است.
 
 ## ۲. کارت شواهد قابل تکرار
 

@@ -1,4 +1,4 @@
-# روناس — پرونده خط مبنای Business و گیت ورود به Technical | v0.8
+# روناس — پرونده خط مبنای Business و گیت ورود به Technical | v0.9
 
 **Status:** DRAFT / REVIEW PACKAGE — **NO ENGINE HAS PASSED ITS BUSINESS GATE**  
 **Purpose:** اجرای واقعی تصمیم فرآیندی [RON-DEC-007](04-decisions-and-open-questions.md) بدون پرداختن به جزئیات سهام و ثبت شرکت؛ تعهدات واقعی حقوقی/مالی تجارت و سلامت همچنان در زمان ورود به عملیات باید اثبات شوند.  
@@ -87,5 +87,7 @@ Authority to enter Technical for this specific scope: YES/NO
 - [PR #1 — Business](https://github.com/mahdimarzooghi4-debug/Ronas/pull/1): Draft/Open؛ این بسته تنها مواد بررسی را کامل‌تر می‌کند، **نه** اینکه Business Gate پاس شده باشد.
 - [PR #6 — exploratory code on HOLD](https://github.com/mahdimarzooghi4-debug/Ronas/pull/6): Draft/Open، کد قبل از تصویب Technical نوشته شده؛ **نه ادغام، نه توسعه فیچر، نه Stage/Production**.
 - [Issue #2 Domestic](https://github.com/mahdimarzooghi4-debug/Ronas/issues/2)، [Issue #3 Export](https://github.com/mahdimarzooghi4-debug/Ronas/issues/3)، [Issue #4 Finance](https://github.com/mahdimarzooghi4-debug/Ronas/issues/4): همه OPEN و نیازمند تصمیم/شواهد واقعی.
+
+**Business Service Blueprint v0.9:** [Domestic journeys](21-domestic-service-blueprints.md) و [Export journeys](22-export-service-blueprints.md) و [Decision/Evidence Review](23-business-decision-evidence-review.md) نقشه‌های پیشنهادی و سؤالات پذیرش‌اند؛ **Business Gate هیچ موتوری را PASS نمی‌کنند**. مرز نقش، رویداد، مدرک، مانع و تصمیم‌گیر باید برای هر Scope جداگانه تصویب شود.
 
 **Legal focus boundary:** ثبت شرکت، سهم‌الشرکه و ترکیب شرکا در این مسیر محصول پیگیری نمی‌شوند؛ این موکول‌کردن به معنی مجازبودن پرداخت/صادرات/عرضه خوراکی بدون رعایت قانون نیست.

@@ -1,4 +1,4 @@
-# روناس — دفتر پوشش ساختاری و برنامه بازبینی نهاییِ موکول‌شده | Structural Draft v0.12
+# روناس — دفتر پوشش ساختاری و برنامه بازبینی نهاییِ موکول‌شده | Structural Draft v0.13
 
 **STATUS: STRUCTURE INVENTORY PREPARED / FINAL REVIEW DEFERRED / BUSINESS GATES OPEN**  
 **User direction:** ابتدا **ساختار کامل شود**، سپس **چک نهایی** انجام شود. مطابق این دستور، بررسی نهایی Business/Technical/Quality و انتخاب Stack در این مرحله انجام نمی‌شوند.  
@@ -61,6 +61,17 @@
 | اقتصاد و تفکیک ثبت مالی در گزارش‌ها | [۳۷](37-economic-flow-and-report-boundaries.md) | CONCEPTUAL / FIN-001..007 OPEN |
 
 این جدول «ساخته‌شدن سند» را گزارش می‌کند و به معنای «پاس‌شدن پوشش نهایی» نیست.
+
+### افزوده v0.13 — عملیات، شرکا و شواهد (بدون آزمون نهایی)
+
+| موضوع تکمیلی | پرونده ساختاری | وضعیت |
+| --- | --- | --- |
+| مسیر همکاری احتمالی و توقف/بازنگری شریک | [۳۸](38-partner-engagement-lifecycle.md) | PROPOSED / NO PARTNER ACTIVE |
+| نقاط اتصال کار حضوری به ثبت دیجیتال | [۳۹](39-physical-digital-operations-map.md) | PROPOSED / NO LIVE CHANNEL |
+| مدیریت/بازبینی عملیاتی هر موتور | [۴۰](40-business-operations-oversight-map.md) | PROPOSED / NO DELEGATED AUTHORITY |
+| پرونده انحراف، مدرک و ارجاع تخصصی | [۴۱](41-operations-evidence-and-escalation-map.md) | PROPOSED / NO INCIDENT SLA OR AUTO RULE |
+
+هیچ‌یک از این چهار سند اجرای پایلوت، تأیید قرارداد یا بستن گیت Business نیست.
 
 ## ۳. مواردی که عمداً تصمیم یا اجرا نشده‌اند
 

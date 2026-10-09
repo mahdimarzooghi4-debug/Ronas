@@ -1,4 +1,4 @@
-# روناس — خدمات پشتیبان، هوشمندسازی و مرز تعاملات بیرونی | Structural Draft v0.10
+# روناس — خدمات پشتیبان، هوشمندسازی و مرز تعاملات بیرونی | Structural Draft v0.13
 
 **Status:** PROPOSED BUSINESS INTERACTION MAP — no confirmed external provider, API, platform policy, AI stack or integration.  
 **Sources:** طرح‌نامه، صفحات فایل ۵، ۱۰–۱۱، ۱۶–۲۰، ۲۲–۲۳ و ۲۴–۳۷؛ [مرزهای قبلی](08-cross-engine-boundaries-and-control-points.md)، [مدل دو موتور](24-complete-business-structure-map.md)، [اطلاعات مفهومی](26-conceptual-information-structure.md).  
@@ -61,6 +61,10 @@
 | استفاده AI از داده یکی برای دیگری | OPEN / requires explicit rights | رضایت/قانون، هدف استفاده، تداخل Dataset و ممیزی چگونه کنترل می‌شود؟ |
 | گزارش تجمیعی دو موتور | OPEN | روش تجمیع معتبر، حفاظت داده و جلوگیری از دوباره‌شماری چیست؟ |
 | ساختار هویتی/فنی مشترک | OPEN | آیا منافع نگهداری با امنیت و استقلال قراردادها سازگار است؟ |
+
+### تکمیل نقشه تعامل حضوری و دیجیتال
+
+[پرونده ۳۹ — عملیات حضوری/دیجیتال](39-physical-digital-operations-map.md)، [پرونده ۴۰ — نظارت کسب‌وکار](40-business-operations-oversight-map.md) و [پرونده ۴۱ — ارجاع و شواهد](41-operations-evidence-and-escalation-map.md) نقاط تماس و نقص اطلاعات را **در سطح پرسش** تفکیک کرده‌اند؛ هیچ منبع داده، webhook، API، اتصال بانک/حمل/QC یا توافق عملکردی را انتخاب نکرده‌اند.
 
 ## ۵. گیت‌های بعدیِ واقعی و جایگاه این سند
 

@@ -1,4 +1,4 @@
-# روناس — شبکه شرکا و ساختار همکاری‌های کسب‌وکار | Structural Draft v0.12
+# روناس — شبکه شرکا و ساختار همکاری‌های کسب‌وکار | Structural Draft v0.13
 
 **Status:** SOURCE-LINKED PARTNER INVENTORY + PROPOSED RELATIONSHIP MAP; not a partner registry, signed agreement, onboarding policy or legal authorization.  
 **Primary source:** طرح‌نامه جامع روناس، **صفحه فایل ۲۳ / شماره داخلی ۲۲** («شرکای کلیدی»، «جریان‌های درآمدی»، «ساختار هزینه»)؛ صفحات فایل ۵، ۱۶–۲۰ و ۲۲–۲۳ درباره خانوار، هاب، فرآوری، بانک و صادرات. [نقشه بازیگران](25-actors-channels-and-workspaces.md)، [مرزهای بیرونی](27-shared-services-and-external-boundaries.md)، [نقشه مسئولیت](29-logical-product-responsibility-map.md).  
@@ -63,6 +63,10 @@ Status: SOURCE | PROPOSED | OPEN | VERIFIED FACT (not contract approval)
 ```
 
 **حتی VERIFIED FACT درباره وجود شریک، جایگزین قرارداد/گیت Business نیست.** مشخصات شناسایی، قراردادهای محرمانه و اطلاعات بانکی در GitHub عمومی روناس منتشر نشوند.
+
+### ادامه نقشه ساختاری
+
+[چرخه مفهومی همکاری با شرکا](38-partner-engagement-lifecycle.md) با تفکیک «شناسایی»، «راستی‌آزمایی»، «توافق»، «ارائه خدمت» و «بازنگری/خاتمه» به‌عنوان **پرسش‌های طراحی Business** این پرونده را تکمیل می‌کند؛ این واژگان هنوز Status واقعی هیچ شریک یا مجوز عملیاتی نیستند.
 
 ## ۵. خروجی ساختاری و پرونده چک نهایی
 

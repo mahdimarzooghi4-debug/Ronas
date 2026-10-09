@@ -1,4 +1,4 @@
-# تصمیم‌ها و موارد باز — Ronas Business v0.8
+# تصمیم‌ها و موارد باز — Ronas Business v0.11
 
 **قانون ثبت:** Only APPROVED records are binding. Source statements and proposed solutions are NOT decisions.
 
@@ -13,6 +13,7 @@
 | RON-DEC-005 | APPROVED — REGISTRATION COUNTRY ONLY | کشور مدنظر برای **ثبت آینده شخصیت حقوقی مستقل روناس، ایران** است. این تصمیم شهر/محل دقیق ثبتی، قالب حقوقی، ثبت انجام‌شده، مجوز، اختیار امضا یا مالیات را تعیین نمی‌کند. | پاسخ صریح کارفرما «بله» به سؤال «آیا ثبت شخصیت حقوقی روناس در ایران قطعی است؟»، 2026-10-09؛ [گیت آمادگی ثبت](16-iran-registration-readiness.md) |
 | RON-DEC-006 | APPROVED — PLANNED FOUNDER COUNT ONLY | **تعداد شرکای مؤسسِ مدنظر روناس ۲ نفر است.** هویت، نسبت سهم‌الشرکه/مالکیت، سمت، اختیار امضا، سرمایه، قصد ورود شریک بعدی و وقوع تأسیس تأیید نشده‌اند. | پاسخ صریح کارفرما «۲ نفر»، 2026-10-09؛ [پرونده مؤسسان و ریسک‌های قرارداد](17-two-founder-governance-and-gates.md) |
 | RON-DEC-007 | APPROVED — PRODUCT DEVELOPMENT PROCESS | روند الزامی روناس **Business → Technical → Product Backlog → Sprint → Code → Code Review → Stage → QA/Testing → Release Approval → Production → Monitoring → Improvement** است. انتخاب پشته فناوری و کدنویسی پیش از تصویب گیت‌های مربوط مجاز نیست. PR #6 تنها آزمایشی و HOLD است. | دستور صریح کارفرما: «از اول باید همه چیز اصولی بره جلو من هیچ عجله ای ندارم»، 2026-10-09؛ [قواعد پذیرش](20-business-baseline-and-technical-admission-gates.md) |
+| RON-DEC-008 | APPROVED — STRUCTURE-FIRST REVIEW TIMING ONLY | در روناس **ابتدا ساختار جامع و منطقی محصول به‌صورت پیش‌نویس** تکمیل شود و **چک نهایی یکپارچه بعداً** صورت گیرد؛ این ترتیب، تأیید ساختار/قراردادهای عملیاتی، عبور از Business Gate یا اجازه Technical/Code نیست. | دستور صریح کارفرما «اول ساختار کامل کنیم بعدا چک نهایی میکنیم»، 2026-10-09؛ [پرونده تجمیع ساختار](33-structure-integration-and-deferred-checklist.md) |
 
 **محدودیت تصویب:** RON-DEC-003 جهت‌گیری چندمدلی، RON-DEC-004 قصد شخصیت حقوقی مستقل، و **RON-DEC-005 کشور ثبت ایران** و **RON-DEC-006 تعداد شرکای مؤسس مدنظر (۲ نفر)** را مصوب می‌کنند؛ نه وقوع ثبت، قالب شرکت، هویت/سهم شرکا، شهر ثبت، صاحبان امضا، مجوز یا فعال‌سازی مدل تجاری. هیچ اولویت محصولی/منطقه‌ای، MVP نهایی، بانک، نرخ، مالکیت یک معامله، محصول صادراتی، مدل AI، معماری یا دستور Production از این تصمیم‌ها نتیجه نمی‌شود.
 

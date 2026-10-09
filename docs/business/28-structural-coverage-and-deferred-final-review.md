@@ -1,8 +1,8 @@
-# روناس — دفتر پوشش ساختاری و برنامه بازبینی نهاییِ موکول‌شده | Structural Draft v0.10
+# روناس — دفتر پوشش ساختاری و برنامه بازبینی نهاییِ موکول‌شده | Structural Draft v0.11
 
 **STATUS: STRUCTURE INVENTORY PREPARED / FINAL REVIEW DEFERRED / BUSINESS GATES OPEN**  
 **User direction:** ابتدا **ساختار کامل شود**، سپس **چک نهایی** انجام شود. مطابق این دستور، بررسی نهایی Business/Technical/Quality و انتخاب Stack در این مرحله انجام نمی‌شوند.  
-**Trace:** [نقشه کلان](24-complete-business-structure-map.md)، [نقش‌ها/کانال‌ها](25-actors-channels-and-workspaces.md)، [واژگان داده](26-conceptual-information-structure.md)، [خدمات/مرزها](27-shared-services-and-external-boundaries.md)، [سفر Domestic](21-domestic-service-blueprints.md)، [سفر Export](22-export-service-blueprints.md)، [۱۹ نیازمندی](18-dual-engine-business-requirements.md).
+**Trace:** [نقشه مسئولیت‌های منطقی](29-logical-product-responsibility-map.md)، [تعامل‌ها و تحویل کار](30-business-interaction-and-handoff-map.md)، [ناوبری مفهومی](31-conceptual-experience-navigation-map.md)، [استثنا و بازبینی](32-exceptions-and-human-decision-points.md)، [بسته تجمیع بعدی](33-structure-integration-and-deferred-checklist.md)، [نقشه کلان](24-complete-business-structure-map.md)، [نقش‌ها/کانال‌ها](25-actors-channels-and-workspaces.md)، [واژگان داده](26-conceptual-information-structure.md)، [خدمات/مرزها](27-shared-services-and-external-boundaries.md)، [سفر Domestic](21-domestic-service-blueprints.md)، [سفر Export](22-export-service-blueprints.md)، [۱۹ نیازمندی](18-dual-engine-business-requirements.md).
 
 ## ۱. واژه‌شناسی وضعیت
 
@@ -38,6 +38,18 @@
 | شبکه شریک بانکی، کشاورزی، حمل و فرآوری | 08, 22, 25, 27 | SOURCE candidates; no provider connected |
 
 **تذکر صریح:** این ماتریس **پوشش ساختار روی کاغذ** را نشان می‌دهد، نه ممیزی تطبیقی سطر به سطر اصل DOCX، کفایت حقوقی، رضایت بازار، قابل ساخت بودن برنامه یا پذیرش مشتری؛ این بررسی‌ها برای مرحله نهایی جدا ثبت می‌شوند.
+
+### افزوده ساختاری v0.11 — هنوز بدون ممیزی نهایی
+
+| لایه تکمیلی | مرجع | وضعیت |
+| --- | --- | --- |
+| مرز مسئولیت اجزای منطقی، بدون انتخاب معماری | 29 | MAPPED / PROPOSED |
+| تحویل اطلاعات/شواهد میان بخش‌ها و مرز تعهد | 30 | MAPPED / PROPOSED |
+| تجربه و ناوبری مفهومی نقش‌ها | 31 | MAPPED / PROPOSED |
+| سناریوهای استثنا و نیاز به تصمیم انسانی | 32 | MAPPED / PROPOSED |
+| تجمیع خروجی‌ها و بسته چک نهایی موکول‌شده | 33 | PREPARED / NOT REVIEWED |
+
+**نه عددی برای پوشش کامل/موفقیت ممیزی تعیین شده و نه Business Gate پاس شده است.**
 
 ## ۳. مواردی که عمداً تصمیم یا اجرا نشده‌اند
 

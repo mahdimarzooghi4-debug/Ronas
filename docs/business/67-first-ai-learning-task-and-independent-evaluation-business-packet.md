@@ -115,3 +115,8 @@
 **غیرمجاز تا گیت صریح:** آغاز کدنویسی/ساخت مدل، انتخاب نهایی Gemma یا Qwen، دریافت وزن‌ها برای اجرا/Training، استفاده از داده محرمانه، تولید Dataset Approved یا Evaluation Report واقعی، تعریف threshold/بودجه/سخت‌افزار از خود، اجرای پایلوت یا انتشار/معامله/صادرات.
 
 **نتیجه نهایی:** RON-DEC-026/027/028 APPROVED AS PREPARATION + STRATEGY؛ **AI-BL-02 OPEN**؛ D0/E0 TASK CANDIDATES PREPARED (NOT SELECTED)؛ DATA/EVALUATION/LICENSE NOT CLEARED؛ GATES #2/#3/#4 OPEN؛ **TECHNICAL/SPRINT/CODE/TRAINING/PRODUCTION NOT ADMITTED**.
+
+
+## پیوست تکمیلی درباره حقوق و صلاحیت متخصص (سند ۶۸ — غیرمصوب)
+
+[پرونده ۶۸](68-ai-source-rights-expert-review-and-first-task-decision-readiness.md) موارد حقوق منبع به‌ازای نسخه/زبان/هدف و شواهد تخصصی Reviewer را به‌صورت **درخواست مدرک** مشخص می‌کند. نکته: سیاست UN Comtrade برای «internal use including AI model» استثنا/شرایطی دارد؛ این نه تأیید کاربرد بیرونی روناس است و نه ممنوعیت عمومی Training. اختلاف نسخه مجوز AGROVOC برای شش زبان رسمی و حق مؤلفان سایر زبان‌ها نیز نیازمند بررسی خاص است. **AI-BL-02 برای اولویت D0/E0 هنوز نیازمند تصمیم صاحب کسب‌وکار است؛ Dataset/Evaluation واقعی و معیار قبولی وجود ندارند.**

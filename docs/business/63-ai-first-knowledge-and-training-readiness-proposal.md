@@ -2,6 +2,10 @@
 
 **Status: PROPOSED AI-FIRST BUSINESS / DATA / LEARNING GOVERNANCE; OWNER DECISIONS REQUIRED; NO TECHNICAL ADMISSION, TRAINING RUN, MODEL OR DATA INGESTION AUTHORIZED.**  
 **Date of public research:** 2026-10-09. **Scope:** Domestic crop advisory and Export opportunity research; separate data rights and evaluations.  
+## وضعیت پس از مصوبه RON-DEC-027 — ADDENDUM / 2026-10-09
+
+**توجه:** بخش‌های تاریخی پایین در زمان نگارش این گزارش، همگی PROPOSED بودند؛ اکنون کارفرما با **RON-DEC-027** جهت‌گیری **هوش کاملاً داخلی و اختصاصی روناس، دیتاست اولیه برای Training و چرخه یادگیری/بازآموزی تدریجی از داده‌های واجد شرایط** را تصویب کرده است. [سند مصوب و حدود باز](64-ronas-internal-ai-progressive-learning-business-direction.md) مرجع جاری است. بخش‌های درباره گزینه «API خارجی»، «استقلال داده» یا «آموزش تدریجی» در جدول پرسش‌های تاریخی نباید به‌عنوان وضعیت بازِ جهت‌گیری مصوب خوانده شوند؛ **انتخاب آموزش از صفر در برابر وزن پایه مجاز با اجرای داخلی، وظیفه نخست، داده/مجوز، متخصص، مدل، زیرساخت، هزینه و trigger آموزش هنوز OPEN است**. هیچ Training Run/Technical Gate با این مصوبه اجرا نشده است.
+
 **This is not RON-DEC-027.** User asked: «هر مانعی که وجود داره از من بپرس و اگر به دانشی نیاز داری خودت از روی اینترنت پیدا ... تا بشه از اول هوش روناس ترین کنیم.» Thus the proposal researches open sources and gathers business-level owner blockers without deciding on their behalf.  
 **Ronas baseline:** [RON-DEC-015..021 human-approved crop plans](04-decisions-and-open-questions.md), [RON-DEC-022..026 strategy, gates and D0/E0 evidence priority](04-decisions-and-open-questions.md), [AI and data business boundaries](27-shared-services-and-external-boundaries.md), [domain and data concepts](26-conceptual-information-structure.md), [D0](59-d0-noncommercial-domestic-education-business-packet.md), [E0](60-e0-export-opportunity-research-business-packet.md), [external official sources already screened](62-d0-e0-official-source-screening-and-usage-rights.md).
 

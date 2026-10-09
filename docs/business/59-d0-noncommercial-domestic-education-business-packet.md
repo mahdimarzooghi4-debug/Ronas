@@ -69,3 +69,6 @@
 ## پیوست آماده‌سازی AI در سطح Business — سند ۶۷ / بدون انتخاب Task
 
 [سند ۶۷: نامزد وظیفه نخست آموزش و ارزیابی مستقل](67-first-ai-learning-task-and-independent-evaluation-business-packet.md) یک نامزد **AI-TASK-D0-TEXT** برای پاسخ‌های عمومی آموزشی فارسی، مستند و غیرشخصی تعریف می‌کند. این فقط **پرونده پرسش و شواهد** است: نه اولین Task قطعی، نه حق استخراج/Training از FAO، نه محتوای تأییدشده، نه حق دریافت تصویر/اطلاعات خانوار، نه مجوز ارائه برنامه کشت اختصاصی. شواهد D0-EV-01..05، متخصص واقعی، حق ترجمه/آموزش/انتشار و مجموعه مستقل Evaluation هنوز **NOT VERIFIED** هستند. گیت Domestic #2 **OPEN**؛ RON-DEC-028 مسیر کلی Open-Weight+Fine-tuning داخلی را تصویب کرده، نه Model/Training Run.
+
+
+**گام حقوق/متخصص D0 (بدون انتخاب Task):** [سند ۶۸](68-ai-source-rights-expert-review-and-first-task-decision-readiness.md) برای آثار FAO و واژگان AGROVOC بررسی حق ترجمه، آموزش مدل، انتشار و مسئول/بازبین متخصص حقیقی را به‌صورت Evidence Request ثبت کرده است؛ هیچ اثر فارسی Training-eligible یا متخصص تأییدشده موجود نیست و گیت #2 OPEN است.

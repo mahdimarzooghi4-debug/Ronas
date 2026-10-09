@@ -13,6 +13,11 @@ The user chose option 2 of the supervision-method question: Ronas follows cultiv
 
 **Boundary:** This is a Business reporting principle, not a mandated image upload at every stage, a reporting algorithm, a numerical frequency, an automatic AI quality decision or software implementation. It complements RON-DEC-012 continuous documented supervision and RON-DEC-013 digital-first supervision; it does not automatically establish quality, bypass applicable inspection obligations or permit publication without both independent RON-DEC-011 conditions.
 
+## RON-DEC-015 — AI proposes, qualified expert reviews and approves cultivation plans (choice 2)
+**APPROVED — Business authority boundary for Domestic household cultivation plans.** The user chose option 2: **AI produces a proposed product-specific cultivation plan, including candidate reporting stages; a qualified Ronas agricultural expert reviews the proposal and must explicitly approve it before the plan or stages become authoritative for the producer.** The expert can amend or reject a proposal; an unapproved proposal is not an operative cultivation plan or quality approval. This is consistent with RON-DEC-014, which makes reports dependent on the stages of the *approved* product-specific plan.
+
+**Not approved:** model/provider/family, AI training or deployment method, source dataset, data rights/consent, knowledge sources, actual crop/stage list, milestone frequency/content, expert appointment and qualification criteria, evaluation threshold, autonomous plan promotion, automatic food safety/quality pass, price setting or sale publication. Any required legally recognized inspections remain mandatory. No code or Technical admission is authorized.
+
 ## Existing commitments
 - RON-DEC-009: Ronas acts as intermediary for eligible Domestic household-produce sellers.
 - RON-DEC-010: producer determines or confirms the final price; Ronas may suggest but not impose prices.

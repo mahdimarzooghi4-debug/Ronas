@@ -2,6 +2,8 @@
 
 **Status:** DRAFT / REVIEW PACKAGE — **NO ENGINE HAS PASSED ITS BUSINESS GATE**  
 
+**RON-DEC-023 — Export strategic direction APPROVED:** پنج محور [EXP-MACRO-01](54-export-macro-business-decision-package.md) صرفاً در سطح راهبردی تصویب شده‌اند: بازیگران حرفه‌ای و خریدار خارجی، فرصت محصول–مقصد و فرآوری ارزش‌افزا، قراردادهای مستقل نامزد، ورود مرحله‌ای با شواهد و گیت، و مالی/جریان نقدی مستقل هر قرارداد. **پیش‌نیازهای واقعی محصول/مقصد، مجوز/طرف قانونی، قرارداد/QC، مالکیت کالا، ارز/وصول و Finance Gate #4 همچنان OPEN هستند**؛ Export Gate #3 نگذشته است.
+
 **RON-DEC-022 — Domestic strategic direction APPROVED:** پنج محور [DOM-MACRO-01](53-domestic-macro-business-decision-package.md) به‌طور یکجا فقط به‌عنوان جهت‌گیری Business پذیرفته شده‌اند؛ نه گیتِ مجوز بازار واقعی/فنی. مخاطب/ارزش/شروع محدود/نقش واسطه/چهار **نامزد** درآمد مصوب در سطح کلان‌اند، اما محل/محصول/طرف قانونی، داده/ایمنی، شواهد/مجوز، نرخ/PSP، حمل/تسویه، امضای مرجع پاسخگو و پذیرش Scope عملیاتی **OPEN** باقی می‌مانند.  
 **Purpose:** اجرای واقعی تصمیم فرآیندی [RON-DEC-007](04-decisions-and-open-questions.md) بدون پرداختن به جزئیات سهام و ثبت شرکت؛ تعهدات واقعی حقوقی/مالی تجارت و سلامت همچنان در زمان ورود به عملیات باید اثبات شوند.  
 **Trace:** [نیازمندی‌های ۱۹ جریان](18-dual-engine-business-requirements.md)، [کیفیت/مرزها](19-business-quality-attributes-and-invariants.md)، [گیت‌های مستقل](09-parallel-validation-and-business-gates.md)، [ممیزی مالی](03-financial-assumptions-and-gaps.md).

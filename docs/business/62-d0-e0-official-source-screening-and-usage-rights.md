@@ -57,3 +57,8 @@
 **Finance/Legal:** مرجع پاسخگو و حقوق داده/محتوا برای Scopeهای آموزشی و پژوهشی از مدل مالی واقعی FIN-001..007 و از مجوزهای فروش/صادرات واقعی جدا بررسی شوند. این سند **نه نظر حقوقی ایران، نه ارزیابی کارمزد/درآمد و نه قرارداد آماده امضا** است.
 
 **Status: DESK SOURCE-SCREENING RECORDED / RIGHTS NOT CLEARED / DOMAIN EVIDENCE NOT VERIFIED / D0 AND E0 BUSINESS GATES OPEN / NO TECHNICAL/CODE.**
+
+
+## یادداشت تکمیلی حقوق AI — سند ۶۸ (2026-10-09؛ بدون گیت)
+
+[پرونده حقوق منابع و صلاحیت متخصص/Task ۶۸](68-ai-source-rights-expert-review-and-first-task-decision-readiness.md) مطالعه حقوق منابع را دقیق‌تر کرد؛ **این یادداشت جایگزین هیچ قرارداد یا تأیید حقوقی واقعی نمی‌شود**. [UN Comtrade data re-dissemination policy](https://uncomtrade.org/docs/re-dissemination-of-data/) **استفاده داخلی در مدل AI** را به‌عنوان موردی بدون نیاز به مجوز بازنشر با هزینه ذکر می‌کند؛ بااین‌حال کاربرد بیرونی/تجاری خروجی یا داده، تعریف واحد نهادی و Fine-tuning روناس در Scope واقعی هنوز باید احراز شوند. لذا وضعیت `RIGHTS NOT CLEARED FOR RONAS` **به معنی ممنوعیت مطلق AI توسط ناشر نیست**. [AGROVOC Maintenance](https://www.fao.org/agrovoc/index.php/maintenance) و [FAO AIMS FAQ](https://aims.fao.org/standards/agrovoc/faq) برای شش زبان رسمی FAO شکل‌های CC BY 4.0 / CC BY IGO 3.0 را متفاوت بیان می‌کنند؛ حقوق زبان‌های سایر مؤسسات، از جمله فارسی در صورت وجود، نیازمند اثبات موردی است. [FAOSTAT Terms](https://www.fao.org/contact-us/terms/db-terms-of-use/en) علاوه بر CC BY دارای شروط تکمیلی و استثنائات اشخاص ثالث است. D0/E0-EV هنوز NOT VERIFIED؛ هیچ Dataset/Training/Technical/Code مجاز نشده است.

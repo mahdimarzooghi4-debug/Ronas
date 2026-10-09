@@ -94,3 +94,5 @@ Monitored advisory use ---> validated feedback (not automatic promotion)
 
 
 **پیوست آماده‌سازی شواهد (غیرمصوب و غیر اجرایی):** [نقشه شواهد دیتاست اولیه و چرخه یادگیری تحت کنترل، سند ۶۵](65-initial-ai-dataset-and-controlled-learning-evidence-blueprint.md) — ثبت نامزدهای منبع و اقلام لازم برای راستی‌آزمایی حقوق خاص Training، متخصص و Evaluation؛ این پیوست RON-DEC-027 را تغییر نمی‌دهد و هیچ Task، مدل یا گیتی را تصویب نمی‌کند.
+
+**غربال منابع رسمی مدل‌های پایه (غیرمصوب):** [سند ۶۶ — Gemma 4 / Qwen3.5 / Qwen3 candidate screening](66-open-weight-base-model-candidate-screening.md). هیچ مدل مشخص یا مجوز حقوقی روناس تصویب نشده؛ شواهد واقعی کیفیت فارسی، داده و ظرفیت فنی هنوز بازند.

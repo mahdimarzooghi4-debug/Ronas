@@ -18,6 +18,11 @@ The user chose option 2 of the supervision-method question: Ronas follows cultiv
 
 **Not approved:** model/provider/family, AI training or deployment method, source dataset, data rights/consent, knowledge sources, actual crop/stage list, milestone frequency/content, expert appointment and qualification criteria, evaluation threshold, autonomous plan promotion, automatic food safety/quality pass, price setting or sale publication. Any required legally recognized inspections remain mandatory. No code or Technical admission is authorized.
 
+## RON-DEC-016 — household-specific AI-proposed cultivation plans (choice 2)
+**APPROVED — Business personalization direction for Domestic household cultivation only.** The user chose option 2 for personalization: **AI drafts a distinct cultivation plan for each household, considering that household's climate, available cultivation space, facilities and circumstances; the qualified Ronas expert must explicitly review and approve that specific household plan.** The expert can amend or reject it. RON-DEC-015 established the AI-proposal/human-approval separation; RON-DEC-016 establishes the **household-specific scope** of each proposal. RON-DEC-014 stage-based reports refer only to the stages of that household's expert-approved plan, not generic AI output.
+
+**Approval boundaries:** These are *candidate input categories*, not permission to collect, use, share, retain or train on any household information. Sources/accuracy/consent/privacy for climate/location/space/facilities and crop photos/reports, scientific plant-specific constraints, required evidence at each stage, expert qualifications, changes to plans, AI model/benchmark/runtime and exception handling remain OPEN. Approval of the plan does **not** auto-certify safety, grant marketplace publication or authorize payment; RON-DEC-011's producer-publication approval and independently valid quality evidence are still required. No API, storage design, ML implementation or Production is authorized.
+
 ## Existing commitments
 - RON-DEC-009: Ronas acts as intermediary for eligible Domestic household-produce sellers.
 - RON-DEC-010: producer determines or confirms the final price; Ronas may suggest but not impose prices.

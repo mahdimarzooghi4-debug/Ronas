@@ -71,6 +71,7 @@
 61. [پرونده E0 پژوهش فرصت محصول–مقصد Export](60-e0-export-opportunity-research-business-packet.md): تحقیق و منابع/حقوق داده، بدون تجارت و قرارداد؛ **DRAFT / NOT ADMITTED**.
 62. [پیگیری مالی و حقوقی شواهد D0/E0](61-finance-legal-evidence-workstreams-for-d0-e0.md): FIN-001..007 و شواهد صلاحیت/محتوا/داده **REQUESTED / NOT VERIFIED**.
 63. [غربال مقدماتی منابع رسمی آموزشی/تجارت و حقوق استفاده](62-d0-e0-official-source-screening-and-usage-rights.md): بررسی وجود منابع FAO، UN Comtrade، WITS، Trade Map، FAOSTAT و WTO ePing و هشدار حق ترجمه/بازنشر؛ **SOURCE PAGE CHECKED / DOMAIN EVIDENCE & RIGHTS NOT VERIFIED**. نه محصول/مقصد انتخاب شده و نه گیت پاس شده است.
+64. [طرح پیشنهادی AI-first و موانع آماده‌سازی دانش/Training روناس](63-ai-first-knowledge-and-training-readiness-proposal.md): تحقیق منابع رسمی AGROVOC/FAO/NASA POWER/NIST و شروط حقوق داده و پنج مانع تصمیم صاحب کسب‌وکار **PROPOSED / NOT APPROVED**؛ بدون Dataset ingestion، آموزش مدل، Technical یا Code.
 
 ## اصول تفسیر
 

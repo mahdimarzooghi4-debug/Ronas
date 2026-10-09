@@ -2,7 +2,7 @@
 
 **Status: APPROVED STRATEGIC BUSINESS DIRECTION / TRAINING & TECHNICAL NOT AUTHORIZED**  
 **Date:** 2026-10-09  
-**Owner statement:** «برای هوش روناس ماباید کاملا داخلی و لختصاصی درست کنیم یک دیتاست اولیه بهش آموزش میدمی بعدا به مرور از زمان از داده ها ترین خواهد شد.»  
+**Current owner clarification — RON-DEC-028 APPROVED (2026-10-09):** [گزینه ب در دفتر تصمیم‌ها](04-decisions-and-open-questions.md) صریحاً انتخاب شد: **مدل پایه Open-Weight با مجوز معتبر و سازگار با کاربرد روناس، اجرای داخلی و Fine-tuning اختصاصی کاملاً داخلی**. سؤال AI-BL-01 **RESOLVED AT BUSINESS STRATEGY LEVEL**؛ آموزش وزن‌های پایه از صفر دیگر مسیر انتخاب‌شده نیست. این مصوبه **مدل/نسخه/مجوز مشخص یا حق مالکیت وزن‌های پایه، Trainer/الگوریتم، Dataset، متخصص، GPU/میزبان، بودجه یا معیار فنی را تعیین نکرده** و Technical/Code/Training/Production را مجاز نمی‌کند. ارزیابی حقوق مجوز نامزد واقعی (دریافت، تغییر، استفاده تجاری، انتشار و توزیع) مستقل و پیش‌نیاز است. سند ۶۴ مرجع سیاست RON-DEC-027 باقی می‌ماند؛ وضعیت بازِ تاریخی گزینه الف/ب در متن اولیه با این تصمیم پسینی اصلاح شده است. [نقشه شواهد ۶۵](65-initial-ai-dataset-and-controlled-learning-evidence-blueprint.md) نیز تابع همین مصوبه است.\n\n**Owner statement:** «برای هوش روناس ماباید کاملا داخلی و لختصاصی درست کنیم یک دیتاست اولیه بهش آموزش میدمی بعدا به مرور از زمان از داده ها ترین خواهد شد.»  
 **Authority:** [RON-DEC-027](04-decisions-and-open-questions.md)، [حدود انسانی قبلی RON-DEC-015..021](52-domestic-continuous-digital-supervision-decisions.md)، [AI-first discovery & sources](63-ai-first-knowledge-and-training-readiness-proposal.md)، [استقلال موتور/حقوق داده](27-shared-services-and-external-boundaries.md).  
 **Gate state:** [Domestic #2](https://github.com/mahdimarzooghi4-debug/Ronas/issues/2)، [Export #3](https://github.com/mahdimarzooghi4-debug/Ronas/issues/3)، [Finance #4](https://github.com/mahdimarzooghi4-debug/Ronas/issues/4) **OPEN**.
 
@@ -14,7 +14,7 @@
 4. **No unconstrained live learning:** داده زنده، عکس خانوار، اسناد تجاری یا اصلاح/گزارش کاربران **خودکار و بدون رضایت/حق مشخص به Training نمی‌روند**. نتیجه آموزش صرفاً **نسخه کاندید** است؛ هیچ افزایش دقت ادعایی، تغییر مدل Production، کیفیت محصول، توصیه کشت معتبر یا مجوز مالی/قراردادی را خودکار فعال نمی‌کند.
 5. **Human specialist and legal boundary:** حد تصمیم انسانی RON-DEC-015..021 و RON-DEC-025 پابرجاست. AI تنها **پیشنهادگر** برنامه کشت یا تطبیق شواهد است؛ متخصص واجد صلاحیت باید برنامه/استفاده مجدد از شواهد را تأیید کند و اثبات ایمنی خوراکی مستقل است. Export Lead به معنای مشتری/قرارداد نیست.
 
-**نکته حقوقی مهم:** «هوش اختصاصی روناس» می‌تواند به مالکیت و کنترل **سامانه، داده‌های اختصاصی، آموزش و مدل مشتق‌شده** اشاره کند، اما این عبارت به‌تنهایی اثبات نمی‌کند که **تمام حقوق مالکیت وزن‌های پایه یا هر کتابخانه و منبع ثالث** متعلق به روناس شده‌اند. اگر مدل پایه مجاز از منبع ثالث به کار رود، مجوز و تعهدات آن پابرجاست. **انتخاب آموزش از صفر در برابر fine-tuning مدل پایه مجاز هنوز باز است.**
+**نکته حقوقی مهم:** «هوش اختصاصی روناس» می‌تواند به مالکیت و کنترل **سامانه، داده‌های اختصاصی، آموزش و مدل مشتق‌شده** اشاره کند، اما این عبارت به‌تنهایی اثبات نمی‌کند که **تمام حقوق مالکیت وزن‌های پایه یا هر کتابخانه و منبع ثالث** متعلق به روناس شده‌اند. اگر مدل پایه مجاز از منبع ثالث به کار رود، مجوز و تعهدات آن پابرجاست. **طبق RON-DEC-028، انتخاب مدل پایه Open-Weight با مجوز معتبر و Fine-tuning کاملاً داخلی تصویب شده است؛ مدل/مجوز مشخص هنوز OPEN است.**
 
 ## ۲. زنجیره آتیِ داده و یادگیری روناس — مفهومی، نه معماری انتخاب‌شده
 
@@ -72,13 +72,13 @@ Monitored advisory use ---> validated feedback (not automatic promotion)
 
 | Blocker | سؤال دقیق برای تصمیم آتی | چرا تصویب نشده؟ |
 | --- | --- | --- |
-| **AI-BL-01: meaning of proprietary** | **الف:** آموزش وزن‌های مدل از صفر و مالکیت کامل وزن‌های پایه، یا **ب:** میزبانی داخلی یک مدل open-weight مجاز و آموزش اختصاصی آن در زیرساخت روناس؟ | «کاملاً داخلی و اختصاصی» **هر دو را به‌طور قطعی تعیین نمی‌کند**؛ هزینه/زمان/حقوقشان متفاوت است. |
+| **AI-BL-01: meaning of proprietary — RESOLVED by RON-DEC-028** | **گزینه ب APPROVED:** استفاده از مدل پایه Open-Weight با مجوز معتبر، اجرای داخلی و Fine-tuning اختصاصی روناس؛ آموزش از صفر مسیر انتخاب‌شده نیست. | **تصمیم Business گرفته شده است**؛ تأیید حق استفاده و انتخاب مدل/نسخه مشخص و طراحی Technical جداگانه و هنوز باز است. |
 | **AI-BL-02: first learning task** | نخستین دیتاست برای کدام وظیفه؟ کشت و برنامه اختصاصی Domestic، محتوای آموزشی D0، پژوهش Export E0 یا ترکیب دارای تقسیم حقوقی؟ | RON-DEC-026 آماده‌سازی موازی D0/E0 را تصویب کرده، نه خودکار انتخاب نخستین وظیفه Training. |
 | **AI-BL-03: real dataset & reviewer** | منبع واقعی داده‌ها، رضایت/مجوز استفاده برای Training، دسترسی به متخصص معتبر و Dataset اولیه چه باشد؟ | هیچ مجموعه داده و صلاحیت واقعی احراز نشده است. |
 | **AI-BL-04: ongoing retraining gate** | بازآموزی با چه trigger/سیکل و چه سطحی از تأیید انسانی انجام شود؟ | کارفرما هدف یادگیری تدریجی را تصویب کرده، نه شیوه زمان‌بندی/خودکارسازی/حد پذیرش. |
 | **AI-BL-05: infrastructure and economics** | ظرفیت میزبان/سخت‌افزار و بودجهٔ آموزش/ارزیابی و امنیت؟ | بدون benchmark و اختیار مالی، انتخاب سایز/GPU/میزبان ساختگی خواهد بود. |
 
-**Recommendation awaiting owner response:** برای کمینه‌کردن هزینه و شروع سریع‌تر، **گزینه ب (open-weight با مجوز معتبر، دانلود/اجرای کاملاً داخلی و fine-tuning اختصاصی روی داده مجاز)** برای مطالعه گزینه مطلوبی است؛ اما تا اجازه کارفرما **این گزینه مصوب نیست و نه وزن، مدل، مجوز یا پشته فنی انتخاب نشده**. «آموزش از صفر» به معنی هزینه/داده/زمان بسیار بیشتر است و نیازمند امکان‌سنجی واقعی.
+**تصمیم مالک پس از پیشنهاد:** **گزینه ب با RON-DEC-028 APPROVED است**؛ مدل پایه open-weight با مجوز معتبر، Fine-tuning و اجرای داخلی. این انتخاب **مجوز مشخص، مدل/وزن مشخص، مدل‌خانواده، پشته فنی یا هزینه را تأیید نمی‌کند**؛ اثبات حقوق و امکان‌سنجی واقعی آن‌ها در گیت‌های مستقل باقی است.
 
 ## ۵. اثر مصوبه بر گیت‌ها و Process مادر
 
@@ -86,7 +86,7 @@ Monitored advisory use ---> validated feedback (not automatic promotion)
 
 **Approved now:** sovereign internal AI direction; initial training dataset as necessary; controlled progressive retraining direction; explicit human model governance and decision boundaries.
 
-**Still OPEN:** starting model from scratch vs adapting permitted base; actual dataset provenance/rights, task and data split; human reviewer; technical stack/infrastructure; model family/size; training algorithm and evaluation criteria; costs; actual Training Run; all three Business Gates #2/#3/#4.
+**AI-BL-01 RESOLVED via RON-DEC-028. Still OPEN:** model candidate, specific base-license verification and legal obligations; actual dataset provenance/rights, task and data split; human reviewer; technical stack/infrastructure; model family/size; fine-tuning design and evaluation criteria; costs; actual Training Run; all three Business Gates #2/#3/#4.
 
 **FINAL: STRATEGIC OWNER DECISION RON-DEC-027 REGISTERED — NO DATA INGESTION, TRAINING, TECHNICAL ADMISSION OR PRODUCTION AUTHORIZED.**
 

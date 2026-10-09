@@ -1,4 +1,4 @@
-# روناس — ماتریس تصمیم، شواهد و برنامه مرور Business | v0.9
+# روناس — ماتریس تصمیم، شواهد و برنامه مرور Business | v0.10
 
 **Status:** DRAFT — DECISION-READY REVIEW PACKAGE, **NO NEW PRODUCT DECISIONS APPROVED**  
 **منابع:** [فهرست ۱۹ جریان](18-dual-engine-business-requirements.md)، [گیت پذیرش](20-business-baseline-and-technical-admission-gates.md)، [Domestic journeys](21-domestic-service-blueprints.md)، [Export journeys](22-export-service-blueprints.md)، [مقایسه فرضیات مالی](03-financial-assumptions-and-gaps.md).  
@@ -94,5 +94,7 @@ Authorization to hand off to Technical: YES only on explicit Business Gate
 - [ ] برای Scope انتخابی، بازیگر، داده، رضایت، نتایج، خطا و تصمیم‌گیر با شواهد تکمیل شود.
 - [ ] نتیجه گیت مستقل هر موتور به صورت **Approved for explicit scope یا Open/Deferred** با صاحب اختیار ثبت شود.
 - [ ] فقط پس از آن، مطالعه تطبیقی معماری و پشته فناوری مربوط به Scope پذیرفته‌شده آغاز شود.
+
+**توالی جدید بازبینی:** بنا به دستور کارفرما، در فاز فعلی **ساختار محصول ابتدا تکمیل می‌شود**؛ این ماتریس برای **بازبینی نهایی بعدی** نگهداری می‌شود، نه برای پرسش‌های پیاپیِ زودهنگام یا تأیید خودکار. رجوع به [پوشش ساختار و موارد موکول](28-structural-coverage-and-deferred-final-review.md).
 
 **PR #1:** Draft/Open و بدون ادغام؛ **PR #6:** HOLD / آزمایشی. هیچ فناوری، کد، اسپرینت یا پرداخت/صادرات عملیاتی در این بسته تصویب نشده است.

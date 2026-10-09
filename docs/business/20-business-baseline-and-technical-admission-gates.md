@@ -1,4 +1,4 @@
-# روناس — پرونده خط مبنای Business و گیت ورود به Technical | v0.9
+# روناس — پرونده خط مبنای Business و گیت ورود به Technical | v0.10
 
 **Status:** DRAFT / REVIEW PACKAGE — **NO ENGINE HAS PASSED ITS BUSINESS GATE**  
 **Purpose:** اجرای واقعی تصمیم فرآیندی [RON-DEC-007](04-decisions-and-open-questions.md) بدون پرداختن به جزئیات سهام و ثبت شرکت؛ تعهدات واقعی حقوقی/مالی تجارت و سلامت همچنان در زمان ورود به عملیات باید اثبات شوند.  
@@ -89,5 +89,7 @@ Authority to enter Technical for this specific scope: YES/NO
 - [Issue #2 Domestic](https://github.com/mahdimarzooghi4-debug/Ronas/issues/2)، [Issue #3 Export](https://github.com/mahdimarzooghi4-debug/Ronas/issues/3)، [Issue #4 Finance](https://github.com/mahdimarzooghi4-debug/Ronas/issues/4): همه OPEN و نیازمند تصمیم/شواهد واقعی.
 
 **Business Service Blueprint v0.9:** [Domestic journeys](21-domestic-service-blueprints.md) و [Export journeys](22-export-service-blueprints.md) و [Decision/Evidence Review](23-business-decision-evidence-review.md) نقشه‌های پیشنهادی و سؤالات پذیرش‌اند؛ **Business Gate هیچ موتوری را PASS نمی‌کنند**. مرز نقش، رویداد، مدرک، مانع و تصمیم‌گیر باید برای هر Scope جداگانه تصویب شود.
+
+**v0.10 Structural-first sequencing:** [نقشه جامع قابلیت‌ها](24-complete-business-structure-map.md)، [نقش‌ها و تجربه](25-actors-channels-and-workspaces.md)، [اطلاعات مفهومی](26-conceptual-information-structure.md)، [خدمات و مرزها](27-shared-services-and-external-boundaries.md) و [دفتر پوشش](28-structural-coverage-and-deferred-final-review.md) برای **تکمیل ساختار پیش از بازبینی نهایی** ایجاد شده‌اند. این‌ها Approved Business Contract یا Technical Architecture نیستند؛ گیت‌ها OPEN می‌مانند و PR #6 در HOLD است.
 
 **Legal focus boundary:** ثبت شرکت، سهم‌الشرکه و ترکیب شرکا در این مسیر محصول پیگیری نمی‌شوند؛ این موکول‌کردن به معنی مجازبودن پرداخت/صادرات/عرضه خوراکی بدون رعایت قانون نیست.

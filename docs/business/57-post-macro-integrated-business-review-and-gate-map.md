@@ -1,6 +1,8 @@
 # روناس — بازبینی یکپارچه و جمع‌بندی کلان Business پس از چهار مصوبه بسته‌ای | Review v0.33
 
-**Status: INTEGRATED BUSINESS STRATEGY REVIEW COMPLETED AT DOCUMENT/DECISION LEVEL — FOUR DIRECTIONS APPROVED; THREE BUSINESS GATES OPEN; NO TECHNICAL ADMISSION.**  
+**Status: INTEGRATED BUSINESS STRATEGY REVIEW COMPLETED AT DOCUMENT/DECISION LEVEL — FOUR DIRECTIONS APPROVED; THREE BUSINESS GATES OPEN; NO TECHNICAL ADMISSION.**
+
+**Subsequent owner decision RON-DEC-026:** AFTER this review, the owner approved **parallel preparation priority only** for D0 + E0 with finance/legal evidence tracking. The D0/E0 candidate assessment below is **historical to review v0.33**; the selected *preparation order* is now recorded in [Business v0.34 preparation plan](58-d0-e0-parallel-business-preparation-plan.md). No Scope approval or Gate Pass occurred.  
 **Date:** 2026-10-09  
 **Authorization:** دستور صریح کارفرما پس از تأیید OPS-GOV-MACRO-01: «آن را با شناسه RON-DEC-025 در GitHub ثبت کن و وارد بازبینی یکپارچه و جمع‌بندی کلان Business روناس شو.»  
 **Scope:** مرور یکپارچگی و ردیابی تصمیم‌های مصوب چهار بسته کلان با اسناد ساختاری، گزارش بازبینی پیشین و پرونده‌های گیت. **این بررسی ممیزی تازه اصل DOCX خصوصی یا تأیید مستقل بازار/حقوق/کیفیت/حسابداری نیست**؛ مرجع تحلیل اصل منبع، [بازبینی ۵۱](51-integrated-business-review-findings.md) است. متن کامل فایل خصوصی `طرح نامه جامع روناس.docx` منتشر نمی‌شود.  
@@ -101,3 +103,15 @@
 **گام بعدی در سطح کلان (بدون سؤال‌های خرد):** یک تصمیم **درباره اولویت «اولین Scope محدود قابل تشکیل پرونده Business Gate»** کافی است؛ گزینه‌های تحلیلی D0 (آموزش غیرتجاری Domestic)، E0 (پژوهش فرصت Export)، یا بررسی موازی هر دو با پرونده و گیت جدا هستند. پس از انتخاب راهبرد اولویت، باید **شواهد واقعی** برای آن Scope دریافت/احراز و **گیت مستقل به‌طور صریح تصویب شود**؛ انتخاب گزینه در این بازبینی یا گفت‌وگو **به‌تنهایی اجازه طراحی/کدنویسی یا عرضه واقعی نمی‌دهد**.
 
 **Final verdict:** **MACRO STRATEGY APPROVED / REVIEW RECORDED / EVIDENCE-GATED OPERATIONAL BUSINESS OPEN / TECHNICAL NOT ADMITTED / NO MERGE OR DEPLOYMENT.**
+
+
+## ۹. تصمیم پسینی RON-DEC-026 — تغییر اولویت آماده‌سازی، نه حکم گیت
+
+مالک کسب‌وکار اولویت **تهیه موازی پرونده Business محدود D0 آموزش غیرتجاری Domestic و E0 پژوهش محصول–مقصد Export** را با پیگیری موازی شواهد Finance/Legal تأیید کرد. **در نسخه اصلی این بازبینی، D0/E0 فقط نامزد بودند؛ اکنون اولویت *تهیه پرونده* تصویب شده ولی Scope اجرایی و پذیرش گیت همچنان تصویب نشده است.**
+
+- [58 — نقشه برنامه آماده‌سازی](58-d0-e0-parallel-business-preparation-plan.md)؛ [59 — پرونده D0](59-d0-noncommercial-domestic-education-business-packet.md)؛ [60 — پرونده E0](60-e0-export-opportunity-research-business-packet.md)؛ [61 — مدارک مالی و حقوقی](61-finance-legal-evidence-workstreams-for-d0-e0.md).
+- شاخه Domestic و Export مستقل‌اند؛ داده/قرارداد/مجوز و Business Gate یکی به دیگری منتقل نمی‌شود.
+- FIN-001..007، مدارک علمی/حقوق محتوا، حقوق داده و مجوز منابع پژوهشی **NOT VERIFIED** هستند.
+- گیت‌های **#2، #3 و #4 OPEN**؛ Technical Admission **NO**؛ PR #6 HOLD؛ PR #1 و #8 Draft/Open.
+
+**This is a linked post-review owner decision, not a revised evidence finding or an operational approval.**

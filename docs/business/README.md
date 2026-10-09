@@ -3,7 +3,7 @@
 **وضعیت:** DRAFT — گیت‌ها هنوز OPEN؛ تصمیم‌های محدود RON-DEC-009..021 شامل بازارگاه و نظارت دیجیتال، برنامه کشت اختصاصی با تأیید متخصص، بازنگری در صورت خطای اطلاعات و **پیشنهاد AI برای استفاده مجدد از گزارش‌های تاریخی تنها پس از بررسی و تأیید متخصص** هستند؛ معیارهای کیفیت/حقوق داده/عملیات هنوز بازند.  
 **تصمیم مالی تصویب‌شده:** RON-DEC-024 پنج محور کلان FIN-MACRO-01 را در سطح راهبرد Business تصویب کرده؛ Finance Gate/بودجه/پرداخت واقعی هنوز OPEN هستند.
 **تصمیم بسته‌ای جدید:** RON-DEC-022 پنج محور کلان Domestic را تصویب کرده است؛ هیچ گیت اجرا/Technical را نمی‌گذراند.
-**نسخه بسته تصمیم:** v0.33 — OPS-GOV-MACRO-01 APPROVED / FOUR-MACRO INTEGRATED REVIEW RECORDED | ۱۴۰۵/۰۷/۱۷ (2026-10-09)  
+**نسخه بسته تصمیم:** v0.34 — RON-DEC-026 PARALLEL D0/E0 BUSINESS PREPARATION PRIORITY / GATES OPEN | ۱۴۰۵/۰۷/۱۷ (2026-10-09)  
 **منبع پایه:** «طرح نامه جامع روناس»، مرداد ۱۴۰۵، ۳۷ صفحه فایل (۳۶ صفحه شماره‌گذاری داخلی)، سفارش معاونت اشتغال کمیته امداد امام خمینی(ره)، طراح خانه خلاق و نوآوری آینه.
 
 ## ترتیب مطالعه
@@ -66,6 +66,10 @@
 56. [بسته کلان مصوب جهت‌گیری اقتصادی و مالی](55-finance-macro-business-decision-package.md): پنج محور FIN-MACRO-A..E با استثناهای صریح، **RON-DEC-024 APPROVED / STRATEGY ONLY**؛ FIN-001..007 و Finance Gate #4 همچنان OPEN.
 57. [بسته کلان مصوب عملیات و حکمرانی](56-operations-governance-macro-business-decision-package.md): پنج محور OPS-GOV-MACRO-A..E با استثناهای صریح **RON-DEC-025 APPROVED / STRATEGY ONLY**؛ بدون انتصاب صاحب اختیار، قرارداد یا گیت اجرایی.
 58. [بازبینی یکپارچه پس از چهار مصوبه کلان و نقشه گیت‌ها](57-post-macro-integrated-business-review-and-gate-map.md): تطبیق RON-DEC-022..025 با REV-01..12، موارد حل‌شده در سطح جهت‌گیری، دامنه‌های نامزد شروع محدود و چهار پرونده تجمیعی شواهد؛ **REVIEW RECORDED / NO BUSINESS GATE PASS**.
+59. [اولویت مصوب آماده‌سازی موازی پرونده‌های Business](58-d0-e0-parallel-business-preparation-plan.md): RON-DEC-026 فقط **PREPARATION PRIORITY APPROVED** برای D0/E0 و شواهد مالی/حقوقی؛ بدون گیت یا Code.
+60. [پرونده D0 آموزش عمومی غیرتجاری](59-d0-noncommercial-domestic-education-business-packet.md): مرز Scope، شواهد/حقوق محتوا و سناریوهای پذیرش **DRAFT / NOT ADMITTED**.
+61. [پرونده E0 پژوهش فرصت محصول–مقصد Export](60-e0-export-opportunity-research-business-packet.md): تحقیق و منابع/حقوق داده، بدون تجارت و قرارداد؛ **DRAFT / NOT ADMITTED**.
+62. [پیگیری مالی و حقوقی شواهد D0/E0](61-finance-legal-evidence-workstreams-for-d0-e0.md): FIN-001..007 و شواهد صلاحیت/محتوا/داده **REQUESTED / NOT VERIFIED**.
 
 ## اصول تفسیر
 

@@ -1,6 +1,8 @@
 # روناس — دفتر پوشش ساختاری و برنامه بازبینی نهاییِ موکول‌شده | Structural Draft v0.15
 
-**STATUS: STRUCTURE INVENTORY PREPARED / FINAL REVIEW DEFERRED / BUSINESS GATES OPEN**  
+**STATUS UPDATE (2026-10-09): FIRST INTEGRATED STRUCTURAL CHECK COMPLETED WITH OPEN FINDINGS; see [Review 51](51-integrated-business-review-findings.md). All Business Gates remain OPEN. The earlier DEFERRED references below describe the pre-review baseline, not an approval.**
+
+**HISTORICAL STATUS (before user requested check): STRUCTURE INVENTORY PREPARED / FINAL REVIEW DEFERRED / BUSINESS GATES OPEN**  
 **User direction:** ابتدا **ساختار کامل شود**، سپس **چک نهایی** انجام شود. مطابق این دستور، بررسی نهایی Business/Technical/Quality و انتخاب Stack در این مرحله انجام نمی‌شوند.  
 **Trace:** [نقشه مسئولیت‌های منطقی](29-logical-product-responsibility-map.md)، [تعامل‌ها و تحویل کار](30-business-interaction-and-handoff-map.md)، [ناوبری مفهومی](31-conceptual-experience-navigation-map.md)، [استثنا و بازبینی](32-exceptions-and-human-decision-points.md)، [بسته تجمیع بعدی](33-structure-integration-and-deferred-checklist.md)، [نقشه کلان](24-complete-business-structure-map.md)، [نقش‌ها/کانال‌ها](25-actors-channels-and-workspaces.md)، [واژگان داده](26-conceptual-information-structure.md)، [خدمات/مرزها](27-shared-services-and-external-boundaries.md)، [سفر Domestic](21-domestic-service-blueprints.md)، [سفر Export](22-export-service-blueprints.md)، [۱۹ نیازمندی](18-dual-engine-business-requirements.md).
 

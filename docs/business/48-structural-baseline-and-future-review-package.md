@@ -1,6 +1,8 @@
 # روناس — بسته تحویل ساختار Business و مبنای مرور نهایی آینده | Structural Draft v0.16
 
-**Status:** READING/HANDOFF PACKAGE PREPARED / **FINAL REVIEW NOT STARTED** / BUSINESS GATES STILL OPEN.  
+**Status update 2026-10-09:** [Integrated Business Review 51](51-integrated-business-review-findings.md) now documents a completed **initial source-and-structure consistency check**; findings are OPEN, no scoped Business Gate approved. This document otherwise describes the prior intake baseline, and its 'not started' references are historical.
+
+**Historical status:** READING/HANDOFF PACKAGE PREPARED / FINAL REVIEW NOT STARTED / BUSINESS GATES STILL OPEN.  
 **Authority:** RON-DEC-001 دو موتور مستقل؛ RON-DEC-003 جهت‌گیری قراردادهای مستقل Export؛ RON-DEC-007 ترتیب اجرای محصول؛ RON-DEC-008 تکمیل ساختار، بعداً چک نهایی. هیچ تصمیم محصولی تازه در این سند تصویب نشده است.  
 **Privacy:** اصل `طرح نامه جامع روناس.docx` خصوصی می‌ماند و در Public GitHub منتشر نمی‌شود. شناسه‌ها/ارجاعات زیر محل مطالعه‌اند، نه الحاق کل فایل محرمانه.
 

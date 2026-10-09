@@ -1,6 +1,8 @@
 # روناس — تجمیع ساختار منطقی و چک نهاییِ موکول‌شده | Structural Draft v0.15
 
-**Status:** LOGICAL STRUCTURE DRAFT ASSEMBLED / INTEGRATED FINAL REVIEW DEFERRED / NO BUSINESS GATE PASSED.  
+**Status update 2026-10-09:** [Business Review 51](51-integrated-business-review-findings.md) has now recorded an integrated structural check with **blocking findings**. Historic references to DEFERRED below denote the earlier intake state, not the current fact of having performed a check. **No Business Gate passed.**
+
+**Historical status:** LOGICAL STRUCTURE DRAFT ASSEMBLED / INTEGRATED FINAL REVIEW DEFERRED / NO BUSINESS GATE PASSED.  
 **Explicit sequencing — RON-DEC-008:** کارفرما ابتدا «ساختار کامل» و **بعداً** «چک نهایی» را خواسته است. این ترتیب به معنی رضایت از پوشش نهایی یا تأیید جزئیات عملیاتی نیست. فرآیند مادر RON-DEC-007 بدون تغییر باقی است.
 
 ## ۱. نمای جامع تحویل این بسته

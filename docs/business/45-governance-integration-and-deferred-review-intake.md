@@ -1,6 +1,8 @@
 # روناس — تجمیع ساختار حاکمیت و پرونده تحویل به بررسی آتی | Structural Draft v0.15
 
-**Status:** STRUCTURAL DRAFT PACKAGE READY TO CONTINUE, **NOT FINAL REVIEW, NOT FINAL APPROVAL**.  
+**Status update 2026-10-09:** a source-linked integrated structure check is recorded in [Review 51](51-integrated-business-review-findings.md), **with unresolved blockers and no approval**. Statements below describing review as future/deferred are historical preparation notes.
+
+**Historical status:** STRUCTURAL DRAFT PACKAGE READY TO CONTINUE, NOT FINAL REVIEW, NOT FINAL APPROVAL.  
 **Direction:** RON-DEC-008 = ابتدا تکمیل ساختار، سپس بررسی نهایی؛ RON-DEC-007 = ترتیب گیت‌های توسعه محصول بدون جهش.  
 **Related:** [نقشه جامع](24-complete-business-structure-map.md)، [دفتر پوشش](28-structural-coverage-and-deferred-final-review.md)، [مدل نقش/اختیار](42-business-governance-and-authority-map.md)، [تغییر سیاست](43-business-policy-and-change-versioning.md)، [وابستگی دو موتور](44-cross-engine-dependency-and-responsibility-matrix.md).
 

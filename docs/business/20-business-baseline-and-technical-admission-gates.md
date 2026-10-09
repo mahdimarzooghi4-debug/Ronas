@@ -2,6 +2,8 @@
 
 **Status:** DRAFT / REVIEW PACKAGE — **NO ENGINE HAS PASSED ITS BUSINESS GATE**  
 
+**بازبینی پس از چهار جهت‌گیری مصوب:** [مرور یکپارچه v0.33 و نقشه Scope/Gate](57-post-macro-integrated-business-review-and-gate-map.md) با دستور کارفرما انجام شد: چهار جهت‌گیری Business همسو هستند؛ **هیچ Scope محدود هنوز Business Gate PASS ندارد و هیچ مجوز Technical/Code صادر نشده است**. دامنه‌های D0/E0 فقط نامزد تهیه پرونده Business هستند؛ FIN-001..007 و مسئولیت/حقوق/شواهد اجرای واقعی همچنان OPEN.
+
 **RON-DEC-025 — Operations and Governance strategic direction APPROVED:** پنج محور [OPS-GOV-MACRO-01](56-operations-governance-macro-business-decision-package.md) فقط در سطح Business مصوب شد: استقلال زنجیره‌های عملیاتی Domestic/Export، تفکیک پیشنهاد/مدرک/بازبینی/تصمیم صاحب اختیار/اجرا، شرکای قراردادی، رسیدگی مبتنی بر شواهد و نظارت/تغییر کنترل‌شده. **RON-OPEN-015** برای اختیارات واقعی و نمایندگی، صلاحیت متخصص/QC، قرارداد شریک و شکایت/رسیدگی و مرز داده هنوز OPEN است؛ مصوبه نه ساختار سازمانی/سیاست اجرایی است، نه ورود به Technical.
 
 **RON-DEC-024 — Integrated Finance strategic direction APPROVED:** پنج محور [FIN-MACRO-01](55-finance-macro-business-decision-package.md) با استثناها تصویب شد: استقلال P&L و جریان نقدی Domestic / هر قرارداد Export، درآمد بر مبنای قرارداد و شاهد، طبقه‌بندی سرمایه و رشد مرحله‌ای، کنترل وجوه وصولی/تعهدات/ارز، و اقتصاد واحد/ریسک. **FIN-001..007، ارقام سرمایه اولیه، مبنای حسابداری/نرخ‌ها، قرارداد بانکی/PSP و بودجه واقعی هنوز OPEN هستند؛ Finance Gate #4 نگذشته و هیچ پرداخت/Technical تأیید نشده است.**

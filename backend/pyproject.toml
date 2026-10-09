@@ -17,6 +17,10 @@ test = [
     "pytest>=8,<10",
 ]
 
+dev = [
+    "uvicorn>=0.30,<1",
+]
+
 [tool.setuptools.packages.find]
 include = ["ronas*"]
 

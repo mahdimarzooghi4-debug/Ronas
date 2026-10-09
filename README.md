@@ -13,7 +13,7 @@
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e './backend[test]'
+python -m pip install -e './backend[dev,test]'
 uvicorn ronas.app:app --reload
 # GET http://127.0.0.1:8000/api/v1/product/engines
 python -m pytest backend/tests -q

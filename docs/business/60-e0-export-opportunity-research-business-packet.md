@@ -86,3 +86,8 @@ Business Gate #3: OPEN
 **Verified market sources, country law, suppliers, buyers, authority:** NONE IN THIS PACKET.  
 **Gate #3:** **OPEN — NO SCOPED ADMISSION**.  
 **Next allowed:** دریافت و ارزیابی شواهد/حق منابع و تهیه قرارداد Business محدود پژوهش **برای تصمیم مستقل بعدی**؛ نه Technical، Code یا صادرات واقعی.
+
+
+## پیوست آماده‌سازی AI در سطح Business — سند ۶۷ / بدون انتخاب Task
+
+[سند ۶۷: نامزد وظیفه نخست آموزش و ارزیابی مستقل](67-first-ai-learning-task-and-independent-evaluation-business-packet.md) نامزد **AI-TASK-E0-RESEARCH** را صرفاً برای **کمک پژوهشی مستند** در فهم داده و پرسش‌های محصول–مقصد تعریف می‌کند. این **انتخاب کشور/محصول/HS، Dataset واقعی یا حکم بازار/قرارداد/صادرات نیست**. شواهد E0-EV-01..05، حقوق دقیق Training (متمایز از Internal Use و Redistribution طبق قواعد منبع)، بازبین متخصص، داده ارزیابی مستقل و اولین Task همچنان **OPEN/NOT VERIFIED** هستند. هیچ داده محرمانه Export یا شخصی Domestic قابل انتقال خودکار نیست؛ گیت Export #3 **OPEN**.

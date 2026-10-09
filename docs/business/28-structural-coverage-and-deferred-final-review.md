@@ -1,4 +1,4 @@
-# روناس — دفتر پوشش ساختاری و برنامه بازبینی نهاییِ موکول‌شده | Structural Draft v0.11
+# روناس — دفتر پوشش ساختاری و برنامه بازبینی نهاییِ موکول‌شده | Structural Draft v0.12
 
 **STATUS: STRUCTURE INVENTORY PREPARED / FINAL REVIEW DEFERRED / BUSINESS GATES OPEN**  
 **User direction:** ابتدا **ساختار کامل شود**، سپس **چک نهایی** انجام شود. مطابق این دستور، بررسی نهایی Business/Technical/Quality و انتخاب Stack در این مرحله انجام نمی‌شوند.  
@@ -50,6 +50,17 @@
 | تجمیع خروجی‌ها و بسته چک نهایی موکول‌شده | 33 | PREPARED / NOT REVIEWED |
 
 **نه عددی برای پوشش کامل/موفقیت ممیزی تعیین شده و نه Business Gate پاس شده است.**
+
+### افزوده v0.12 — نقشه‌های شرکا/ارزش/مدیریت
+
+| بخش | مرجع تکمیل‌شده | وضعیت بررسی |
+| --- | --- | --- |
+| شریک‌ها و نقاط همکاری Domestic/Export | [۳۴](34-partner-ecosystem-and-relationship-map.md) | MAPPED / UNVERIFIED |
+| مسئولیت قراردادی و خروجی ارزش هر رابطه | [۳۵](35-business-commercial-responsibility-map.md) | MAPPED / CONTRACTS OPEN |
+| گزارش‌ها، تعریف KPI و کیفیت داده | [۳۶](36-management-reporting-and-metric-candidates.md) | CANDIDATE METRICS / NO TARGETS |
+| اقتصاد و تفکیک ثبت مالی در گزارش‌ها | [۳۷](37-economic-flow-and-report-boundaries.md) | CONCEPTUAL / FIN-001..007 OPEN |
+
+این جدول «ساخته‌شدن سند» را گزارش می‌کند و به معنای «پاس‌شدن پوشش نهایی» نیست.
 
 ## ۳. مواردی که عمداً تصمیم یا اجرا نشده‌اند
 

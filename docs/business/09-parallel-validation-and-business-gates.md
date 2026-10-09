@@ -1,5 +1,7 @@
 # برنامه اعتبارسنجی موازی و گیت‌های Business | v0.9
 
+**وضعیت جاری پس از RON-DEC-027 (2026-10-09):** سیاست هوش کاملاً داخلی و اختصاصی روناس و نیاز به **Dataset اولیه دارای حقوق Training، یادگیری نسخه‌دار و ارتقای انسانی صریح** در [سند ۶۴](64-ronas-internal-ai-progressive-learning-business-direction.md) **APPROVED در سطح راهبرد Business** است؛ ولی روش آموزش از صفر یا Fine-tuning مدل پایه مجاز، وظیفه نخست، مجوز منابع، بازبینی متخصص، داده ارزیابی مستقل، بودجه و زیرساخت هنوز OPEN است. D0 و E0 صرفاً دو **پرونده آماده‌سازی موازی** طبق RON-DEC-026 هستند و هنوز به گیت عملیاتی راه ندارند. [Domestic #2](https://github.com/mahdimarzooghi4-debug/Ronas/issues/2)، [Export #3](https://github.com/mahdimarzooghi4-debug/Ronas/issues/3) و [Finance #4](https://github.com/mahdimarzooghi4-debug/Ronas/issues/4) **OPEN**؛ Technical/Backlog/Sprint/Code/Stage/Production مجاز نشده‌اند. این یادداشت وضع جاری را روشن می‌کند و تاریخچه پیشنهادی سند را بازنویسی نمی‌کند.
+
 **Status:** PROPOSED / NO DATES OR TARGETS APPROVED  
 **Approved direction:** طراحی Domestic و Export به‌صورت موازی، با گیت‌های مستقل. **RON-DEC-007:** تا پیش از تصویب Business/Technical/Backlog/Sprint هیچ Code جدیدی مجاز نیست؛ PR #6 در HOLD می‌ماند.
 

@@ -91,3 +91,6 @@ Business Gate #3: OPEN
 ## پیوست آماده‌سازی AI در سطح Business — سند ۶۷ / بدون انتخاب Task
 
 [سند ۶۷: نامزد وظیفه نخست آموزش و ارزیابی مستقل](67-first-ai-learning-task-and-independent-evaluation-business-packet.md) نامزد **AI-TASK-E0-RESEARCH** را صرفاً برای **کمک پژوهشی مستند** در فهم داده و پرسش‌های محصول–مقصد تعریف می‌کند. این **انتخاب کشور/محصول/HS، Dataset واقعی یا حکم بازار/قرارداد/صادرات نیست**. شواهد E0-EV-01..05، حقوق دقیق Training (متمایز از Internal Use و Redistribution طبق قواعد منبع)، بازبین متخصص، داده ارزیابی مستقل و اولین Task همچنان **OPEN/NOT VERIFIED** هستند. هیچ داده محرمانه Export یا شخصی Domestic قابل انتقال خودکار نیست؛ گیت Export #3 **OPEN**.
+
+
+**گام حقوق/متخصص E0 (بدون انتخاب Task):** [سند ۶۸](68-ai-source-rights-expert-review-and-first-task-decision-readiness.md) بین مجوز **internal AI model use** اعلام‌شده در سیاست Comtrade و بازنشر/عرضه بیرونی داده یا خروجی تمایز می‌گذارد؛ حقوق سناریوی واقعی روناس، محصول/مقصد، متخصص تجارت، داده ارزیابی و گیت #3 همچنان OPEN هستند. WITS نیز حق داده COMTRADE را خودکار تغییر نمی‌دهد.

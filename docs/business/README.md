@@ -62,6 +62,7 @@
 53. [مصوبات نظارت مستمر دیجیتال و گزارش مرحله‌محور کشت](52-domestic-continuous-digital-supervision-decisions.md): RON-DEC-012..021، برنامه اختصاصی AI با تأیید متخصص، بازنگری نسخه و **حفظ سوابق تاریخی و تأیید انسانیِ استفاده مجدد از شواهد پیشنهادی AI**، شرط‌های کیفیت و موارد باز، بدون تصویب برنامه کشت اختصاصی یا ابزار فنی.
 54. [بسته کلان مصوب Business بازار داخلی](53-domestic-macro-business-decision-package.md): پنج محور DOM-MACRO-A..E و استثناهای صریح، با **تصویب RON-DEC-022 در سطح جهت‌گیری Business**؛ گیت Domestic همچنان OPEN.
 55. [بسته کلان مصوب جهت‌گیری Business صادرات](54-export-macro-business-decision-package.md): پنج محور EXP-MACRO-A..E و استثناهای صریح با مصوبه RON-DEC-023 در سطح راهبرد؛ **گیت Export و قراردادها و مالی همچنان OPEN**.
+56. [بسته پیشنهادی مدل اقتصادی و مالی یکپارچه](55-finance-macro-business-decision-package.md): پنج محور FIN-MACRO-A..E بر اساس ممیزی FIN-001..007؛ **PROPOSED / NOT APPROVED**، بدون تصویب رقم/نرخ/پرداخت یا عبور از Finance Gate.
 
 ## اصول تفسیر
 

@@ -78,6 +78,7 @@
 66. [نقشه مقدماتی شواهد دیتاست اولیه و چرخه یادگیری](65-initial-ai-dataset-and-controlled-learning-evidence-blueprint.md): **DRAFT EVIDENCE BLUEPRINT / NOT TRAINING AUTHORIZED**؛ نامزدهای منبع D0/E0، ثبت حقوق خاص Training، منشأ/بازبینی علمی، جداسازی Evaluation، کنترل نسخه و بازآموزی تا تأیید انسانی؛ **روش کلان مدل با RON-DEC-028 تصویب شده**؛ مدل پایه دقیق/حقوق و Task اول هنوز OPEN.
 67. [غربال مدل‌های پایه Open-Weight روناس](66-open-weight-base-model-candidate-screening.md): **BUSINESS SOURCE SCREENING / NO MODEL APPROVED** — Gemma 4 12B و Qwen3.5 9B نامزدهای بررسی چندرسانه‌ای؛ Qwen3 8B معیار مقایسه متنی؛ مجوز Apache-2.0 اعلام‌شده در منابع رسمی، ولی **مجوز دقیق برای روناس، کیفیت فارسی/کشاورزی و عملکرد داخلی NOT VERIFIED**؛ تصمیم RON-DEC-028 حفظ شده، گیت‌ها OPEN.
 68. [پرونده نخستین وظیفه AI و ارزیابی مستقل](67-first-ai-learning-task-and-independent-evaluation-business-packet.md): **DRAFT BUSINESS EVIDENCE / FIRST TASK NOT SELECTED**؛ دو نامزد D0 آموزش عمومی فارسی و E0 پژوهش محصول–مقصد، پرسش‌های حق Training، بازبین متخصص، واحد جداسازی Train/Eval و نمونه‌های سناریوی خطا؛ هیچ Dataset واقعی، معیار عددی یا گیت مصوب نشده است.
+69. [حقوق داده، صلاحیت متخصص و تصمیم اولویت نخستین Task](68-ai-source-rights-expert-review-and-first-task-decision-readiness.md): **BUSINESS EVIDENCE SCREENING / NO GATE PASS**؛ تفکیک مجوز FAO/AGROVOC، FAOSTAT، Comtrade، WITS و NASA POWER؛ وضعیت مشروط AI internal use در Comtrade، اختلاف مجوز AGROVOC، شواهد کارشناسان مستقل و گزینه‌های اولویت D0/E0؛ هیچ Task/Data/Model انتخاب یا اجرا نشده است.
 
 ## اصول تفسیر
 

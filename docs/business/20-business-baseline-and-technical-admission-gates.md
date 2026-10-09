@@ -2,6 +2,8 @@
 
 **Status:** DRAFT / REVIEW PACKAGE — **NO ENGINE HAS PASSED ITS BUSINESS GATE**  
 
+**Desk source-screening 2026-10-09 — NOT ADMISSION EVIDENCE:** [غربال رسمی منابع D0/E0 و حق استفاده](62-d0-e0-official-source-screening-and-usage-rights.md) صرفاً **وجود/موضوع صفحات مرجع بیرونی و شروط عمومی دسترسی/بازنشر** را بررسی کرده است. **حق نشر/اقتباس محتوای FAO، داده واقعی محصول–مقصد، مجوز بازتوزیع UN Comtrade/FAOSTAT، انتخاب محصول/کشور و صلاحیت مرجع هنوز NOT VERIFIED** هستند؛ RON-DEC-026 همان «اولویت تهیه پرونده» می‌ماند و هیچ گیت را PASS نمی‌کند.
+
 **RON-DEC-026 — Parallel D0/E0 preparation priority APPROVED (NO GATE PASS):** طبق دستور کارفرما، آماده‌سازی موازی **[D0 آموزش عمومی غیرتجاری Domestic](59-d0-noncommercial-domestic-education-business-packet.md)** و **[E0 پژوهش فرصت محصول–مقصد Export](60-e0-export-opportunity-research-business-packet.md)** همراه با **[پیگیری مالی/حقوقی مستقل](61-finance-legal-evidence-workstreams-for-d0-e0.md)** مصوب شد. [نقشه پیگیری D0/E0](58-d0-e0-parallel-business-preparation-plan.md) فقط اجازه **تکمیل پرونده Business، درخواست/بررسی مدارک** می‌دهد؛ نه تأیید Scope نهایی، شروع آموزش/پژوهش عملی روی داده بدون مجوز، MVP، قرارداد، پرداخت، Technical، Code یا عبور از گیت. **D0 و E0 هر یک در Scope و شواهد و گیت موتور خود مستقل‌اند؛ Finance Gate #4 و FIN-001..007 بازند.**
 
 **بازبینی پس از چهار جهت‌گیری مصوب:** [مرور یکپارچه v0.33 و نقشه Scope/Gate](57-post-macro-integrated-business-review-and-gate-map.md) با دستور کارفرما انجام شد: چهار جهت‌گیری Business همسو هستند؛ **هیچ Scope محدود هنوز Business Gate PASS ندارد و هیچ مجوز Technical/Code صادر نشده است**. دامنه‌های D0/E0 فقط نامزد تهیه پرونده Business هستند؛ FIN-001..007 و مسئولیت/حقوق/شواهد اجرای واقعی همچنان OPEN.

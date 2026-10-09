@@ -84,3 +84,6 @@
 **خروجی مجاز کنونی:** تکمیل فرم شواهد/حقوق، اعتبارسنجی دامنه علمی منابع و تدوین قرارداد محدود Business برای بررسی. **خروجی غیرمجاز:** اعلام Dataset-READY، Data ingestion واقعی برای Training، انتخاب مدل/پشته/میزبان، اجرای Training/Evaluation/Production، برداشت داده خانوار/اسناد Export بدون مجوز، یا عبور از گیت‌های #2/#3/#4.
 
 **Verdict:** RON-DEC-027 STRATEGY APPROVED; EVIDENCE BLUEPRINT PREPARED ONLY; FIRST TASK & EXACT BASE MODEL/LICENSE OPEN; BUSINESS MODEL PATH B APPROVED; NO VERIFIED TRAINING DATA; NO EXECUTION AUTHORIZED.
+
+
+**تکمیل نقشه Task/Evaluation (غیرمصوب):** [پرونده ۶۷: دو نامزد D0/E0 برای نخستین وظیفه و طراحی شواهد ارزیابی مستقل](67-first-ai-learning-task-and-independent-evaluation-business-packet.md). تصمیم AI-BL-02 هنوز OPEN؛ نمونه‌های سناریو، Dataset/Label واقعی یا معیار قبولی ایجاد نشده‌اند.

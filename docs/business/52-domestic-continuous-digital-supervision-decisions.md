@@ -42,6 +42,15 @@ The user chose option 2 of the supervision-method question: Ronas follows cultiv
 
 **Still OPEN:** product-/household-specific required input and evidence, what constitutes a resolved contradiction, expert review criteria and lineage, correction submission and notification process, revised already-approved plans, escalation and time limits, AI model/evaluation, privacy/access/retention/deletion and any software contract. No Technical Admission, Code or real-world food-trade authorization.
 
+## RON-DEC-020 — post-approval input error: pause new advice from old plan; AI suggests revised version; expert reapproves (choice 3)
+**APPROVED — Domestic household cultivation plan revision direction.** The user expressly selected option 3 when an error in the information underlying an **already expert-approved household cultivation plan** is discovered: **stop using the currently approved plan as the basis for new recommendations**, **AI proposes a corrected version**, and **the qualified Ronas specialist must explicitly review and approve that revised version** before it may be treated as an authorized plan. AI may not autonomously amend, supersede or activate the old version.
+
+The data-correction and expert-data-validation principles in RON-DEC-017..019 still apply to data used for the revised proposal; the revised plan cannot be approved using unresolved missing or contradictory required information. Household reporting in RON-DEC-014 is tied to expert-approved stages, not unapproved AI revisions.
+
+**Exact scope:** Pausing a plan as a basis for *future recommendations* is **not an approved automated instruction to stop physical cultivation**, cancel completed transactions or rewrite past records. No decision yet settles whether/how to deliver independent educational/safety information while reassessment is pending; how old stage records map to the new plan; what triggers classification as a material error; notification and safety escalation; a plan-version schema or a release/AI implementation. Legal food-safety and the producer authorization plus quality gate before public sale under RON-DEC-011 remain separate.
+
+**Still OPEN:** determining real input errors and their significance; review/notice and correction evidence; specialist approval standards; the status of prior work and stage reports across plan versions; how to resume guidance; material risk escalation; data permissions, AI models/evaluations and all technical execution contracts. Domestic Business Gate remains OPEN, with no Code or Production authorization.
+
 ## Existing commitments
 - RON-DEC-009: Ronas acts as intermediary for eligible Domestic household-produce sellers.
 - RON-DEC-010: producer determines or confirms the final price; Ronas may suggest but not impose prices.

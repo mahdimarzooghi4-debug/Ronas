@@ -81,4 +81,8 @@
 
 بررسی مالی عددبه‌عدد و شیت اصلی، تحلیل بازار روز، آزمایش ایمنی، استانداردهای واقعی مقصد، بررسی حقوقی قراردادها، مصاحبه مخاطبان، ممیزی امنیت و حریم خصوصی، تست نرم‌افزار یا بررسی Code/Stage/QA **در این بررسی انجام نشده‌اند**. برای این موارد هیچ نتیجه `PASS` ادعا نشود.
 
+### پیوست تصمیم پس از بررسی — 2026-10-09
+
+**RON-DEC-009 — MARKETPLACE ROLE APPROVED FOR DOMESTIC HOUSEHOLD PRODUCE ONLY:** روناس واسطه و بازارگاه است، نه خریدار/فروشنده مجدد به حساب خود؛ خانوار تولیدکننده، فروشنده موردنظر است مشروط به احراز شرایط قانونی. این تصمیم **بخشی از RON-OPEN-005 و وجه «نقش تجاری» از REV-04** را روشن می‌کند، **نه اختیار/الگوریتم قیمت‌گذاری REV-04**. REV-03 درباره انتشار خودکار مازاد، QC، رضایت و احراز همچنان BLOCKING می‌ماند. REV-04 درباره قیمت/کارمزد **OPEN** می‌ماند. شرایط D-04 تجهیزات، D-10 پرداخت/تسویه، صحت خوراکی و گیت Domestic/Technical همچنان OPEN هستند. به دلیل اینکه عنوان پیشین DOM-DEC-06 «قیمت‌گذاری» بوده، سؤال جدید با شناسه مصوبه RON-DEC-009 ثبت شده تا معنی دو گزینه A خلط نشود.
+
 **Review outcome:** `STRUCTURAL_REVIEW_RECORDED_WITH_BLOCKING_FINDINGS`؛ `BUSINESS_GATE_OPEN`؛ `TECHNICAL_ARCHITECTURE_UNAPPROVED`. مرجع تاریخچه تصمیم، [Issue #2](https://github.com/mahdimarzooghi4-debug/Ronas/issues/2)، [#3](https://github.com/mahdimarzooghi4-debug/Ronas/issues/3) و [#4](https://github.com/mahdimarzooghi4-debug/Ronas/issues/4) هستند، نه فایل خصوصی DOCX در repo.

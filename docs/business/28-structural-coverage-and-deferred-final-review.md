@@ -1,4 +1,4 @@
-# روناس — دفتر پوشش ساختاری و برنامه بازبینی نهاییِ موکول‌شده | Structural Draft v0.14
+# روناس — دفتر پوشش ساختاری و برنامه بازبینی نهاییِ موکول‌شده | Structural Draft v0.15
 
 **STATUS: STRUCTURE INVENTORY PREPARED / FINAL REVIEW DEFERRED / BUSINESS GATES OPEN**  
 **User direction:** ابتدا **ساختار کامل شود**، سپس **چک نهایی** انجام شود. مطابق این دستور، بررسی نهایی Business/Technical/Quality و انتخاب Stack در این مرحله انجام نمی‌شوند.  
@@ -83,6 +83,16 @@
 | پرونده تجمیع حاکمیت و مطالبات بررسی پایانی | [۴۵](45-governance-integration-and-deferred-review-intake.md) | PREPARED / FINAL REVIEW DEFERRED |
 
 پوشش سندیِ این موضوعات، **نه تأیید تکمیل طرح اولیه و نه مجوز Business/Technical** است.
+
+### افزوده v0.15 — یکپارچگی و دفتر ناتمام‌ها، بدون چک نهایی
+
+| خروجی | مرجع | وضعیت دقیق |
+| --- | --- | --- |
+| نقطه ورود واحد و نقشه ۱۹ جریان دو موتور | [۴۶](46-integrated-business-structure-atlas.md) | STRUCTURE ASSEMBLED / CONTENT UNVERIFIED |
+| پیوند مسائل باز با شواهد، اسناد و گیت‌های خودشان | [۴۷](47-open-structure-gaps-and-evidence-register.md) | OPEN ITEMS INDEXED / NOT RESOLVED |
+| بسته مبنا برای بررسی نهایی آینده | [۴۸](48-structural-baseline-and-future-review-package.md) | HANDOFF PREPARED / REVIEW NOT STARTED |
+
+**شماره سند و داشتن پیوند، معیار قبولی یا صحت روایت طرح‌نامه نیست.**
 
 ## ۳. مواردی که عمداً تصمیم یا اجرا نشده‌اند
 

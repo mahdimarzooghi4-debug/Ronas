@@ -1,4 +1,4 @@
-# روناس — دفتر پوشش ساختاری و برنامه بازبینی نهاییِ موکول‌شده | Structural Draft v0.13
+# روناس — دفتر پوشش ساختاری و برنامه بازبینی نهاییِ موکول‌شده | Structural Draft v0.14
 
 **STATUS: STRUCTURE INVENTORY PREPARED / FINAL REVIEW DEFERRED / BUSINESS GATES OPEN**  
 **User direction:** ابتدا **ساختار کامل شود**، سپس **چک نهایی** انجام شود. مطابق این دستور، بررسی نهایی Business/Technical/Quality و انتخاب Stack در این مرحله انجام نمی‌شوند.  
@@ -72,6 +72,17 @@
 | پرونده انحراف، مدرک و ارجاع تخصصی | [۴۱](41-operations-evidence-and-escalation-map.md) | PROPOSED / NO INCIDENT SLA OR AUTO RULE |
 
 هیچ‌یک از این چهار سند اجرای پایلوت، تأیید قرارداد یا بستن گیت Business نیست.
+
+### افزوده v0.14 — مرجع اختیار، تغییر و وابستگی
+
+| موضوع تکمیلی | مدرک ساختاری | وضعیت |
+| --- | --- | --- |
+| جداسازی پیشنهاد، شاهد، بازبینی، تصویب و اجرا | [۴۲](42-business-governance-and-authority-map.md) | PROPOSED / NO AUTHORITY DELEGATED |
+| چرخه مفهوم تغییر سیاست/قرارداد، اثر بر سوابق | [۴۳](43-business-policy-and-change-versioning.md) | PROPOSED / NO POLICY PROMOTED |
+| ماتریس وابستگی ۱۹ جریان و توانمندسازها | [۴۴](44-cross-engine-dependency-and-responsibility-matrix.md) | MAPPED / NOT FINAL VERIFIED |
+| پرونده تجمیع حاکمیت و مطالبات بررسی پایانی | [۴۵](45-governance-integration-and-deferred-review-intake.md) | PREPARED / FINAL REVIEW DEFERRED |
+
+پوشش سندیِ این موضوعات، **نه تأیید تکمیل طرح اولیه و نه مجوز Business/Technical** است.
 
 ## ۳. مواردی که عمداً تصمیم یا اجرا نشده‌اند
 

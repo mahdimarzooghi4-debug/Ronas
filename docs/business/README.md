@@ -70,6 +70,7 @@
 60. [پرونده D0 آموزش عمومی غیرتجاری](59-d0-noncommercial-domestic-education-business-packet.md): مرز Scope، شواهد/حقوق محتوا و سناریوهای پذیرش **DRAFT / NOT ADMITTED**.
 61. [پرونده E0 پژوهش فرصت محصول–مقصد Export](60-e0-export-opportunity-research-business-packet.md): تحقیق و منابع/حقوق داده، بدون تجارت و قرارداد؛ **DRAFT / NOT ADMITTED**.
 62. [پیگیری مالی و حقوقی شواهد D0/E0](61-finance-legal-evidence-workstreams-for-d0-e0.md): FIN-001..007 و شواهد صلاحیت/محتوا/داده **REQUESTED / NOT VERIFIED**.
+63. [غربال مقدماتی منابع رسمی آموزشی/تجارت و حقوق استفاده](62-d0-e0-official-source-screening-and-usage-rights.md): بررسی وجود منابع FAO، UN Comtrade، WITS، Trade Map، FAOSTAT و WTO ePing و هشدار حق ترجمه/بازنشر؛ **SOURCE PAGE CHECKED / DOMAIN EVIDENCE & RIGHTS NOT VERIFIED**. نه محصول/مقصد انتخاب شده و نه گیت پاس شده است.
 
 ## اصول تفسیر
 

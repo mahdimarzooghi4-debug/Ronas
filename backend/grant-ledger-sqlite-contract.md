@@ -48,6 +48,46 @@ repository operation the local chain, stored head, seed, version lineage,
 grant revision, and revocation matching are checked. Untrusted state
 raises LedgerIntegrityError and denies access.
 
+## Command attestation and per-case audit revision (2026-10-10)
+
+An accepted `GRANT_REVOKED` event now records
+`access_mode=REVOCATION_COMMAND_SHA256:<payload_digest>` inside the existing
+append-only hash-linked event. This is technical metadata, **not** an
+additional grant/authority or Business decision. The synthetic grant table's
+`payload_digest` must match this exact event field on every read, reopen,
+replay and integrity check; matching SHA-256 length alone is insufficient.
+The event's `target_digest` still identifies the hashed revoked grantee;
+the exact grantee+role must exist in the immutable seeded case grants.
+
+The audit verifier walks events in sequence and checks `case_version`
+against the seeded case and `grant_revision` against the deterministic,
+case-local count of **accepted** `GRANT_REVOKED` events. Every other audit
+kind (including technical review and reads) must carry the current
+revision unchanged. This catches accidental/corrupt row-to-event lineage
+drift without promoting a Business case state.
+
+**Intentional version boundary:** an older LOCAL/TEST SQLite ledger with
+existing grant-revocation events whose `access_mode` lacks this exact
+command binding is *not* silently backfilled or accepted. Its original
+command actors are not recoverable from pseudonymous digests; recreating a
+hash from guessed values would be a false attestation. Such experimental
+data remain unadmitted and require a fresh **synthetic** fixture, never
+migration of real grants or user information. This is not a production
+upgrade plan.
+
+An optional scoped-case HTTP read whose grant/audit integrity check fails
+now responds `503 SYNTHETIC_LEDGER_UNAVAILABLE`, not a misleading
+authorized draft or an unhandled error. The existing review GET retains
+its own controlled `503 TECHNICAL_REVIEW_UNAVAILABLE` response.
+Neither endpoint releases evidence when verification fails. The default
+app remains without injected operational case stores.
+
+Six extra regression tests in
+`backend/tests/test_grant_ledger_sqlite.py` verify command hash binding,
+corrupted digest rejection, legacy-unbound history denial, canonical
+but revision-inconsistent audit rejection, forged non-seeded grantee
+rejection and controlled HTTP 503 with no leakage.
+
 ## Explicit security limitations
 
 This is a **single-host SQLite WAL reference**, not a distributed authority

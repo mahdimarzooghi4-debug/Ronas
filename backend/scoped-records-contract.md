@@ -183,6 +183,66 @@ real agronomist qualification, accessible final user wording, retention
 policy and production storage must be approved separately; Domestic
 Gate #2, Export Gate #3, Finance Gate #4 remain OPEN.
 
+## One-snapshot household technical progress list (2026-10-10)
+
+The previous owner-only `my-drafts` GET and exact-case owner status detail
+are retained. When an operator explicitly injects the **same** local
+`SqliteSyntheticHumanReviewLedger` as scoped grant and review source, a new
+GET-only `/api/v1/domestic/household-intake/my-drafts/technical-progress`
+projects each **owned** Domestic DEMO case's immutable public envelope,
+review revision, and current observed technical review state in one page.
+A plain `SqliteSyntheticGrantLedger` or default app does not mount this
+enhanced endpoint and cannot fabricate a technical-review state.
+
+`list_owned_domestic_progress()` verifies the grant, audit and technical
+review ledger, compares each case's immutable owner to the already
+Keycloak-verified `household` subject, derives review state from its exact
+durable steps, and appends one `READ_ALLOWED` event per returned row with
+access mode `HOUSEHOLD_PROGRESS_WORKLIST`. This all happens in **one**
+`BEGIN IMMEDIATE` transaction. A concurrent review response therefore
+appears in the full page's same audit-ordered snapshot or in the next page
+read; the page never mixes independently observed state from separate
+per-record reads. Audit append failure aborts the whole page and no partial
+case content is returned. The read-only route requires signed Keycloak
+authentication (401 if absent/invalid), validates keyset cursor and page
+size (422 if invalid), and returns sanitized 503 for corrupt history or
+SQLite failure.
+
+Sorting and pagination use `after_ref` and a purely technical 1–50
+page-size limit (default 20) **over owned Domestic fixtures only**.
+There is no global/unowned count, other household ID, export case,
+reviewer identity, internal request/evidence/response reference or
+audit digest. Every returned case remains `DRAFT_ONLY` with all existing
+unverified consent and agronomy flags. `HUMAN_RESPONSE_RECORDED` remains
+merely a reference to a technical response, **not** approval. A staff
+grant revocation does not change unrelated household ownership; a
+revoked browser session cannot disclose this list. Empty pages have no
+per-item read-audit event and do not prove that other owners have no
+cases.
+
+In the **same existing** shared user/partner `/` shell, a valid
+Keycloak-authenticated household now sees its cases and observed
+technical-review progress **on the same list page**, with a clear
+Persian non-approval label and links to the existing exact-owner detail.
+The UI calls the new one-snapshot ledger facade server-side, without
+client-held access token, additional frontend API rounds or new panel.
+The base ledger and plain in-memory catalogue retain their historical
+read-only listing behavior; review/owner integration remains opt-in only
+and disabled in the default runtime. CSP/no-store and HTML escaping
+remain enforced. No new login, intake, editing, evidence collection,
+AI inference, export approval, finance or real Business workflow exists.
+
+`backend/tests/test_household_progress_worklist.py` contains **14**
+offline tests covering authorized keyset pages, observed review updates,
+no private evidence, cross-owner/engine isolation, role and signed
+identity denial, invalid cursor, corrupt history, audit rollback,
+default-off and base-ledger behavior, existing shared user HTML,
+browser logout, independent staff-grant revocation, read/response
+concurrency ordering and fail-closed HTML. This is synthetic local
+single-host evidence only: no real identities, consent, lawful source
+rights, runtime distributed transaction or Production approval. Domestic
+#2, Export #3 and Finance #4 Business gates remain OPEN.
+
 ## Subsequent authoritative decisions still required
 
 Source of record ownership and grant/revocation authority, tenant and delegated

@@ -1,5 +1,6 @@
 """Durable SQLite case-grant ledger: offline recovery, races, atomic audit, isolation."""
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, replace
 from pathlib import Path
 import json
 import secrets
@@ -17,9 +18,10 @@ from ronas_api.app import create_app
 from ronas_api.auth import Principal
 from ronas_api.grant_ledger_sqlite import (
     LedgerIntegrityError, SqliteSyntheticGrantLedger,
+    REVOCATION_COMMAND_MODE, _hash, _json,
 )
 from ronas_api.keycloak import KeycloakConfig
-from ronas_api.scoped_audit import GrantConflict, GrantNotAuthorized
+from ronas_api.scoped_audit import AuditEntry, GrantConflict, GrantNotAuthorized
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
 
 ISSUER = "https://id.example.test/realms/ronas"
@@ -242,6 +244,105 @@ class PersistentGrantLedgerTests(unittest.TestCase):
             self.ledger.read("DOMESTIC", "DEMO-D-001",
                              self.domestic, as_owner=False)
 
+    def test_revocation_payload_is_attested_in_audit_event(self):
+        event = self.revoke()
+        with sqlite3.connect(self.path) as db:
+            payload, subject_hash = db.execute(
+                "SELECT payload_digest, subject_digest FROM grant_revocation"
+            ).fetchone()
+        self.assertEqual(event.access_mode, REVOCATION_COMMAND_MODE + payload)
+        self.assertEqual(event.target_digest, subject_hash)
+        self.assertEqual(self.open().audit_snapshot()[0], event)
+        self.assertTrue(self.open().verify_integrity())
+
+    def test_corrupted_revocation_payload_digest_fails_closed(self):
+        self.revoke()
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER revocation_no_update")
+            db.execute(
+                "UPDATE grant_revocation SET payload_digest=?",
+                ("f" * 64,),
+            )
+        self.assertFalse(self.ledger.verify_integrity())
+        with self.assertRaises(LedgerIntegrityError):
+            self.open()
+        with self.assertRaises(LedgerIntegrityError):
+            self.ledger.read("DOMESTIC", "DEMO-D-001",
+                             self.other, as_owner=False)
+
+    def test_legacy_unbound_revocation_cannot_be_silently_admitted(self):
+        # Simulate an older local-only row with no command binding. An old
+        # unauthenticated digest cannot safely be "upgraded" on read.
+        with self.ledger._transaction() as db:
+            db.execute(
+                "UPDATE case_revision SET revision=1 WHERE engine=? AND ref=?",
+                ("DOMESTIC", "DEMO-D-001"),
+            )
+            event = self.ledger._append(
+                db, kind="GRANT_REVOKED", engine="DOMESTIC", ref="DEMO-D-001",
+                actor="synthetic-revocation-controller",
+                target="synthetic-domestic-001",
+                action_id="DEMO-OLD-ACTION", reason_ref="DEMO-REASON-OLD",
+                mode=None,
+            )
+            db.execute(
+                "INSERT INTO grant_revocation VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("DEMO-OLD-ACTION", "DOMESTIC", "DEMO-D-001",
+                 _hash("synthetic-domestic-001"), "domestic_ops",
+                 "a" * 64, event.sequence),
+            )
+        with self.assertRaises(LedgerIntegrityError):
+            self.open()
+        self.assertFalse(self.ledger.verify_integrity())
+
+    def test_rebased_read_audit_revision_must_match_case_lineage(self):
+        self.ledger.read("DOMESTIC", "DEMO-D-001",
+                         self.domestic, as_owner=False)
+        with sqlite3.connect(self.path) as db:
+            payload = db.execute(
+                "SELECT payload FROM audit_event WHERE sequence=1"
+            ).fetchone()[0]
+            original = AuditEntry(**json.loads(payload))
+            forged = replace(original, grant_revision=1, digest="")
+            forged = replace(forged, digest=_hash(forged.canonical().decode()))
+            db.execute("DROP TRIGGER audit_no_update")
+            db.execute(
+                "UPDATE audit_event SET digest=?, payload=? WHERE sequence=1",
+                (forged.digest, _json(asdict(forged))),
+            )
+            db.execute(
+                "UPDATE metadata SET value=? WHERE key='head_digest'",
+                (forged.digest,),
+            )
+        with self.assertRaises(LedgerIntegrityError):
+            self.open()
+        self.assertFalse(self.ledger.verify_integrity())
+
+    def test_audited_revocation_of_nonseeded_grantee_fails_closed(self):
+        # Even if a local actor forges a self-consistent row and audit
+        # event, the target must still be in the immutable seeded grants.
+        with self.ledger._transaction() as db:
+            db.execute(
+                "UPDATE case_revision SET revision=1 WHERE engine=? AND ref=?",
+                ("DOMESTIC", "DEMO-D-001"),
+            )
+            event = self.ledger._append(
+                db, kind="GRANT_REVOKED", engine="DOMESTIC", ref="DEMO-D-001",
+                actor="synthetic-revocation-controller",
+                target="synthetic-stranger-001",
+                action_id="DEMO-UNKNOWN-TARGET",
+                reason_ref="DEMO-UNKNOWN-REASON",
+                mode=REVOCATION_COMMAND_MODE + "a" * 64,
+            )
+            db.execute(
+                "INSERT INTO grant_revocation VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("DEMO-UNKNOWN-TARGET", "DOMESTIC", "DEMO-D-001",
+                 _hash("synthetic-stranger-001"), "domestic_ops",
+                 "a" * 64, event.sequence),
+            )
+        with self.assertRaises(LedgerIntegrityError):
+            self.open()
+
     def test_seed_drift_does_not_silently_rebind_existing_grants(self):
         with self.assertRaises(LedgerIntegrityError):
             SqliteSyntheticGrantLedger(
@@ -319,6 +420,25 @@ class SignedAPIRevocationTests(unittest.TestCase):
         self.assertEqual(self.client.get(OWNER_PATH, headers=self.headers(
             "synthetic-household-001", ["household"],
         )).status_code, 200)
+
+    def test_tampered_revocation_returns_503_not_untrusted_draft(self):
+        self.ledger.revoke_grant(
+            engine="DOMESTIC", ref="DEMO-D-001",
+            subject="synthetic-domestic-001", role="domestic_ops",
+            actor="synthetic-revocation-controller",
+            expected_grant_revision=0,
+            action_id="DEMO-ACTION-D-001",
+            reason_ref="DEMO-REASON-D-001",
+        )
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER revocation_no_update")
+            db.execute("UPDATE grant_revocation SET payload_digest=?", ("f" * 64,))
+        headers = self.headers("synthetic-domestic-002", ["domestic_ops"])
+        response = self.client.get(DOM_PATH, headers=headers)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {"detail": "SYNTHETIC_LEDGER_UNAVAILABLE"})
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertNotIn("DEMO-REASON-D-001", response.text)
 
     def test_no_public_write_or_audit_exposure(self):
         headers = self.headers("synthetic-domestic-001",

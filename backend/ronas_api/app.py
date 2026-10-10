@@ -3,13 +3,17 @@
 These routes are not operating household/market/export endpoints. All records
 are synthetic and fixed: no live personal data ingestion or mutation routes.
 """
+import sqlite3
+
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi.responses import JSONResponse
 from .auth import AuthConfig, InvalidToken, Principal, TokenVerifier, require_role
 from .keycloak import KeycloakConfig, KeycloakTokenVerifier
 from .oidc_browser import BrowserOIDC, build_browser_router
 from .ui_bff import build_authenticated_ui_router
 from .scoped_drafts import ScopedSyntheticDraftRegistry, build_scoped_draft_router
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
+from .grant_ledger_sqlite import LedgerIntegrityError
 from .technical_review_api import build_technical_review_read_router
 
 DOMESTIC_EXAMPLE = {
@@ -32,6 +36,14 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         title="Ronas bounded read-only API foundation",
         docs_url=None, redoc_url=None, openapi_url=None,
     )
+    @app.exception_handler(LedgerIntegrityError)
+    @app.exception_handler(sqlite3.DatabaseError)
+    async def synthetic_ledger_unavailable(_request, _exc) -> JSONResponse:
+        # A corrupted optional ledger/session must not leak internals or
+        # masquerade as a successfully authorized case read.
+        return JSONResponse(status_code=503,
+                            content={"detail": "SYNTHETIC_LEDGER_UNAVAILABLE"})
+
     verifier = (KeycloakTokenVerifier(config) if isinstance(config, KeycloakConfig)
                 else TokenVerifier(config) if isinstance(config, AuthConfig)
                 else None)

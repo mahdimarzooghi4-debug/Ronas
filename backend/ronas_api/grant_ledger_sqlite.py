@@ -25,6 +25,7 @@ from .scoped_drafts import (
 )
 
 GENESIS = "0" * 64
+REVOCATION_COMMAND_MODE = "REVOCATION_COMMAND_SHA256:"
 
 
 class LedgerIntegrityError(ValueError):
@@ -190,6 +191,9 @@ class SqliteSyntheticGrantLedger(ScopedSyntheticDraftRegistry):
             raise LedgerIntegrityError("historical version seed mismatch")
         previous = GENESIS
         revoke_events = {}
+        # Exact, ordered, per-case audit revision lineage. Read and technical
+        # evidence events use the current count; revocation advances it once.
+        audit_revisions = {key: 0 for key in self._catalogue}
         for expected, (seq, preceding, digest, payload) in enumerate(
             db.execute("SELECT sequence, previous_digest, digest, payload "
                        "FROM audit_event ORDER BY sequence"), 1
@@ -204,6 +208,13 @@ class SqliteSyntheticGrantLedger(ScopedSyntheticDraftRegistry):
                     or event.digest != digest or _hash(event.canonical().decode()) != digest
                     or (event.engine, event.ref) not in self._catalogue):
                 raise LedgerIntegrityError("audit chain mismatch")
+            key = (event.engine, event.ref)
+            next_revision = audit_revisions[key] + (event.kind == "GRANT_REVOKED")
+            if (event.case_version != self._catalogue[key].version
+                    or type(event.grant_revision) is not int
+                    or event.grant_revision != next_revision):
+                raise LedgerIntegrityError("audit case/version/revision lineage mismatch")
+            audit_revisions[key] = next_revision
             if event.kind == "GRANT_REVOKED":
                 if not event.action_id or event.action_id in revoke_events:
                     raise LedgerIntegrityError("duplicate audit revoke action")
@@ -230,7 +241,14 @@ class SqliteSyntheticGrantLedger(ScopedSyntheticDraftRegistry):
                     or event is None or event.sequence != sequence
                     or event.engine != engine or event.ref != ref
                     or event.target_digest != subject_digest
-                    or len(payload_digest) != 64):
+                    or not isinstance(subject_digest, str) or len(subject_digest) != 64
+                    or not isinstance(payload_digest, str) or len(payload_digest) != 64
+                    or event.access_mode != REVOCATION_COMMAND_MODE + payload_digest
+                    or not _synthetic_ref(event.reason_ref)
+                    or not any(
+                        _hash(g.subject) == subject_digest and g.role == role
+                        for g in self._catalogue[key].grants
+                    )):
                 raise LedgerIntegrityError("revocation and audit disagree")
             count[key] += 1
             if action in revocations:
@@ -364,7 +382,7 @@ class SqliteSyntheticGrantLedger(ScopedSyntheticDraftRegistry):
             event = self._append(
                 db, kind="GRANT_REVOKED", engine=engine, ref=ref,
                 actor=actor, target=subject, action_id=action_id,
-                reason_ref=reason_ref,
+                reason_ref=reason_ref, mode=REVOCATION_COMMAND_MODE + payload,
             )
             db.execute(
                 "INSERT INTO grant_revocation VALUES (?, ?, ?, ?, ?, ?, ?)",

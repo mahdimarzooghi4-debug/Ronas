@@ -73,11 +73,36 @@ class TwoShellUXTests(unittest.TestCase):
                 self.assertNotIn(attrs.get("data-role"), {"5", "6", "8", "9", "13"})
                 self.assertNotIn(attrs.get("data-area"), {"5", "6", "8", "9", "13"})
 
-    def test_no_data_forms_scripts_or_tracking(self):
-        forbidden = {"form", "input", "textarea", "select", "button", "script",
-                     "iframe", "img", "video", "audio"}
+    def test_no_data_capture_external_tracking_or_unsafe_scripts(self):
+        forbidden = {"form", "input", "textarea", "select", "iframe",
+                     "img", "video", "audio"}
         for path in (PUBLIC, ADMIN):
-            self.assertFalse(forbidden & {tag for tag, _ in read(path).nodes})
+            doc = read(path)
+            self.assertFalse(forbidden & {tag for tag, _ in doc.nodes})
+            self.assertEqual(
+                doc.elements("script"),
+                [{"type": "module", "src": "demo-app.mjs"}],
+            )
+            self.assertTrue(all(btn.get("type") == "button"
+                                for btn in doc.elements("button")))
+            self.assertTrue(all(
+                btn.get("data-demo-action") in {
+                    "household-prepare", "domestic-clarify",
+                    "export-prepare", "export-flag", "demo-reset"
+                }
+                for btn in doc.elements("button")
+            ))
+
+    def test_synthetic_buttons_are_scoped_to_approved_shells(self):
+        for page, expected_actions in (
+            (PUBLIC, {"household-prepare"}),
+            (ADMIN, {"domestic-clarify", "export-prepare", "export-flag", "demo-reset"}),
+        ):
+            actions = {btn["data-demo-action"]
+                       for btn in read(page).elements("button")}
+            self.assertEqual(actions, expected_actions)
+        self.assertEqual(len(read(PUBLIC).elements("button")), 1)
+        self.assertEqual(len(read(ADMIN).elements("button")), 4)
 
     def test_no_remote_link_or_resources(self):
         for path in (PUBLIC, ADMIN):
@@ -92,6 +117,7 @@ class TwoShellUXTests(unittest.TestCase):
             self.assertEqual(len(csp), 1)
             self.assertIn("default-src 'none'", csp[0])
             self.assertIn("form-action 'none'", csp[0])
+            self.assertIn("script-src 'self'", csp[0])
 
     def test_local_navigation_resolves(self):
         for path in (PUBLIC, ADMIN):

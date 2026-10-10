@@ -259,7 +259,9 @@ def build_authenticated_ui_router(
             for item in result["items"]
         ]
         body = ('<ul>' + ''.join(rows) + '</ul>' if rows else
-                '<p>در این فیلتر پرونده آزمایشی متعلق به حساب وجود ندارد.</p>')
+                '<p>در این فیلتر پرونده آزمایشی متعلق به این حساب وجود ندارد.</p>'
+                if progress_enabled and technical_state != "ALL" else
+                '<p>پرونده ساختگی متعلق به این حساب وجود ندارد.</p>')
         if progress_enabled:
             state_labels = {
                 "ALL": "همه پرونده‌های من",

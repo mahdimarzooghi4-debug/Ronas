@@ -1,5 +1,12 @@
 # Ronas: signed-token backend foundation
 
+## پیش‌نمای شخصی تأمین‌کننده صادرات — فقط LOCAL/TEST
+
+در محیط مشترک کاربران روناس، نقش امضاشده `export_supplier` فقط با نمونه آزمایشی مشخص و دسترسی جاری خود می‌تواند در `/workspace/export_supplier` و `/export-supplier/my-preview` جایگاه‌های خالی اطلاعات تأمین‌کننده را ببیند. API صرفاً خواندنی: `GET /api/v1/export-supplier/my-preview`. همه فیلدهای هویت، محصول، ظرفیت، زمان دسترسی، تأسیسات و مجوز `null` هستند؛ هیچ اظهاری ثبت یا تأیید نمی‌شود و معامله/خریدار/قرارداد وجود ندارد. هیچ پنل سوم یا دسترسی به پرونده داخلی Export ایجاد نشده است.
+
+قرارداد: [export-supplier-self-preview-contract.md](export-supplier-self-preview-contract.md). آزمون‌ها: `backend/tests/test_export_supplier_self_preview.py` (۱۵ سناریوی آفلاین). وضعیت گیت‌های Business بدون تغییر است.
+
+
 ## صف پژوهش صادرات با فیلتر و صفحه‌بندی در پنل مدیریت واحد — LOCAL/TEST
 
 به‌جای گسترش زیرساخت استعلام شواهد، قابلیت عملیاتی‌نمای **مرور پرونده‌های پژوهش ساختگی** برای اپراتور صادرات اضافه شده است. از `/admin` به `/admin/export/research` می‌رسد؛ می‌تواند فقط پرونده‌های Export دارای مجوز فعال خودش را با فیلتر مراحل موجود بررسی فنی (`ALL`، `UNREQUESTED`، `EVIDENCE_REVIEW_REQUESTED` و `HUMAN_RESPONSE_RECORDED`) و صفحه‌بندی مشاهده کند و صفحه جزئیات هر پرونده را باز کند. API: `GET /api/v1/admin/export/research/cases`.

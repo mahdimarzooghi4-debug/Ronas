@@ -565,7 +565,7 @@ class ExportResearchQueueTests(unittest.TestCase):
         )
         self.assertEqual(page.status_code, 200, page.text)
         for label in ("نسخه 1", "نسخه 2", "نسخه 3", "نسخه پیشین DEMO",
-                      "نسخه فعلی DEMO", "DRAFT_ONLY", "حقوق استفاده"):
+                      "نسخه فعلی DEMO", "DRAFT_ONLY", "مجوز استفاده از منبع"):
             self.assertIn(label, page.text)
         for secret in ("DEMO-SOURCE", "synthetic-export",
                        "DEMO-QUEUE-PRIVATE", "decision_ref", "timestamp"):

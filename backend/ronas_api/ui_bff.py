@@ -20,6 +20,9 @@ from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
                                      BusinessSourceSnapshotError, SOURCE_INTEGRITY_STATE)
 from .shared_workspaces import USER_ROLES, visible_user_workspaces
 from .agronomy_workspace import SyntheticAgronomyWorkspace
+from .export_supplier_workspace import (
+    SyntheticSupplierUnavailable, SyntheticSupplierWorkspace,
+)
 from .domestic_preparation_preview import (
     REVIEW_STATES, domestic_preparation_preview,
 )
@@ -159,6 +162,7 @@ def build_authenticated_ui_router(
     gate_handoff_ledger: SqliteSyntheticGateEvidenceHandoff | None = None,
     authority_enquiry_ledger: SqliteSyntheticAuthorityEnquiryLedger | None = None,
     agronomy_workspace: SyntheticAgronomyWorkspace | None = None,
+    export_supplier_workspace: SyntheticSupplierWorkspace | None = None,
 ) -> APIRouter:
     # Only the opt-in same-instance ledger injected by create_app may
     # provide the synthetic worklist. Never trust a client-side role list.
@@ -183,6 +187,9 @@ def build_authenticated_ui_router(
                  or technical_review_ledger is None
                  or agronomy_workspace.ledger is not technical_review_ledger)):
         raise ValueError("agronomy needs the same explicit human-review ledger")
+    if (export_supplier_workspace is not None
+            and not isinstance(export_supplier_workspace, SyntheticSupplierWorkspace)):
+        raise ValueError("explicit synthetic supplier workspace required")
     router = APIRouter()
     cookie_name = "__Host-ronas_session"
 
@@ -272,6 +279,7 @@ def build_authenticated_ui_router(
                 and owned_case_ledger is technical_review_ledger
             ),
             agronomy_cases=agronomy_workspace is not None,
+            export_supplier_preview=export_supplier_workspace is not None,
         )
         assigned = next((w for w in active if w["role"] == role), None)
         if assigned is None:
@@ -299,6 +307,25 @@ def build_authenticated_ui_router(
                    + quote(listing["next_cursor"])
                    + '">ادامه پرونده‌ها</a></p>'
                    if listing["next_cursor"] else '')
+            )
+        elif role == "export_supplier" and export_supplier_workspace is not None:
+            try:
+                preview = export_supplier_workspace.own_preview(
+                    Principal(session.subject, session.roles)
+                )
+            except SyntheticSupplierUnavailable as exc:
+                raise HTTPException(
+                    503, detail="SUPPLIER_PREVIEW_UNAVAILABLE",
+                ) from exc
+            local_read = (
+                '<h3>پیش‌نمای شخصی تأمین‌کننده صادرات (فقط DEMO)</h3>'
+                '<p>این نمای شخصی، هویت، ظرفیت، مجوز یا اظهار واقعی نیست.</p>'
+                + (
+                    '<p><a href="/export-supplier/my-preview">'
+                    'مشاهده پیش‌نمای آماده‌سازی تأمین‌کننده</a></p>'
+                    if preview is not None else
+                    '<p>نمونه آزمایشی دارای مجوز فعلی موجود نیست.</p>'
+                )
             )
         else:
             local_read = (
@@ -348,6 +375,52 @@ def build_authenticated_ui_router(
                 '</article>'
             )
             return page("روناس — فضای کار کارشناس کشاورزی (آزمایشی)",
+                        body, logged_in=True)
+
+    if export_supplier_workspace is not None:
+        @router.get("/export-supplier/my-preview")
+        def supplier_personal_preview(
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            try:
+                view = export_supplier_workspace.own_preview(
+                    Principal(session.subject, session.roles)
+                )
+            except SyntheticSupplierUnavailable as exc:
+                raise HTTPException(
+                    503, detail="SUPPLIER_PREVIEW_UNAVAILABLE",
+                ) from exc
+            if view is None:
+                raise HTTPException(404, detail="PREVIEW_NOT_FOUND")
+            fields = (
+                "هویت حرفه‌ای", "محصولات", "ظرفیت تأمین",
+                "زمان دسترسی", "تأسیسات", "مجوزهای صادراتی",
+            )
+            slots = ''.join(
+                '<li>' + escape(label) + ': ثبت نشده</li>'
+                for label in fields
+            )
+            body = (
+                '<article class="panel"><h2>پیش‌نمای شخصی تأمین‌کننده '
+                '(فقط آزمایشی)</h2>'
+                '<p>شناسه نمونه: ' + escape(view["profile_ref"])
+                + ' — نسخه ' + str(view["profile_version"]) + '</p>'
+                '<p>وضعیت: NOT_SUBMITTED_DEMO؛ اطلاعاتی ارسال نشده است.</p>'
+                '<h3>جایگاه‌های آماده‌سازی اظهار تأمین‌کننده</h3>'
+                '<ul>' + slots + '</ul>'
+                '<p>هیچ هویت حرفه‌ای، ظرفیت واقعی، مجوز، حق استفاده '
+                'از منبع یا صلاحیت تجاری تأیید نشده است.</p>'
+                '<p>خریدار، قیمت، سفارش، معامله، پرداخت و قرارداد فعال نیستند.'
+                ' این صفحه فقط نمایش است و اطلاعات دریافت نمی‌کند.</p>'
+                '<p><a href="/workspace/export_supplier">'
+                'بازگشت به فضای تأمین‌کننده</a></p>'
+                '</article>'
+            )
+            return page("روناس — پیش‌نمای تأمین‌کننده صادرات (DEMO)",
                         body, logged_in=True)
 
     @router.get("/")

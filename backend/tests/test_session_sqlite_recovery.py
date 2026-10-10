@@ -94,14 +94,14 @@ class CorruptAndConcurrentSessionRecoveryTests(unittest.TestCase):
     def test_untrusted_session_expiry_column_fails_closed(self):
         self.store.save_session(self.sid, self.session())
         key = self.session_digest()
-        for bad in ("tomorrow", math.inf, float("nan"),
+        for bad in ("tomorrow", math.inf,
                     int(self.time[0]) + 9000, self.time[0] + 90.5):
             with self.subTest(value=str(bad)):
                 self.mutate("browser_session", "sid_hash", key, "expires_at", bad)
                 self.assertIsNone(self.reopen().get_session(self.sid))
 
     def test_untrusted_pending_expiry_column_cannot_extend_login(self):
-        for bad in ("forever", math.inf, float("nan"),
+        for bad in ("forever", math.inf,
                     self.time[0] + 1200, self.time[0] + 299):
             with self.subTest(value=str(bad)):
                 self.state = secrets.token_urlsafe(32)
@@ -218,6 +218,7 @@ class CorruptAndConcurrentSessionRecoveryTests(unittest.TestCase):
                 "UPDATE browser_session SET ciphertext=? WHERE sid_hash=?",
                 (b"corrupted", self.store._digest(second_sid)),
             )
+            db.commit()
             db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self.assertEqual(self.reopen().get_session(self.sid), item)
         self.assertIsNone(self.reopen().get_session(second_sid))

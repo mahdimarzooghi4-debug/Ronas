@@ -208,6 +208,11 @@ class SqliteSyntheticGrantLedger(ScopedSyntheticDraftRegistry):
                 if not event.action_id or event.action_id in revoke_events:
                     raise LedgerIntegrityError("duplicate audit revoke action")
                 revoke_events[event.action_id] = event
+            elif event.kind in ("TECH_REVIEW_REQUESTED", "TECH_HUMAN_RESPONSE_RECORDED"):
+                # A base ledger must never ignore review actions without their
+                # coupled review-history consistency verifier.
+                if type(self) is SqliteSyntheticGrantLedger:
+                    raise LedgerIntegrityError("review events require review-aware ledger")
             elif event.kind not in ("READ_ALLOWED", "READ_DENIED"):
                 raise LedgerIntegrityError("unsupported audit event")
             previous = digest

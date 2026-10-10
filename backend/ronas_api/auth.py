@@ -80,9 +80,12 @@ class TokenVerifier:
                 issuer=self.config.issuer,
                 audience=self.config.audience,
                 options={"require": ["sub", "iss", "aud", "exp", "iat", "nbf"],
-                         "verify_exp": True, "verify_nbf": True, "verify_iat": True},
+                         "verify_exp": True, "verify_nbf": True, "verify_iat": True,
+                         "strict_aud": True},
                 leeway=0,
             )
+            if any(type(payload.get(name)) is not int for name in ("exp", "iat", "nbf")):
+                raise InvalidToken
             subject = payload.get("sub")
             roles = payload.get("ronas_roles")
             if not isinstance(subject, str) or not subject.strip() or len(subject) > 256:

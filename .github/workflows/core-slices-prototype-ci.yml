@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   prototype-contracts:
-    name: Python 3.12 synthetic contracts
+    name: Python 3.12 synthetic and two-shell static UX contracts
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

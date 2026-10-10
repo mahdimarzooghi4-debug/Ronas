@@ -126,3 +126,38 @@ suitability threshold or AI-generated planting plan may be inferred.
 Business #2 Domestic / #3 Export / #4 Finance gates remain OPEN.
 PR #1 and #9 remain Draft/Open/Unmerged. No Stage, QA Gate,
 Release, Production or Merge without explicit authorization.
+
+## Observed technical-state queue filters (LOCAL/TEST, 2026-10-11)
+
+The existing single shared-user agronomy worklist now supports **only**
+`technical_state=ALL|UNREQUESTED|EVIDENCE_REVIEW_REQUESTED|HUMAN_RESPONSE_RECORDED`
+on `GET /api/v1/agronomy/assigned-drafts` and
+`GET /workspace/agronomy_expert`. The default remains `ALL`.
+
+- State comes exclusively from the verified, persisted technical-review
+  steps of the *same* synthetic Domestic case used in its detail timeline,
+  never predicted or inferred from household inputs.
+- The signed `agronomy_expert` role, exact-case/version synthetic assignment
+  and literal-true **current** assignment check apply **before** filtering
+  and keyset pagination. The response discloses no counts of hidden cases.
+- `after_ref` is a synthetic ref cursor over the filtered authorized
+  sequence, with `limit` bounded to 1..50; changing a filter starts a new
+  page. The Persian RTL links preserve the active filter on next-page
+  navigation and never expose private review source/evidence/actor refs.
+- Invalid filters/cursors return 422; ledger integrity/current authority
+  failure returns 503 without a partial queue. An unassigned or revoked
+  case disappears on the next request, including under a still-valid JWT.
+- The list and links are **GET-only**, use the existing Keycloak/cookie
+  boundaries and append-only read-audit, and remain default-off unless the
+  synthetic workspace is explicitly injected.
+
+`HUMAN_RESPONSE_RECORDED` means only that a technical reference was
+recorded. It does **not** establish professional qualifications, verified
+consent, scientific approval, cultivation readiness or a planting plan.
+The fixture crop/area/water/soil/location are still `null`; no form,
+write command, trade, real case or new UI environment was added.
+
+Regression suite: `backend/tests/test_agronomy_workspace.py` (six new
+filter/lifecycle/pagination/revocation/UI/fail-closed cases). The earlier
+security boundaries, Business OPEN gates and Draft PR state are unchanged.
+

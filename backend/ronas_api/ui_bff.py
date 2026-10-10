@@ -20,6 +20,7 @@ from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
                                      BusinessSourceSnapshotError, SOURCE_INTEGRITY_STATE)
 from .shared_workspaces import USER_ROLES, visible_user_workspaces
 from .gate_evidence_handoff_sqlite import SqliteSyntheticGateEvidenceHandoff
+from .gate_evidence_authority_enquiry_sqlite import SqliteSyntheticAuthorityEnquiryLedger
 ADMIN_ROLES = {
     "domestic_ops": "عملیات داخلی",
     "export_ops": "عملیات صادرات",
@@ -85,6 +86,7 @@ def build_authenticated_ui_router(
     technical_review_ledger: SqliteSyntheticHumanReviewLedger | None = None,
     owned_case_ledger: SqliteSyntheticGrantLedger | None = None,
     gate_handoff_ledger: SqliteSyntheticGateEvidenceHandoff | None = None,
+    authority_enquiry_ledger: SqliteSyntheticAuthorityEnquiryLedger | None = None,
 ) -> APIRouter:
     # Only the opt-in same-instance ledger injected by create_app may
     # provide the synthetic worklist. Never trust a client-side role list.
@@ -98,6 +100,12 @@ def build_authenticated_ui_router(
             and not isinstance(gate_handoff_ledger,
                                SqliteSyntheticGateEvidenceHandoff)):
         raise ValueError("technical gate handoff requires explicit synthetic ledger")
+    if (authority_enquiry_ledger is not None
+            and (not isinstance(authority_enquiry_ledger,
+                                SqliteSyntheticAuthorityEnquiryLedger)
+                 or gate_handoff_ledger is None
+                 or authority_enquiry_ledger.handoff is not gate_handoff_ledger)):
+        raise ValueError("authority enquiry requires same explicit handoff ledger")
     router = APIRouter()
     cookie_name = "__Host-ronas_session"
 
@@ -331,6 +339,7 @@ def build_authenticated_ui_router(
         verify_pinned_business_sources()
         current = dossier_detail(allowed)
         handoff_states: dict[str, str] = {}
+        enquiry_states: dict[str, str] = {}
         preflight_notice = ""
         if gate_handoff_ledger is not None:
             preflight = gate_handoff_ledger.preflight_worklist(
@@ -344,6 +353,21 @@ def build_authenticated_ui_router(
                 '<p>کنترل پذیرش شواهد: مسدود؛ اصالت منشأ، حق استفاده '
                 'و صلاحیت بازبین تأیید نشده است. حتی تطبیق هش DEMO '
                 'برای تأیید Business کافی نیست.</p>'
+            )
+        if authority_enquiry_ledger is not None:
+            enquiry = authority_enquiry_ledger.read_check_status(
+                Principal(session.subject, session.roles), domain,
+            )
+            grouped = {}
+            for item in enquiry["items"]:
+                if item["technical_state"] != "NO_REQUEST":
+                    grouped.setdefault(item["evidence_id"], []).append(
+                        item["check_kind"] + ": " + item["technical_state"]
+                    )
+            enquiry_states = {ref: "؛ ".join(parts) for ref, parts in grouped.items()}
+            preflight_notice += (
+                '<p>ارجاع‌های بررسی مرجع معتبر فقط فنی هستند؛ '
+                'تأیید واقعی منشأ، حقوق یا صلاحیت بازبین هنوز وجود ندارد.</p>'
             )
         # All URLs are derived exclusively from pinned repository constants,
         # not from a query or arbitrary user-provided source path.
@@ -362,6 +386,8 @@ def build_authenticated_ui_router(
             + (' · پیگیری ارجاع فنی: '
                + escape(handoff_states[e["id"]])
                if e["id"] in handoff_states else '')
+            + (' · پیگیری استعلام فنی: ' + escape(enquiry_states[e["id"]])
+               if e["id"] in enquiry_states else '')
             + '</li>'
             for e in current["evidence_items"]
         )

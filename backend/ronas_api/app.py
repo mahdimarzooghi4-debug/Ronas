@@ -5,6 +5,7 @@ are synthetic and fixed: no live personal data ingestion or mutation routes.
 """
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from .auth import AuthConfig, InvalidToken, Principal, TokenVerifier, require_role
+from .keycloak import KeycloakConfig, KeycloakTokenVerifier
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -18,12 +19,14 @@ EXPORT_EXAMPLE = {
     "buyer_verified": False, "contracted": False, "source": "SYNTHETIC_ONLY",
 }
 
-def create_app(config: AuthConfig | None = None) -> FastAPI:
+def create_app(config: AuthConfig | KeycloakConfig | None = None) -> FastAPI:
     app = FastAPI(
         title="Ronas bounded read-only API foundation",
         docs_url=None, redoc_url=None, openapi_url=None,
     )
-    verifier = TokenVerifier(config) if config is not None else None
+    verifier = (KeycloakTokenVerifier(config) if isinstance(config, KeycloakConfig)
+                else TokenVerifier(config) if isinstance(config, AuthConfig)
+                else None)
 
     @app.middleware("http")
     async def security_response_headers(request, call_next):
@@ -94,5 +97,6 @@ def create_app(config: AuthConfig | None = None) -> FastAPI:
     return app
 
 
-# Default app is fail-closed until a real issuer, audience and PUBLIC key are configured.
-app = create_app(AuthConfig.from_environment())
+# Default runtime admits ONLY the approved Keycloak profile, not legacy generic OIDC.
+# Missing real Keycloak issuer and operator-mounted PUBLIC JWKS deny every protected route.
+app = create_app(KeycloakConfig.from_environment())

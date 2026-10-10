@@ -76,3 +76,8 @@
 - ⛔ هیچ Scope برای پذیرش واقعی #2/#3/#4، هیچ Technical contract، Product Backlog، Sprint، API، کد، استقرار، معامله یا حسابداری فعال نشده است.
 
 **Final verdict:** CORE PRODUCT GATE PACKAGE **READY FOR OWNER BUSINESS REVIEW**, all evidence shortcomings explicitly OPEN; PR #1 Draft/Open/Unmerged, PR #6 HOLD, PR #8 discovery. Process: Business → Technical → Scrum/Product Backlog → Sprint → Code → Code Review → Stage → QA → Release → Production → Monitoring → Improvement.
+
+
+## بسته تصمیم یکپارچه محدود — سند ۷۳
+
+[برگه CORE-D1/CORE-E0 با قراردادهای نامزد و سناریوهای پذیرش/رد](73-core-d1-e0-limited-scope-gate-decision-sheet.md) برای تصمیم **تقدم تکمیل دو پرونده گیت Business** ایجاد شد. این پرونده نه انتخاب خودکار MVP است و نه تصویب Scope عملیاتی؛ CORE-D2 و CORE-E1 فقط پس از شواهد/گیت مستقل فروش، QC، قرارداد و مالی قابل بررسی برای اجرا هستند. **Business Gate #2/#3/#4 OPEN؛ Technical/Code BLOCKED.**

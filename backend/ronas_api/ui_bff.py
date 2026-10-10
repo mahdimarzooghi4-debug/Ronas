@@ -188,6 +188,7 @@ def build_authenticated_ui_router(
     def user_role_workspace(
         role: str,
         sid: str | None = Cookie(default=None, alias=cookie_name),
+        after_ref: str | None = None,
     ) -> HTMLResponse:
         try:
             session = flow.session(sid)
@@ -207,7 +208,8 @@ def build_authenticated_ui_router(
             raise HTTPException(404, detail="WORKSPACE_NOT_FOUND")
         if role == "agronomy_expert" and agronomy_workspace is not None:
             listing = agronomy_workspace.list_assigned_cases(
-                Principal(session.subject, session.roles), limit=20,
+                Principal(session.subject, session.roles),
+                after_ref=after_ref, limit=20,
             )
             links = ''.join(
                 '<li><a href="/agronomy/assigned-drafts/'

@@ -2,6 +2,8 @@
 
 **Status:** DRAFT / REVIEW PACKAGE — **NO ENGINE HAS PASSED ITS BUSINESS GATE**  
 
+**NEXT BOUNDED GATE-REVIEW REQUEST (2026-10-10; OWNER CHOICE STILL PENDING):** [برگه تصمیم ۷۳ — CORE-D1 + CORE-E0](73-core-d1-e0-limited-scope-gate-decision-sheet.md) دو دامنه نامزد را با **سناریوهای پذیرش و شواهد واقعی موردنیاز** جدا کرده است. فقط پس از تصویب صریح *اولویت رسیدگی به Scope* و سپس **قبولی مستقل گیت** می‌توان Technical را بررسی کرد. **هیچ Scope، Business Gate یا Code مجاز نشده**.  
+
 **CORE BUSINESS PRODUCT FOCUS (2026-10-10; NO NEW SCOPE APPROVAL):** برای کارهای اصلی، پرونده‌های [Domestic 70](70-core-domestic-operational-scope-and-business-acceptance.md)، [Export 71](71-core-export-operational-contract-and-readiness.md) و [Critical Path / Finance 72](72-core-delivery-critical-path-and-business-gate-readiness.md) در سطح **نامزد تصمیم Scope محدود** آماده‌اند. CORE-D1/D2 و CORE-E0/E1 *MVP منتخب نیستند*؛ گیت‌های #2/#3/#4 **OPEN**، هیچ Technical Admission/Code/Training/تجارت واقعی صورت نگرفته است.  
 
 **RON-DEC-029 — D0-FIRST AI EVIDENCE PREPARATION ONLY; E0 INDEPENDENT PARALLEL CONTINUES (2026-10-10):** صاحب کسب‌وکار فقط **ترتیب آماده‌سازی Business** را تصویب کرد؛ D0-EV-01..05 و شواهد حقوق/متخصص/Evaluation در اولویت‌اند و E0-EV-01..05 با مسیر مستقل خود ادامه دارند. [برنامه ۶۹](69-d0-first-evidence-execution-plan-e0-parallel.md). **AI-BL-02 در بخش ترتیب آماده‌سازی حل شده ولی انتخاب واقعی نخستین Training Task، Scope، حقوق داده، Dataset/Model، هزینه، متخصص و گیت‌ها OPEN است.** Domestic #2، Export #3 و Finance #4 OPEN؛ **ورود به Technical/Backlog/Sprint/Code/Training/Stage/Production مجاز نیست**.  

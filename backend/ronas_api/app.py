@@ -143,6 +143,11 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                 isinstance(technical_review_ledger, SqliteSyntheticHumanReviewLedger)
                 and scoped_registry is technical_review_ledger
             ),
+            agronomy_cases=(
+                isinstance(agronomy_workspace, SyntheticAgronomyWorkspace)
+                and agronomy_workspace.ledger is technical_review_ledger
+                and scoped_registry is technical_review_ledger
+            ),
         ))
 
     if gate_handoff_ledger is not None:

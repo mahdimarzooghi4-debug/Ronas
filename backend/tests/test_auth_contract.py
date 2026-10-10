@@ -144,6 +144,9 @@ class APIAccessTests(unittest.TestCase):
             {"ronas_roles": []}, {"ronas_roles": "export_ops"},
             {"ronas_roles": ["export_ops", "export_ops"]},
             {"ronas_roles": ["unknown_role"]},
+            {"aud": [AUD, "another-api"]},
+            {"aud": [AUD]},
+            {"iat": "123"}, {"nbf": "123"}, {"exp": "9876543210"},
         ]
         for changes in cases:
             with self.subTest(changes=changes):

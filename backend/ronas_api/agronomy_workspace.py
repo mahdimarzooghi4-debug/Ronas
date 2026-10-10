@@ -90,6 +90,9 @@ class SyntheticAgronomyWorkspace:
             review_revision=len(steps),
             technical_review_state=STATES[len(steps)],
             valid_review_states=STATES,
+            observed_review_steps=tuple(
+                item.stage for item in steps
+            ),
         )
         return {
             "ref": ref,

@@ -25,10 +25,14 @@ def build_agronomy_workspace_router(
     def assigned_cases(
         after_ref: str | None = Query(default=None),
         limit: int = Query(default=20, ge=1, le=50),
+        technical_state: str = Query(default="ALL"),
         p: Principal = Depends(verified_principal),
     ) -> dict:
         try:
-            return workspace.list_assigned_cases(p, after_ref=after_ref, limit=limit)
+            return workspace.list_assigned_cases(
+                p, after_ref=after_ref, limit=limit,
+                technical_state=technical_state,
+            )
         except (LedgerIntegrityError, sqlite3.Error) as exc:
             raise HTTPException(
                 status_code=503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",

@@ -313,6 +313,61 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             )
             return result
 
+    def list_export_research_cases(
+        self, principal: Principal, *, technical_state: str = "ALL",
+        after_ref: str | None = None, limit: int = 20,
+    ) -> dict:
+        """One audited, exact-grant Export research queue for LOCAL/TEST.
+
+        The filter is *technical review state*, never an inferred research
+        result, research readiness, Business approval, buyer or trade state.
+        Apply current grants and the requested filter BEFORE pagination.
+        Unknown and unassigned cases never influence cursor or counts.
+        """
+        choices = frozenset({"ALL", *STATES})
+        if (technical_state not in choices
+                or type(limit) is not int or not 1 <= limit <= 50
+                or after_ref is not None and not _synthetic_ref(after_ref)):
+            raise ValueError("invalid synthetic Export research queue query")
+        with self._transaction() as db:
+            self._verify(db)
+            selected: list[tuple[str, int, str, int]] = []
+            if (isinstance(principal, Principal)
+                    and _synthetic_subject(principal.subject)
+                    and "export_ops" in principal.roles):
+                for (engine, ref), record in sorted(self._catalogue.items()):
+                    if (engine != "EXPORT"
+                            or after_ref is not None and ref <= after_ref
+                            or not self._active_operator(db, "EXPORT", ref, principal)):
+                        continue
+                    steps = self._steps(db, "EXPORT", ref)
+                    observed = STATES[len(steps)]
+                    if technical_state == "ALL" or observed == technical_state:
+                        selected.append((ref, record.version, observed, len(steps)))
+            items = []
+            for ref, version, state, revision in selected[:limit]:
+                items.append({
+                    "ref": ref, "engine": "EXPORT",
+                    "case_version": version,
+                    "case_status": "DRAFT_ONLY",
+                    "technical_review_state": state,
+                    "review_revision": revision,
+                    "research_question_defined": False,
+                    "source_rights_verified": False,
+                    "research_report_approved": False,
+                    "business_actions_enabled": False,
+                })
+                self._append(
+                    db, kind="READ_ALLOWED", engine="EXPORT", ref=ref,
+                    actor=principal.subject, mode="EXPORT_RESEARCH_CASE_QUEUE",
+                )
+            return {
+                "engine": "EXPORT",
+                "technical_state_filter": technical_state,
+                "items": items,
+                "next_cursor": items[-1]["ref"] if len(selected) > limit else None,
+            }
+
     def read_export_research_workspace(
         self, ref: str, principal: Principal,
     ) -> dict | None:

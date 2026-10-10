@@ -1,5 +1,12 @@
 # Ronas: signed-token backend foundation
 
+## صف فیلترشونده کارشناس کشاورزی — فقط LOCAL/TEST
+
+در محیط مشترک کارشناس کشاورزی، `/workspace/agronomy_expert` و API خواندنی `GET /api/v1/agronomy/assigned-drafts` اکنون فیلتر `technical_state` دارند: `ALL` (پیش‌فرض)، `UNREQUESTED`، `EVIDENCE_REVIEW_REQUESTED` و `HUMAN_RESPONSE_RECORDED`. صفحه‌بندی و لینک‌های فارسی وضعیت فیلتر را حفظ می‌کنند. فقط مرحله فنی واقعاً ثبت‌شده پس از احراز نقش امضاشده و تخصیص معتبر **جاری** هر پرونده نمایش داده می‌شود؛ بدون شمارش پرونده‌های پنهان یا انتشار مراجع خصوصی. وضعیت «پاسخ فنی ثبت‌شده» تأیید علمی یا مجوز طرح کشت نیست؛ داده‌های کشت همچنان نامشخص، و عملیات Business غیرفعال است.
+
+قرارداد: [agronomy-shared-workspace-contract.md](agronomy-shared-workspace-contract.md)؛ شش سناریوی رگرسیون جدید در `backend/tests/test_agronomy_workspace.py`. هیچ پنل جدید، عملیات نوشتن، داده واقعی یا تصمیم Business اضافه نشده است.
+
+
 ## پیش‌نمای شخصی تأمین‌کننده صادرات — فقط LOCAL/TEST
 
 در محیط مشترک کاربران روناس، نقش امضاشده `export_supplier` فقط با نمونه آزمایشی مشخص و دسترسی جاری خود می‌تواند در `/workspace/export_supplier` و `/export-supplier/my-preview` جایگاه‌های خالی اطلاعات تأمین‌کننده را ببیند. API صرفاً خواندنی: `GET /api/v1/export-supplier/my-preview`. همه فیلدهای هویت، محصول، ظرفیت، زمان دسترسی، تأسیسات و مجوز `null` هستند؛ هیچ اظهاری ثبت یا تأیید نمی‌شود و معامله/خریدار/قرارداد وجود ندارد. هیچ پنل سوم یا دسترسی به پرونده داخلی Export ایجاد نشده است.

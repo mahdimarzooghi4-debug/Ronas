@@ -190,8 +190,16 @@ class SyntheticGateHandoffTests(unittest.TestCase):
         with self.assertRaises(HandoffConflict):
             self.respond()
         self.record()
-        with self.assertRaises(HandoffConflict):
+        # The current explicit checker policy first denies the maker.
+        with self.assertRaises(HandoffNotAuthorized):
             self.respond(principal=self.maker)
+        # Even an intentionally permissive LOCAL/TEST reviewer policy
+        # must not bypass the durable maker/checker separation.
+        permissive = SqliteSyntheticGateEvidenceHandoff(
+            self.path, trusted_review_authorizer=lambda *_: True,
+        )
+        with self.assertRaises(HandoffConflict):
+            self.respond(permissive, principal=self.maker)
         self.assertTrue(self.reopen().verify_integrity())
 
     def test_invalid_revision_reference_and_provenance_input_rejected(self):

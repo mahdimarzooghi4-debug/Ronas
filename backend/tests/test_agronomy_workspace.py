@@ -408,6 +408,207 @@ class AgronomyWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.client.get(DETAIL).status_code, 404)
 
 
+    def owner_status(self, *, ref="DEMO-D-001",
+                     subject="synthetic-household-001"):
+        return self.client.get(
+            "/api/v1/domestic/household-intake/my-drafts/"
+            + ref + "/technical-status",
+            headers=self.headers(subject=subject, roles=("household",)),
+        )
+
+    def test_shared_preparation_contract_is_identical_for_owner_and_expert(self):
+        owner = self.owner_status()
+        expert = self.client.get(ROOT + "/DEMO-D-001", headers=self.headers())
+        self.assertEqual(owner.status_code, 200, owner.text)
+        self.assertEqual(expert.status_code, 200, expert.text)
+        left, right = owner.json(), expert.json()
+        self.assertEqual(left["cultivation_preparation"],
+                         right["cultivation_preparation"])
+        preparation = left["cultivation_preparation"]
+        self.assertEqual(preparation["contract_version"],
+                         "ronas.domestic.preparation-preview.v1")
+        self.assertEqual(preparation["case_version"], 2)
+        self.assertEqual(preparation["technical_review_state"], "UNREQUESTED")
+        self.assertEqual(preparation["review_revision"], 0)
+        self.assertEqual(preparation["input_state"], "NOT_RECORDED_IN_DEMO")
+        self.assertEqual(preparation["cultivation_inputs"], {
+            "crop": None, "growing_area": None, "water": None,
+            "soil": None, "location": None,
+        })
+        self.assertEqual(preparation["plan_state"], "NOT_AUTHORED")
+        self.assertFalse(preparation["scientific_review_approved"])
+        self.assertFalse(preparation["agronomist_qualification_verified"])
+        self.assertFalse(preparation["purpose_consent_verified"])
+        self.assertFalse(preparation["business_actions_enabled"])
+        self.assertEqual(right["cultivation_inputs"],
+                         preparation["cultivation_inputs"])
+        self.assertEqual(right["plan_state"], preparation["plan_state"])
+        self.assertNotIn("synthetic-agronomist", owner.text)
+        self.assertNotIn("synthetic-household", expert.text)
+
+    def test_shared_preparation_follows_only_observed_review_stages(self):
+        maker = Principal("synthetic-ops-001", frozenset({"domestic_ops"}))
+        reviewer = Principal("synthetic-ops-reviewer", frozenset({"domestic_ops"}))
+        self.ledger.request_evidence_review(
+            engine="DOMESTIC", ref="DEMO-D-001", actor=maker,
+            expected_case_version=2, expected_review_revision=0,
+            action_id="DEMO-SHARED-PREVIEW-REQUEST",
+            request_ref="DEMO-SHARED-PREVIEW-REF",
+            evidence_ref="DEMO-SHARED-PREVIEW-EVIDENCE",
+        )
+        first = self.owner_status().json()["cultivation_preparation"]
+        self.assertEqual(first["technical_review_state"],
+                         "EVIDENCE_REVIEW_REQUESTED")
+        self.assertEqual(first["review_revision"], 1)
+        self.assertEqual(first, self.client.get(
+            ROOT + "/DEMO-D-001", headers=self.headers()
+        ).json()["cultivation_preparation"])
+        self.ledger.record_human_response(
+            engine="DOMESTIC", ref="DEMO-D-001", actor=reviewer,
+            expected_case_version=2, expected_review_revision=1,
+            action_id="DEMO-SHARED-PREVIEW-RESPONSE",
+            request_ref="DEMO-SHARED-PREVIEW-REF",
+            evidence_ref="DEMO-SHARED-PREVIEW-RESPONSE-EVIDENCE",
+            decision_ref="DEMO-SHARED-PREVIEW-PRIVATE-NOTE",
+        )
+        final = self.owner_status().json()["cultivation_preparation"]
+        self.assertEqual(final["technical_review_state"],
+                         "HUMAN_RESPONSE_RECORDED")
+        self.assertEqual(final["review_revision"], 2)
+        self.assertEqual(final, self.client.get(
+            ROOT + "/DEMO-D-001", headers=self.headers()
+        ).json()["cultivation_preparation"])
+        self.assertTrue(all(v is None for v in final["cultivation_inputs"].values()))
+        for key in ("plan_accepted", "scientific_review_approved",
+                    "agronomist_qualification_verified",
+                    "purpose_consent_verified", "business_actions_enabled"):
+            self.assertIs(final[key], False)
+        self.assertNotIn("DEMO-SHARED-PREVIEW-PRIVATE-NOTE",
+                         str(final))
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_role_boundaries_do_not_inherit_opposite_party_permissions(self):
+        path = ROOT + "/DEMO-D-001"
+        self.assertEqual(self.client.get(path, headers=self.headers(
+            subject="synthetic-household-001", roles=("household",)
+        )).status_code, 404)
+        self.assertEqual(self.owner_status(subject="synthetic-agronomist-001")
+                         .status_code, 404)
+        self.assertEqual(self.client.get(
+            "/api/v1/domestic/household-intake/my-drafts/DEMO-D-001/technical-status",
+            headers=self.headers()
+        ).status_code, 404)
+        self.assertEqual(self.owner_status(ref="DEMO-D-002").status_code, 404)
+        self.assertEqual(self.client.get(
+            ROOT + "/DEMO-D-003", headers=self.headers()
+        ).status_code, 404)
+
+    def test_expert_assignment_revocation_never_changes_owner_preparation(self):
+        initial = self.owner_status().json()["cultivation_preparation"]
+        self.assertEqual(self.client.get(
+            ROOT + "/DEMO-D-001", headers=self.headers()
+        ).status_code, 200)
+        self.active.remove("DEMO-D-001")
+        self.assertEqual(self.client.get(
+            ROOT + "/DEMO-D-001", headers=self.headers()
+        ).status_code, 404)
+        owner = self.owner_status()
+        self.assertEqual(owner.status_code, 200)
+        self.assertEqual(owner.json()["cultivation_preparation"], initial)
+        self.assertNotIn("agronomist_assigned", owner.json())
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_household_and_expert_read_audits_remain_distinct(self):
+        self.assertEqual(self.owner_status().status_code, 200)
+        self.assertEqual(self.client.get(
+            ROOT + "/DEMO-D-001", headers=self.headers()
+        ).status_code, 200)
+        audited = [
+            e for e in self.ledger.audit_snapshot()
+            if e.access_mode in (
+                "HOUSEHOLD_TECHNICAL_STATUS", "AGRONOMY_ASSIGNED_CASE"
+            )
+        ]
+        self.assertEqual([a.access_mode for a in audited], [
+            "HOUSEHOLD_TECHNICAL_STATUS", "AGRONOMY_ASSIGNED_CASE"
+        ])
+        self.assertTrue(all(e.kind == "READ_ALLOWED" for e in audited))
+
+    def test_household_and_expert_html_show_same_unknown_fields(self):
+        self.session(subject="synthetic-household-001", roles=("household",))
+        household = self.client.get("/my-drafts/DEMO-D-001")
+        self.assertEqual(household.status_code, 200, household.text)
+        self.client.cookies.clear()
+        self.session()
+        expert = self.client.get(DETAIL)
+        self.assertEqual(expert.status_code, 200, expert.text)
+        for marker in ("محصول: تعیین نشده", "مساحت: تعیین نشده",
+                       "آب: تعیین نشده", "خاک: تعیین نشده",
+                       "موقعیت: تعیین نشده", "طرح کشت تولید نشده است",
+                       "معیار کفایت اطلاعات"):
+            self.assertIn(marker, household.text)
+            self.assertIn(marker, expert.text)
+        self.assertNotIn("synthetic-agronomist", household.text)
+        self.assertNotIn("synthetic-household", expert.text)
+        self.assertIn("frame-ancestors 'none'",
+                      household.headers["content-security-policy"])
+        self.assertEqual(expert.headers["cache-control"], "no-store")
+
+    def test_preparation_contract_rejects_invalid_review_and_input_approval(self):
+        from ronas_api.domestic_preparation_preview import (
+            domestic_preparation_preview,
+        )
+        from ronas_api.ui_bff import readonly_domestic_preparation_html
+        states = ("UNREQUESTED", "EVIDENCE_REVIEW_REQUESTED",
+                  "HUMAN_RESPONSE_RECORDED")
+        for options in (
+            {"case_version": True, "review_revision": 0,
+             "technical_review_state": "UNREQUESTED"},
+            {"case_version": 2, "review_revision": True,
+             "technical_review_state": "UNREQUESTED"},
+            {"case_version": 2, "review_revision": 2,
+             "technical_review_state": "EVIDENCE_REVIEW_REQUESTED"},
+            {"case_version": 2, "review_revision": 3,
+             "technical_review_state": "HUMAN_RESPONSE_RECORDED"},
+        ):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                domestic_preparation_preview(
+                    valid_review_states=states, **options,
+                )
+        clean = domestic_preparation_preview(
+            case_version=2, review_revision=0,
+            technical_review_state="UNREQUESTED",
+            valid_review_states=states,
+        )
+        self.assertIn("محصول: تعیین نشده",
+                      readonly_domestic_preparation_html(clean))
+        clean["cultivation_inputs"]["crop"] = "invented"
+        with self.assertRaises(ValueError):
+            readonly_domestic_preparation_html(clean)
+
+    def test_corrupted_review_history_blocks_both_preview_read_paths(self):
+        maker = Principal("synthetic-ops-001", frozenset({"domestic_ops"}))
+        self.ledger.request_evidence_review(
+            engine="DOMESTIC", ref="DEMO-D-001", actor=maker,
+            expected_case_version=2, expected_review_revision=0,
+            action_id="DEMO-SHARED-CORRUPT-REQUEST",
+            request_ref="DEMO-SHARED-CORRUPT-REF",
+            evidence_ref="DEMO-SHARED-CORRUPT-EVIDENCE",
+        )
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER review_no_update")
+            db.execute(
+                "UPDATE technical_review_step SET request_ref='DEMO-TAMPERED'"
+                " WHERE engine='DOMESTIC' AND ref='DEMO-D-001'"
+            )
+        owner = self.owner_status()
+        expert = self.client.get(ROOT + "/DEMO-D-001", headers=self.headers())
+        self.assertEqual(owner.status_code, 503)
+        self.assertEqual(expert.status_code, 503)
+        self.assertNotIn("cultivation_preparation", owner.text)
+        self.assertNotIn("cultivation_preparation", expert.text)
+
+
 
 if __name__ == "__main__":
     unittest.main()

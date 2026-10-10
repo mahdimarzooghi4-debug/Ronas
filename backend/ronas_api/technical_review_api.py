@@ -46,12 +46,14 @@ def build_technical_review_read_router(
             return ledger.list_technical_review_worklist(
                 engine, principal, after_ref=after_ref, limit=limit
             )
+        except (LedgerIntegrityError, sqlite3.Error) as exc:
+            # LedgerIntegrityError is a ValueError subclass; catch it first
+            # so corrupted audit data never masquerades as client input.
+            raise HTTPException(status_code=503,
+                                detail="TECHNICAL_REVIEW_UNAVAILABLE") from exc
         except ValueError as exc:
             raise HTTPException(status_code=422,
                                 detail="INVALID_WORKLIST_QUERY") from exc
-        except (LedgerIntegrityError, sqlite3.Error) as exc:
-            raise HTTPException(status_code=503,
-                                detail="TECHNICAL_REVIEW_UNAVAILABLE") from exc
 
     @router.get("/api/v1/admin/domestic/household-intake/technical-review-worklist")
     def domestic_worklist(

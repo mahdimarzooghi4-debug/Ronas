@@ -142,6 +142,25 @@ class AuditOverlayTests(unittest.TestCase):
             self.revoke(action_id="DEMO-ACTION-NEW", expected_grant_revision=1)
         self.assertEqual(self.registry.grant_revision("DOMESTIC", "DEMO-D-001"), 1)
 
+    def test_failed_audit_append_rolls_back_revoke_without_half_state(self):
+        original = self.registry._event
+        def fail_write(**kwargs):
+            raise RuntimeError("synthetic audit failure")
+        self.registry._event = fail_write
+        with self.assertRaisesRegex(RuntimeError, "audit failure"):
+            self.revoke()
+        self.assertEqual(self.registry.grant_revision("DOMESTIC", "DEMO-D-001"), 0)
+        self.assertEqual(self.registry.audit_snapshot(), ())
+        self.registry._event = original
+        self.assertIsNotNone(self.registry.read(
+            "DOMESTIC", "DEMO-D-001", self.domestic, as_owner=False
+        ))
+        self.revoke()
+        self.assertIsNone(self.registry.read(
+            "DOMESTIC", "DEMO-D-001", self.domestic, as_owner=False
+        ))
+        self.assertTrue(self.registry.verify_local_chain())
+
     def test_second_distinct_revocation_has_strict_compare_and_swap(self):
         self.revoke()
         with self.assertRaises(GrantConflict):

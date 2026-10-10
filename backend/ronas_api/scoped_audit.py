@@ -194,11 +194,18 @@ class AuditedSyntheticDraftRegistry(ScopedSyntheticDraftRegistry):
                 raise GrantConflict("only an active pre-seeded grant can be revoked")
             self._revoked.add(identity)
             self._grant_revision[(engine, ref)] += 1
-            event = self._event(
-                kind="GRANT_REVOKED", engine=engine, ref=ref,
-                actor=actor, target=subject, action_id=action_id,
-                reason_ref=reason_ref, mode=None,
-            )
+            try:
+                event = self._event(
+                    kind="GRANT_REVOKED", engine=engine, ref=ref,
+                    actor=actor, target=subject, action_id=action_id,
+                    reason_ref=reason_ref, mode=None,
+                )
+            except Exception:
+                # The in-process revocation and journal acceptance form one
+                # fail-closed logical step; never leave unaudited mutations.
+                self._revoked.remove(identity)
+                self._grant_revision[(engine, ref)] -= 1
+                raise
             self._replays[action_id] = (command, event)
             return event
 

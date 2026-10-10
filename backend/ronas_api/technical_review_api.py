@@ -75,6 +75,27 @@ def build_technical_review_read_router(
     def domestic_review(ref: str, p: Principal = Depends(verified_principal)) -> dict:
         return lookup("DOMESTIC", ref, p)
 
+    @router.get("/api/v1/admin/export/research/cases")
+    def export_research_cases(
+        technical_state: str = Query(default="ALL"),
+        after_ref: str | None = Query(default=None),
+        limit: int = Query(default=20, ge=1, le=50),
+        p: Principal = Depends(verified_principal),
+    ) -> dict:
+        try:
+            return ledger.list_export_research_cases(
+                p, technical_state=technical_state, after_ref=after_ref,
+                limit=limit,
+            )
+        except (LedgerIntegrityError, sqlite3.Error) as exc:
+            raise HTTPException(
+                status_code=503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail="INVALID_EXPORT_RESEARCH_QUEUE",
+            ) from exc
+
     @router.get("/api/v1/admin/export/research/drafts/{ref}/technical-review")
     def export_review(ref: str, p: Principal = Depends(verified_principal)) -> dict:
         return lookup("EXPORT", ref, p)

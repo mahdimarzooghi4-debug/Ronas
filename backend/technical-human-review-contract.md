@@ -254,7 +254,7 @@ Validation: `backend/tests/test_technical_review_worklist.py` contains
 seed/grant filtering, Domestic/Export isolation, live status,
 revocation, concurrent reads, corrupted history, transactional audit,
 invalid query, default-disabled routes, unified admin rendering,
-expired/revoked sessions and role-specific display. No real IdP or
+session revocation and role-specific display. No real IdP or
 business execution was used.
 
 ## Tests and exclusions

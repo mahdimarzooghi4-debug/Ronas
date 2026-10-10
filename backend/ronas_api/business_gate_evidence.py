@@ -6,6 +6,9 @@ or current authoritative state once Business PR #1 has advanced.
 """
 from collections.abc import Callable
 from dataclasses import dataclass
+from hashlib import sha1
+from pathlib import Path
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -32,6 +35,68 @@ class GateDossier:
 
 _DOM = "docs/business/73-core-d1-e0-limited-scope-gate-decision-sheet.md"
 _FIN = "docs/business/61-finance-legal-evidence-workstreams-for-d0-e0.md"
+
+# Exact Git object SHA-1 identifiers of the TWO source files observed at
+# Business PR #1 HEAD, not invented application content or a GitHub API call.
+# These file-level fingerprints do NOT prove PR #1's head is still current.
+PINNED_BUSINESS_SOURCE_BLOBS = {
+    _DOM: "86da48af24adc49976921033eeb74eb3b67b5cbc",
+    _FIN: "642f5b0e1d506d436c4f379a6ad0b1624b5bbb0c",
+}
+SOURCE_INTEGRITY_STATE = "LOCAL_REPOSITORY_FILES_MATCH_PINNED_BLOBS"
+
+
+class BusinessSourceSnapshotError(RuntimeError):
+    """The exact local draft-source evidence has drifted or is unavailable."""
+
+
+def verify_pinned_business_sources(*, root: Path | None = None) -> dict[str, str]:
+    """Verify source bytes AND transcribed evidence statuses. Fail closed.
+
+    This verifies a local checkout's source files only. It makes no
+    network request and never asserts current GitHub issue or gate status.
+    """
+    base = (root if root is not None
+            else Path(__file__).resolve().parents[2]).resolve()
+    checked: dict[str, str] = {}
+    for path, expected_blob in PINNED_BUSINESS_SOURCE_BLOBS.items():
+        try:
+            source = base / path
+            resolved = source.resolve(strict=True)
+            if not resolved.is_relative_to(base) or not resolved.is_file():
+                raise BusinessSourceSnapshotError("invalid source boundary")
+            raw = resolved.read_bytes()
+            if len(raw) > 250_000:
+                raise BusinessSourceSnapshotError("source exceeded bounded size")
+            git_blob = sha1(
+                b"blob " + str(len(raw)).encode("ascii") + b"\\0" + raw
+            ).hexdigest()
+            if git_blob != expected_blob:
+                raise BusinessSourceSnapshotError("source version changed")
+            body = raw.decode("utf-8")
+            for dossier in DOSSIERS:
+                if dossier.source_path != path:
+                    continue
+                for evidence in dossier.evidence:
+                    matching = [
+                        line for line in body.splitlines()
+                        if re.match(
+                            r"^\\|\\s+\\*\\*" + re.escape(evidence.evidence_id)
+                            + r"(?:\\s|\\*\\*)", line
+                        )
+                    ]
+                    if (len(matching) != 1
+                            or not re.search(
+                                r"\\|\\s+\\*\\*" + re.escape(evidence.source_status)
+                                + r"\\*\\*\\s+\\|$", matching[0]
+                            )):
+                        raise BusinessSourceSnapshotError("source card drift")
+            checked[path] = expected_blob
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise BusinessSourceSnapshotError("source unavailable") from exc
+    if len(checked) != 2:
+        raise BusinessSourceSnapshotError("incomplete source manifest")
+    return checked
 
 DOSSIERS = (
     GateDossier("DOMESTIC", "domestic_ops", 2, _DOM, (
@@ -101,6 +166,8 @@ def dossier_detail(dossier: GateDossier) -> dict:
             for e in dossier.evidence
         ],
     })
+    result["source_integrity_state"] = SOURCE_INTEGRITY_STATE
+    result["source_blob_id"] = PINNED_BUSINESS_SOURCE_BLOBS[dossier.source_path]
     return result
 
 
@@ -115,7 +182,9 @@ def build_business_gate_evidence_router(
         available = visible_dossiers(p)
         if not available:
             raise HTTPException(status_code=403, detail="ADMIN_ROLE_REQUIRED")
+        verify_pinned_business_sources()
         return {
+            "source_integrity_state": SOURCE_INTEGRITY_STATE,
             "snapshot_state": SNAPSHOT_STATE,
             "business_source_sha": BUSINESS_SOURCE_SHA,
             "items": [dossier_summary(d) for d in available],
@@ -129,6 +198,7 @@ def build_business_gate_evidence_router(
         if allowed is None:
             # Unknown and unassigned domains have indistinguishable responses.
             raise HTTPException(status_code=404, detail="GATE_DOSSIER_NOT_FOUND")
+        verify_pinned_business_sources()
         return dossier_detail(allowed)
 
     return router

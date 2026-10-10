@@ -57,6 +57,65 @@ Both SUCCESS: 83 backend Python + 31 prototype Python + 10 Node = 124 tests,
 plus Python compilation and dependency validation. This is not a real data,
 live Keycloak, distributed grant-revocation or penetration test.
 
+## Owned household draft list and existing shared user shell (2026-10-10)
+
+The optional LOCAL/TEST `SqliteSyntheticGrantLedger.list_owned_domestic_drafts()`
+extends exact-owner read permission into an immutable, bounded **list**. It
+requires an independently signed and verified `household` role **and**
+`principal.subject == ScopedDraft.owner_subject` for *each* displayed
+Domestic record. It never derives ownership from the session cookie value,
+JWT role alone, grant to `domestic_ops`, a query-supplied subject, or any
+client-provided claim. Export records never enter this household listing,
+even when the same synthetic actor is seeded as their owner.
+
+A deterministic keyset `after_ref` cursor and technical `limit` (1–50,
+default 20) operate over **authorized owned Domestic records only**.
+Page-size bounds are technical response protection, not eligibility,
+consent or Business thresholds. No global case counts, other households'
+identifiers, unknown-case counts, or owner-subject values are returned.
+Results contain only the previously established `ScopedDraft.public_view()`
+fixture: `DRAFT_ONLY`, `SYNTHETIC_ONLY` and explicit unverified
+consent/agronomy flags. No case creation, editing, approval, or grant
+mutation is available.
+
+An entire page is checked and audited under the existing SQLite
+`BEGIN IMMEDIATE` transaction, appending a hash-linked `READ_ALLOWED`
+event with access mode `HOUSEHOLD_OWNED_WORKLIST` **for each disclosed
+case**. Audit insertion failure rolls back the page, and corruption
+fails closed without returning any case content. An unassigned or
+wrong-role actor obtains an empty list without disclosing any other owner.
+A separate operator grant revocation does not revoke the household owner's
+independent self-access; it does not create or restore an operator grant.
+
+The GET-only `/api/v1/domestic/household-intake/my-drafts` is mounted
+only when a KeycloakConfig and explicit opt-in
+`SqliteSyntheticGrantLedger` (or its review-aware subclass) are provided
+to `create_app`. A plain in-memory ScopedSyntheticDraftRegistry
+does not mount the list, and default runtime mounts no such route.
+Unsigned/invalid token returns 401; invalid cursor/limit 422; SQLite
+audit/integrity failure 503. There is no POST route.
+
+With the same explicitly injected ledger and a validated BrowserOIDC
+session, the **existing shared user/partner `/` shell** renders the
+`پرونده‌های من` section for household role only. Rows link to the already
+owner-authorized GET `/api/v1/domestic/household-intake/drafts/{ref}`.
+Only their own DEMO refs appear, safely HTML-escaped; other user/partner
+roles remain unchanged. The previous fixed illustration is suppressed
+when the live synthetic owner list is explicitly supplied, even when that
+household owns zero cases. No new user portal or external registration,
+actual identity, real consent, agronomist qualification or transaction
+is implied. A revoked or expired browser session cannot display the list.
+CSP and no-store headers remain intact.
+
+`backend/tests/test_owned_household_drafts.py` includes 15 offline
+integration/security scenarios covering signed owner segregation, exact
+pagination, wrong role, signed-token denial, operator revocation
+independence, append rollback and corrupted history, opt-in defaults,
+shared HTML and logout, and concurrent list/revocation ordering. The
+tests use synthetic immutable records and locally generated signing keys.
+These are not Production privacy, legal access or distributed-storage
+approvals; Business gates #2/#3/#4 remain OPEN.
+
 ## Subsequent authoritative decisions still required
 
 Source of record ownership and grant/revocation authority, tenant and delegated

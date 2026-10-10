@@ -3,9 +3,10 @@
 **وضعیت:** DRAFT — گیت‌ها هنوز OPEN؛ تصمیم‌های محدود RON-DEC-009..021 شامل بازارگاه و نظارت دیجیتال، برنامه کشت اختصاصی با تأیید متخصص، بازنگری در صورت خطای اطلاعات و **پیشنهاد AI برای استفاده مجدد از گزارش‌های تاریخی تنها پس از بررسی و تأیید متخصص** هستند؛ معیارهای کیفیت/حقوق داده/عملیات هنوز بازند.  
 **تصمیم مالی تصویب‌شده:** RON-DEC-024 پنج محور کلان FIN-MACRO-01 را در سطح راهبرد Business تصویب کرده؛ Finance Gate/بودجه/پرداخت واقعی هنوز OPEN هستند.
 **تصمیم بسته‌ای جدید:** RON-DEC-022 پنج محور کلان Domestic را تصویب کرده است؛ هیچ گیت اجرا/Technical را نمی‌گذراند.
-**نسخه بسته تصمیم:** v0.37 — RON-DEC-028 LICENSED OPEN-WEIGHT BASE + FULLY INTERNAL FINE-TUNING (RON-DEC-027 GOVERNED LEARNING UNCHANGED) | ۱۴۰۵/۰۷/۱۷ (2026-10-09)  
+**نسخه بسته تصمیم:** v0.38 — RON-DEC-029 D0-FIRST AI EVIDENCE PREPARATION / E0 INDEPENDENT PARALLEL (NOT FIRST TRAINING TASK) | 2026-10-10  
 
 **یادداشت جاری پس از RON-DEC-028:** مدل پایه Open-Weight دارای مجوز معتبر با Fine-tuning و استنتاج کاملاً داخلی **APPROVED در سطح Business** است. این تصمیم نه مدل مشخص/مجوز واقعی و نه دیتاست/Training/معماری/Code را تصویب کرده؛ گیت‌های #2/#3/#4 بازند. اسناد پیش از مصوبه که انتخاب الف/ب را OPEN یا پیشنهادی می‌خوانند تاریخی‌اند.
+**تصمیم اولویت جدید RON-DEC-029:** تهیه شواهد AI برای D0 در اولویت؛ E0 مستقل و موازی باقی است. **این تصمیم فقط ترتیب آماده‌سازی Business است؛ نخستین Task واقعی Training و همه گیت‌ها OPEN هستند.** [برنامه ۶۹](69-d0-first-evidence-execution-plan-e0-parallel.md).  
 **منبع پایه:** «طرح نامه جامع روناس»، مرداد ۱۴۰۵، ۳۷ صفحه فایل (۳۶ صفحه شماره‌گذاری داخلی)، سفارش معاونت اشتغال کمیته امداد امام خمینی(ره)، طراح خانه خلاق و نوآوری آینه.
 
 ## ترتیب مطالعه
@@ -79,6 +80,7 @@
 67. [غربال مدل‌های پایه Open-Weight روناس](66-open-weight-base-model-candidate-screening.md): **BUSINESS SOURCE SCREENING / NO MODEL APPROVED** — Gemma 4 12B و Qwen3.5 9B نامزدهای بررسی چندرسانه‌ای؛ Qwen3 8B معیار مقایسه متنی؛ مجوز Apache-2.0 اعلام‌شده در منابع رسمی، ولی **مجوز دقیق برای روناس، کیفیت فارسی/کشاورزی و عملکرد داخلی NOT VERIFIED**؛ تصمیم RON-DEC-028 حفظ شده، گیت‌ها OPEN.
 68. [پرونده نخستین وظیفه AI و ارزیابی مستقل](67-first-ai-learning-task-and-independent-evaluation-business-packet.md): **DRAFT BUSINESS EVIDENCE / FIRST TASK NOT SELECTED**؛ دو نامزد D0 آموزش عمومی فارسی و E0 پژوهش محصول–مقصد، پرسش‌های حق Training، بازبین متخصص، واحد جداسازی Train/Eval و نمونه‌های سناریوی خطا؛ هیچ Dataset واقعی، معیار عددی یا گیت مصوب نشده است.
 69. [حقوق داده، صلاحیت متخصص و تصمیم اولویت نخستین Task](68-ai-source-rights-expert-review-and-first-task-decision-readiness.md): **BUSINESS EVIDENCE SCREENING / NO GATE PASS**؛ تفکیک مجوز FAO/AGROVOC، FAOSTAT، Comtrade، WITS و NASA POWER؛ وضعیت مشروط AI internal use در Comtrade، اختلاف مجوز AGROVOC، شواهد کارشناسان مستقل و گزینه‌های اولویت D0/E0؛ هیچ Task/Data/Model انتخاب یا اجرا نشده است.
+70. [برنامه مصوب ترتیب آماده‌سازی شواهد AI: D0 مقدم و E0 موازی](69-d0-first-evidence-execution-plan-e0-parallel.md): **RON-DEC-029 APPROVED FOR PREPARATION ORDER ONLY**؛ ماتریس D0-EV-01..05، پیگیری حقوق/متخصص/ارزیابی، استمرار مستقل E0-EV-01..05 و Finance؛ بدون انتخاب First Training Task، مدل، Dataset یا عبور از گیت.
 
 ## اصول تفسیر
 

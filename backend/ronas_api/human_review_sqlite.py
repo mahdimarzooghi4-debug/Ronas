@@ -24,6 +24,20 @@ RECORDED = "TECH_HUMAN_RESPONSE_RECORDED"
 STATES = ("UNREQUESTED", "EVIDENCE_REVIEW_REQUESTED", "HUMAN_RESPONSE_RECORDED")
 
 
+def _review_binding(*, action: str, engine: str, ref: str, revision: int,
+                    stage: str, actor_digest: str, request_ref: str,
+                    evidence_ref: str, decision_ref: str | None,
+                    command_digest: str) -> str:
+    # Bound into the append-only audit event itself so changes to either
+    # the request, response reference or evidence are detected on reopen.
+    return _json({
+        "action": action, "engine": engine, "ref": ref, "revision": revision,
+        "stage": stage, "actor_digest": actor_digest,
+        "request_ref": request_ref, "evidence_ref": evidence_ref,
+        "decision_ref": decision_ref, "command_digest": command_digest,
+    })
+
+
 @dataclass(frozen=True, slots=True)
 class TechnicalReviewStep:
     engine: str
@@ -120,7 +134,12 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                     or audit.get("ref") != ref or audit.get("action_id") != action
                     or audit.get("actor_digest") != actor_digest
                     or audit.get("reason_ref") != evidence_ref
-                    or audit.get("target_digest") != _hash(command_digest)
+                    or audit.get("target_digest") != _hash(_review_binding(
+                        action=action, engine=engine, ref=ref, revision=revision,
+                        stage=stage, actor_digest=actor_digest,
+                        request_ref=request_ref, evidence_ref=evidence_ref,
+                        decision_ref=decision_ref, command_digest=command_digest,
+                    ))
                     or audit.get("case_version") != self._catalogue[(engine, ref)].version
                     or audit.get("access_mode") != "TECHNICAL_ONLY"):
                 raise LedgerIntegrityError("review/audit record mismatch")
@@ -255,7 +274,13 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             event = self._append(
                 db, kind=stage, engine=engine, ref=ref, actor=actor.subject,
                 action_id=action_id, reason_ref=evidence_ref,
-                target=command_digest, mode="TECHNICAL_ONLY",
+                target=_review_binding(
+                    action=action_id, engine=engine, ref=ref,
+                    revision=expected_review_revision + 1, stage=stage,
+                    actor_digest=_hash(actor.subject), request_ref=request_ref,
+                    evidence_ref=evidence_ref, decision_ref=decision_ref,
+                    command_digest=command_digest,
+                ), mode="TECHNICAL_ONLY",
             )
             db.execute(
                 "INSERT INTO technical_review_step VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

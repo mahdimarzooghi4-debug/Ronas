@@ -8,6 +8,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,9 @@ import stat
 from typing import Callable, Iterator
 
 from .auth import Principal
+from .gate_evidence_preflight import (
+    BYTE_CHECK_MATCH, BYTE_CHECK_MISMATCH, preflight_for_status,
+)
 from .business_gate_evidence import (
     BUSINESS_SOURCE_SHA, DOSSIERS, verify_pinned_business_sources,
     BusinessSourceSnapshotError,
@@ -331,6 +335,68 @@ class SqliteSyntheticGateEvidenceHandoff:
                     for e in dossier.evidence
                 ],
             }
+
+    def preflight_worklist(self, principal: Principal, domain: str) -> dict:
+        """Owner-domain scoped, non-admitting view of *missing* external checks.
+
+        Even a persisted technical human note never verifies source origin,
+        right to use that source, reviewer qualifications, or a Gate PASS.
+        The underlying worklist already checks signed domain authorization,
+        pinned source integrity, and the entire durable event chain.
+        """
+        listing = self.worklist(principal, domain)
+        return {
+            "domain": domain,
+            "business_source_sha": BUSINESS_SOURCE_SHA,
+            "snapshot_state": "PINNED_DRAFT_SNAPSHOT_NOT_LIVE",
+            "preflight_state": "BLOCKED_EXTERNAL_VERIFICATION",
+            "items": [preflight_for_status(item) for item in listing["items"]],
+        }
+
+    def inspect_demo_reference_bytes(
+        self, *, principal: Principal, domain: str, evidence_id: str,
+        reference_ref: str, demo_bytes: bytes,
+    ) -> dict:
+        """An *ephemeral* offline byte comparison, never a provenance attestation.
+
+        Content is not persisted and may never be supplied through an HTTP
+        upload. A hash match proves only equivalence to an *unverified
+        claimant-controlled* digest. All admission/rights/reviewer checks
+        remain blocked. Restrict input to overt DEMO byte fixtures.
+        """
+        self._actor(principal, domain)
+        if (not recognized(domain, evidence_id) or not _ref(reference_ref)
+                or type(demo_bytes) is not bytes
+                or not 5 <= len(demo_bytes) <= 1_048_576
+                or not demo_bytes.startswith(b"DEMO-")):
+            raise ValueError("only bounded local synthetic evidence bytes allowed")
+        verify_pinned_business_sources()
+        with self._transaction() as db:
+            history = self._verify(db)
+            matching = [
+                event for event in history
+                if event.domain == domain and event.evidence_id == evidence_id
+            ]
+            if not matching or matching[0].reference_ref != reference_ref:
+                raise HandoffConflict("synthetic reference is absent or stale")
+            last = matching[-1]
+            byte_state = (
+                BYTE_CHECK_MATCH
+                if hmac.compare_digest(
+                    hashlib.sha256(demo_bytes).hexdigest(), last.claimed_sha256,
+                )
+                else BYTE_CHECK_MISMATCH
+            )
+            # No input bytes, source IDs, rights claim, qualifications,
+            # external location, checker IDs or digest leave this projection.
+            return preflight_for_status(
+                {
+                    "domain": domain, "evidence_id": evidence_id,
+                    "technical_state": last.stage,
+                    "review_revision": last.revision,
+                },
+                bytes_check=byte_state,
+            )
 
     def verify_integrity(self) -> bool:
         try:

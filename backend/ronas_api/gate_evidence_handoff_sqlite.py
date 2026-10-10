@@ -19,6 +19,7 @@ from typing import Callable, Iterator
 from .auth import Principal
 from .business_gate_evidence import (
     BUSINESS_SOURCE_SHA, DOSSIERS, verify_pinned_business_sources,
+    BusinessSourceSnapshotError,
 )
 
 GENESIS = "0" * 64
@@ -195,6 +196,7 @@ class SqliteSyntheticGateEvidenceHandoff:
                     or not _hex(event.actor_digest)
                     or not _ref(event.reference_ref) or not _hex(event.claimed_sha256)
                     or (event.note_ref is not None and not _ref(event.note_ref))
+                    or type(event.revision) is not int
                     or event.revision != (1 if former is None else former.revision + 1)
                     or (former is None and
                         (event.stage != STAGES[0] or event.note_ref is not None))
@@ -336,5 +338,6 @@ class SqliteSyntheticGateEvidenceHandoff:
             with self._transaction() as db:
                 self._verify(db)
             return True
-        except (HandoffIntegrityError, sqlite3.Error):
+        except (HandoffIntegrityError, BusinessSourceSnapshotError,
+                sqlite3.Error):
             return False

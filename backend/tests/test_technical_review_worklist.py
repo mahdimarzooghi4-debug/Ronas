@@ -440,5 +440,208 @@ class TechnicalReviewWorklistTests(unittest.TestCase):
         self.assertTrue(self.reopen().verify_integrity())
 
 
+    # The core Export research workspace is independent of the technical
+    # Business gate dossiers; it uses existing exact case assignments only.
+    def export_workspace(self, ref="DEMO-E-001", *, subject="synthetic-export-001",
+                         roles=("export_ops",), client=None):
+        return self.get(
+            "/api/v1/admin/export/research/drafts/" + ref + "/workspace",
+            subject=subject, roles=roles, client=client,
+        )
+
+    def test_export_research_workspace_is_real_scoped_read_of_demo_case(self):
+        r = self.export_workspace()
+        self.assertEqual(r.status_code, 200, r.text)
+        item = r.json()
+        self.assertEqual(item["ref"], "DEMO-E-001")
+        self.assertEqual(item["engine"], "EXPORT")
+        self.assertEqual(item["case_version"], 3)
+        self.assertEqual(item["known_versions"], [3])
+        self.assertEqual(item["case_status"], "DRAFT_ONLY")
+        self.assertEqual(item["source_ref"], "DEMO-SOURCE-001")
+        self.assertEqual(item["research_question"],
+                         {"product": None, "destination": None, "hs_code": None})
+        self.assertIsNone(item["study_findings"])
+        self.assertEqual(item["technical_review_state"], "UNREQUESTED")
+        self.assertEqual(item["review_revision"], 0)
+        self.assertEqual(item["technical_review_steps"], [])
+        for flag in ("source_rights_verified", "research_report_approved",
+                     "buyer_verified", "contracted", "real_data",
+                     "business_actions_enabled"):
+            self.assertIs(item[flag], False)
+        self.assertNotIn("synthetic-export-owner", r.text)
+        self.assertNotIn("synthetic-export-001", r.text)
+        self.assertEqual(r.headers["cache-control"], "no-store")
+
+    def test_export_research_workspace_same_subject_without_export_role_is_denied(self):
+        r = self.export_workspace(roles=("domestic_ops",))
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(r.json(), {"detail": "DRAFT_NOT_FOUND"})
+
+    def test_export_research_workspace_unassigned_export_role_is_denied(self):
+        r = self.export_workspace(subject="synthetic-domestic-001")
+        self.assertEqual(r.status_code, 404)
+        self.assertNotIn("DEMO-SOURCE", r.text)
+
+    def test_export_research_workspace_wrong_engine_or_unknown_ref_hidden(self):
+        for ref in ("DEMO-D-001", "DEMO-UNKNOWN", "not-demo"):
+            with self.subTest(ref=ref):
+                r = self.export_workspace(ref)
+                self.assertEqual(r.status_code, 404)
+                self.assertNotIn("research_question", r.text)
+
+    def test_export_research_workspace_missing_or_forged_token_fails(self):
+        path = "/api/v1/admin/export/research/drafts/DEMO-E-001/workspace"
+        self.assertEqual(self.client.get(path).status_code, 401)
+        self.assertEqual(self.client.get(
+            path, headers={"Authorization": "Bearer invalid"}
+        ).status_code, 401)
+
+    def test_export_research_workspace_still_unapproved_after_request(self):
+        self.ledger.request_evidence_review(
+            engine="EXPORT", ref="DEMO-E-001",
+            actor=Principal("synthetic-export-001", frozenset({"export_ops"})),
+            expected_case_version=3, expected_review_revision=0,
+            action_id="DEMO-EXPORT-REQUEST-01",
+            request_ref="DEMO-EXPORT-REVIEW-01",
+            evidence_ref="DEMO-EXPORT-EVIDENCE-01",
+        )
+        item = self.export_workspace().json()
+        self.assertEqual(item["technical_review_state"], "EVIDENCE_REVIEW_REQUESTED")
+        self.assertEqual(item["technical_review_steps"],
+                         [{"revision": 1, "stage": "TECH_REVIEW_REQUESTED"}])
+        self.assertFalse(item["research_report_approved"])
+        self.assertFalse(item["source_rights_verified"])
+        self.assertIsNone(item["research_question"]["destination"])
+        self.assertNotIn("DEMO-EXPORT-REVIEW-01", str(item))
+        self.assertNotIn("DEMO-EXPORT-EVIDENCE-01", str(item))
+
+    def test_export_research_workspace_revocation_removes_access_immediately(self):
+        self.assertEqual(self.export_workspace().status_code, 200)
+        self.ledger.revoke_grant(
+            engine="EXPORT", ref="DEMO-E-001",
+            subject="synthetic-export-001", role="export_ops",
+            actor="synthetic-controller", expected_grant_revision=0,
+            action_id="DEMO-EXPORT-REVOKE-WORKSPACE",
+            reason_ref="DEMO-EXPORT-REASON",
+        )
+        self.assertEqual(self.export_workspace().status_code, 404)
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_export_research_workspace_read_audit_is_atomic(self):
+        before = [
+            x for x in self.ledger.audit_snapshot()
+            if x.access_mode == "EXPORT_RESEARCH_WORKSPACE"
+        ]
+        self.assertEqual(before, [])
+        self.assertEqual(self.export_workspace().status_code, 200)
+        events = [
+            x for x in self.ledger.audit_snapshot()
+            if x.access_mode == "EXPORT_RESEARCH_WORKSPACE"
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].kind, "READ_ALLOWED")
+        self.assertEqual(events[0].engine, "EXPORT")
+
+    def test_export_research_workspace_failed_read_audit_hides_entire_case(self):
+        with sqlite3.connect(self.path) as db:
+            db.execute("""
+                CREATE TRIGGER fail_export_workspace BEFORE INSERT ON audit_event
+                WHEN NEW.payload LIKE '%EXPORT_RESEARCH_WORKSPACE%'
+                BEGIN SELECT RAISE(ABORT, 'read audit unavailable'); END;
+            """)
+        response = self.export_workspace()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {"detail": "TECHNICAL_REVIEW_UNAVAILABLE"})
+        self.assertNotIn("DEMO-SOURCE-001", response.text)
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER fail_export_workspace")
+        self.assertEqual(self.export_workspace().status_code, 200)
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_export_research_workspace_tampered_case_history_fails_closed(self):
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER case_history_no_delete")
+            db.execute("""DELETE FROM case_history
+                       WHERE engine='EXPORT' AND ref='DEMO-E-001'""")
+        r = self.export_workspace()
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(r.json(), {"detail": "TECHNICAL_REVIEW_UNAVAILABLE"})
+
+    def test_export_research_workspace_html_within_same_admin_environment(self):
+        client, _, _ = self.browser_client(
+            subject="synthetic-export-001", roles=("export_ops",)
+        )
+        index = client.get("/admin")
+        self.assertEqual(index.status_code, 200)
+        self.assertIn("/admin/export/research/drafts/DEMO-E-001", index.text)
+        page = client.get("/admin/export/research/drafts/DEMO-E-001")
+        self.assertEqual(page.status_code, 200, page.text)
+        for expected in ("پرونده پژوهش صادرات", "DEMO-SOURCE-001",
+                         "محصول: تعیین نشده", "مقصد: تعیین نشده",
+                         "حقوق استفاده", "DRAFT_ONLY"):
+            self.assertIn(expected, page.text)
+        self.assertNotIn("synthetic-export-owner", page.text)
+        self.assertIn("frame-ancestors 'none'", page.headers["content-security-policy"])
+        self.assertEqual(page.headers["cache-control"], "no-store")
+        self.assertEqual(client.post(
+            "/admin/export/research/drafts/DEMO-E-001"
+        ).status_code, 405)
+
+    def test_export_research_workspace_html_denies_wrong_roles_and_logout(self):
+        wrong, _, _ = self.browser_client()
+        self.assertNotIn("/admin/export/research/drafts/DEMO-E-001",
+                         wrong.get("/admin").text)
+        self.assertEqual(wrong.get(
+            "/admin/export/research/drafts/DEMO-E-001"
+        ).status_code, 404)
+        authorized, store, sid = self.browser_client(
+            subject="synthetic-export-001", roles=("export_ops",)
+        )
+        self.assertEqual(authorized.get(
+            "/admin/export/research/drafts/DEMO-E-001"
+        ).status_code, 200)
+        store.revoke_session(sid)
+        self.assertEqual(authorized.get(
+            "/admin/export/research/drafts/DEMO-E-001"
+        ).status_code, 401)
+
+    def test_export_research_workspace_default_app_and_no_ledger_routes_absent(self):
+        basic = TestClient(create_app(self.config))
+        path = "/api/v1/admin/export/research/drafts/DEMO-E-001/workspace"
+        self.assertEqual(basic.get(path, headers=self.signed(
+            "synthetic-export-001", ("export_ops",)
+        )).status_code, 404)
+        self.assertEqual(self.client.post(
+            path, headers=self.signed("synthetic-export-001", ("export_ops",)),
+            json={"approved": True, "buyer": "invented"}
+        ).status_code, 405)
+
+    def test_export_research_workspace_read_and_revoke_are_ordered(self):
+        barrier = Barrier(2)
+        def reader():
+            ledger = self.reopen()
+            client = self.new_client(ledger)
+            barrier.wait(timeout=12)
+            return self.export_workspace(client=client)
+        def revoke():
+            ledger = self.reopen()
+            barrier.wait(timeout=12)
+            return ledger.revoke_grant(
+                engine="EXPORT", ref="DEMO-E-001",
+                subject="synthetic-export-001", role="export_ops",
+                actor="synthetic-controller", expected_grant_revision=0,
+                action_id="DEMO-EXPORT-CONCURRENT-REVOKE",
+                reason_ref="DEMO-EXPORT-CONCURRENT-REASON",
+            )
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            a, b = pool.submit(reader), pool.submit(revoke)
+            response, event = a.result(), b.result()
+        self.assertIn(response.status_code, (200, 404))
+        self.assertEqual(event.kind, "GRANT_REVOKED")
+        self.assertEqual(self.export_workspace().status_code, 404)
+        self.assertTrue(self.reopen().verify_integrity())
+
+
 if __name__ == "__main__":
     unittest.main()

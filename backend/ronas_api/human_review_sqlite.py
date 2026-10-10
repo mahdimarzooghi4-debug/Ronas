@@ -215,6 +215,43 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             self._verify(db)
             return tuple(self._steps(db, engine, ref))
 
+    def read_owned_domestic_status(self, ref: str,
+                                   principal: Principal) -> dict | None:
+        """Expose minimal observed technical progress to the exact owner.
+
+        This internal facade requires a *previously Keycloak-verified*
+        principal; a Python Principal alone is never authentication.
+        Request/evidence/decision refs, reviewer IDs and audit internals
+        remain private to the independently authorized operator view.
+        """
+        with self._transaction() as db:
+            self._verify(db)
+            record = self._catalogue.get(("DOMESTIC", ref))
+            if (record is None or not _synthetic_ref(ref)
+                    or not isinstance(principal, Principal)
+                    or not _synthetic_subject(principal.subject)):
+                return None
+            allowed = (
+                "household" in principal.roles
+                and principal.subject == record.owner_subject
+            )
+            if allowed:
+                steps = self._steps(db, "DOMESTIC", ref)
+                result = record.public_view()
+                result.update({
+                    "review_revision": len(steps),
+                    "technical_review_state": STATES[len(steps)],
+                })
+            else:
+                result = None
+            # Audited in the SAME transaction as the owner decision.
+            self._append(
+                db, kind="READ_ALLOWED" if allowed else "READ_DENIED",
+                engine="DOMESTIC", ref=ref, actor=principal.subject,
+                mode="HOUSEHOLD_TECHNICAL_STATUS",
+            )
+            return result
+
     def read_review_for_operator(self, engine: str, ref: str,
                                  principal: Principal) -> dict | None:
         """Audit an exact-case, currently authorized technical-history read.

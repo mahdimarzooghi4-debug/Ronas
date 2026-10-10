@@ -320,6 +320,57 @@ def build_authenticated_ui_router(
         return ('<section class="section"><h3>فهرست فنی بررسی شواهد'
                 ' (فقط نمونه آزمایشی)</h3>' + body + '</section>')
 
+    if authority_enquiry_ledger is not None:
+        @router.get("/admin/gate-evidence/{domain}/readiness")
+        def technical_readiness_matrix(
+            domain: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            permitted = next((
+                dossier for dossier in visible_dossiers(
+                    Principal(session.subject, session.roles)
+                )
+                if dossier.domain == domain and dossier.role in session.roles
+            ), None)
+            if permitted is None:
+                # Governance may read public gate metadata, but must not
+                # implicitly gain a domain operator's technical worklist.
+                raise HTTPException(404, detail="READINESS_MATRIX_NOT_FOUND")
+            matrix = authority_enquiry_ledger.read_readiness_matrix(
+                Principal(session.subject, session.roles), domain,
+            )
+            rows = []
+            for item in matrix["items"]:
+                stage = item["technical_handoff"]["technical_state"]
+                checks = '؛ '.join(
+                    check["check_kind"] + ": " + check["technical_state"]
+                    for check in item["authority_checks"]
+                )
+                rows.append(
+                    '<li><strong>' + escape(item["evidence_id"]) +
+                    '</strong> — ارجاع: ' + escape(stage) +
+                    ' — استعلام‌ها: ' + escape(checks) +
+                    ' — پذیرش: مسدود</li>'
+                )
+            body = (
+                '<article class="panel"><h2>ماتریس فنی شواهد ' +
+                escape(domain) + '</h2>'
+                '<p>تمام وضعیت‌ها از یک تراکنش ممیزی‌شده محلی به دست آمده‌اند.</p>'
+                '<p>این اطلاعات نسخه‌بسته و غیرعملیاتی هستند؛ '
+                'اصالت منشأ، حق استفاده، صلاحیت بازبین و تصویب Business '
+                'همچنان تأیید نشده‌اند.</p>'
+                '<ul>' + ''.join(rows) + '</ul>'
+                '<p><a href="/admin/gate-evidence/' +
+                escape(domain, quote=True) +
+                '">بازگشت به اسناد شواهد این حوزه</a></p></article>'
+            )
+            return page("روناس — ماتریس فنی شواهد آزمایشی",
+                        body, logged_in=True)
+
     @router.get("/admin/gate-evidence/{domain}")
     def gate_evidence_detail(
         domain: str,
@@ -341,7 +392,8 @@ def build_authenticated_ui_router(
         handoff_states: dict[str, str] = {}
         enquiry_states: dict[str, str] = {}
         preflight_notice = ""
-        if gate_handoff_ledger is not None:
+        if (gate_handoff_ledger is not None
+                and allowed.role in session.roles):
             preflight = gate_handoff_ledger.preflight_worklist(
                 Principal(session.subject, session.roles), domain,
             )
@@ -354,7 +406,8 @@ def build_authenticated_ui_router(
                 'و صلاحیت بازبین تأیید نشده است. حتی تطبیق هش DEMO '
                 'برای تأیید Business کافی نیست.</p>'
             )
-        if authority_enquiry_ledger is not None:
+        if (authority_enquiry_ledger is not None
+                and allowed.role in session.roles):
             enquiry = authority_enquiry_ledger.read_check_status(
                 Principal(session.subject, session.roles), domain,
             )
@@ -368,6 +421,9 @@ def build_authenticated_ui_router(
             preflight_notice += (
                 '<p>ارجاع‌های بررسی مرجع معتبر فقط فنی هستند؛ '
                 'تأیید واقعی منشأ، حقوق یا صلاحیت بازبین هنوز وجود ندارد.</p>'
+                '<p><a href="/admin/gate-evidence/' +
+                escape(domain, quote=True) +
+                '/readiness">نمای یکپارچه پیگیری فنی این حوزه</a></p>'
             )
         # All URLs are derived exclusively from pinned repository constants,
         # not from a query or arbitrary user-provided source path.

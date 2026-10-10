@@ -220,7 +220,7 @@ class AuthorityEnquiryTests(unittest.TestCase):
             self.handoff, trusted_response_authorizer=lambda *_: True,
         )
         with self.assertRaises(HandoffConflict):
-            self.respond(permissive, principal=self.submitter)
+            self.respond(ledger=permissive, principal=self.submitter)
         self.assertTrue(self.enquiry.verify_integrity())
 
     def test_response_without_request_or_wrong_lineage_rejected(self):

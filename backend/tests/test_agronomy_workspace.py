@@ -610,5 +610,137 @@ class AgronomyWorkspaceTests(unittest.TestCase):
 
 
 
+    def test_progress_timeline_empty_when_no_technical_event_recorded(self):
+        owner = self.owner_status()
+        expert = self.client.get(ROOT + "/DEMO-D-001", headers=self.headers())
+        self.assertEqual(owner.status_code, 200)
+        self.assertEqual(expert.status_code, 200)
+        for result in (owner, expert):
+            preview = result.json()["cultivation_preparation"]
+            self.assertEqual(preview["technical_timeline"], [])
+            self.assertEqual(preview["timeline_semantics"],
+                             "OBSERVED_TECHNICAL_STEPS_ONLY")
+            self.assertEqual(preview["review_revision"], 0)
+            self.assertFalse(preview["plan_accepted"])
+            self.assertNotIn("request_ref", result.text)
+
+    def test_timeline_has_only_first_persisted_request_not_future_response(self):
+        maker = Principal("synthetic-ops-001", frozenset({"domestic_ops"}))
+        self.ledger.request_evidence_review(
+            engine="DOMESTIC", ref="DEMO-D-001", actor=maker,
+            expected_case_version=2, expected_review_revision=0,
+            action_id="DEMO-PROGRESS-ACTION-REQUEST",
+            request_ref="DEMO-PROGRESS-PRIVATE-REQUEST",
+            evidence_ref="DEMO-PROGRESS-PRIVATE-EVIDENCE",
+        )
+        owner = self.owner_status()
+        expert = self.client.get(ROOT + "/DEMO-D-001", headers=self.headers())
+        expected = [{"revision": 1, "technical_event": "TECH_REVIEW_REQUESTED"}]
+        for response in (owner, expert):
+            self.assertEqual(response.status_code, 200)
+            preview = response.json()["cultivation_preparation"]
+            self.assertEqual(preview["technical_timeline"], expected)
+            self.assertFalse(preview["scientific_review_approved"])
+            self.assertNotIn("DEMO-PROGRESS-PRIVATE", response.text)
+
+    def test_timeline_full_response_remains_only_technical_not_plan(self):
+        maker = Principal("synthetic-ops-001", frozenset({"domestic_ops"}))
+        reviewer = Principal("synthetic-ops-reviewer", frozenset({"domestic_ops"}))
+        self.ledger.request_evidence_review(
+            engine="DOMESTIC", ref="DEMO-D-001", actor=maker,
+            expected_case_version=2, expected_review_revision=0,
+            action_id="DEMO-PROGRESS-ACTION-REQUEST",
+            request_ref="DEMO-PROGRESS-PRIVATE-REQUEST",
+            evidence_ref="DEMO-PROGRESS-PRIVATE-EVIDENCE",
+        )
+        self.ledger.record_human_response(
+            engine="DOMESTIC", ref="DEMO-D-001", actor=reviewer,
+            expected_case_version=2, expected_review_revision=1,
+            action_id="DEMO-PROGRESS-ACTION-RESPONSE",
+            request_ref="DEMO-PROGRESS-PRIVATE-REQUEST",
+            evidence_ref="DEMO-PROGRESS-PRIVATE-RESP",
+            decision_ref="DEMO-PROGRESS-PRIVATE-DECISION",
+        )
+        expected = [
+            {"revision": 1, "technical_event": "TECH_REVIEW_REQUESTED"},
+            {"revision": 2, "technical_event": "TECH_HUMAN_RESPONSE_RECORDED"},
+        ]
+        for response in (
+            self.owner_status(),
+            self.client.get(ROOT + "/DEMO-D-001", headers=self.headers()),
+        ):
+            self.assertEqual(response.status_code, 200)
+            preview = response.json()["cultivation_preparation"]
+            self.assertEqual(preview["technical_timeline"], expected)
+            self.assertEqual(preview["technical_review_state"],
+                             "HUMAN_RESPONSE_RECORDED")
+            self.assertFalse(preview["plan_accepted"])
+            self.assertFalse(preview["agronomist_qualification_verified"])
+            self.assertFalse(preview["scientific_review_approved"])
+            self.assertNotIn("DEMO-PROGRESS-PRIVATE", response.text)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_both_html_timelines_show_only_observed_labels_in_persian(self):
+        self.session(subject="synthetic-household-001", roles=("household",))
+        empty_owner = self.client.get("/my-drafts/DEMO-D-001")
+        self.assertEqual(empty_owner.status_code, 200)
+        self.assertIn("هنوز رویداد بررسی فنی ثبت نشده است.", empty_owner.text)
+        self.assertNotIn("مرحله 1:", empty_owner.text)
+        self.client.cookies.clear()
+        self.session()
+        empty_expert = self.client.get(DETAIL)
+        self.assertEqual(empty_expert.status_code, 200)
+        self.assertIn("هنوز رویداد بررسی فنی ثبت نشده است.", empty_expert.text)
+        self.assertIn('aria-label="سابقه پیگیری فنی"', empty_expert.text)
+        self.assertNotIn("مرحله 2:", empty_expert.text)
+
+    def test_timeline_renderer_rejects_forged_or_missing_steps(self):
+        from ronas_api.domestic_preparation_preview import (
+            REVIEW_STATES, domestic_preparation_preview,
+        )
+        from ronas_api.ui_bff import readonly_domestic_preparation_html
+        with self.assertRaises(ValueError):
+            domestic_preparation_preview(
+                case_version=2, review_revision=1,
+                technical_review_state="EVIDENCE_REVIEW_REQUESTED",
+                valid_review_states=REVIEW_STATES,
+                observed_review_steps=(),
+            )
+        with self.assertRaises(ValueError):
+            domestic_preparation_preview(
+                case_version=2, review_revision=1,
+                technical_review_state="EVIDENCE_REVIEW_REQUESTED",
+                valid_review_states=REVIEW_STATES,
+                observed_review_steps=("TECH_HUMAN_RESPONSE_RECORDED",),
+            )
+        valid = domestic_preparation_preview(
+            case_version=2, review_revision=1,
+            technical_review_state="EVIDENCE_REVIEW_REQUESTED",
+            valid_review_states=REVIEW_STATES,
+            observed_review_steps=("TECH_REVIEW_REQUESTED",),
+        )
+        self.assertIn("مرحله 1:", readonly_domestic_preparation_html(valid))
+        valid["technical_timeline"].append({
+            "revision": 2, "technical_event": "TECH_HUMAN_RESPONSE_RECORDED",
+        })
+        with self.assertRaises(ValueError):
+            readonly_domestic_preparation_html(valid)
+
+    def test_timeline_disclosure_does_not_inherit_another_roles_access(self):
+        self.assertEqual(self.owner_status(subject="synthetic-agronomist-001")
+                         .status_code, 404)
+        self.assertEqual(self.client.get(
+            ROOT + "/DEMO-D-001", headers=self.headers(
+                subject="synthetic-household-001", roles=("household",)
+            )
+        ).status_code, 404)
+        self.active.remove("DEMO-D-001")
+        self.assertEqual(self.client.get(
+            ROOT + "/DEMO-D-001", headers=self.headers()
+        ).status_code, 404)
+        self.assertEqual(self.owner_status().status_code, 200)
+
+
+
 if __name__ == "__main__":
     unittest.main()

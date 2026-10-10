@@ -17,7 +17,8 @@ from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedge
 from .owner_case_api import build_owned_household_router
 from .technical_review_api import build_technical_review_read_router
 from .shared_workspaces import build_user_workspaces_router
-from .business_gate_evidence import build_business_gate_evidence_router
+from .business_gate_evidence import (build_business_gate_evidence_router,
+                                     BusinessSourceSnapshotError)
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -46,6 +47,14 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         # masquerade as a successfully authorized case read.
         return JSONResponse(status_code=503,
                             content={"detail": "SYNTHETIC_LEDGER_UNAVAILABLE"})
+
+    @app.exception_handler(BusinessSourceSnapshotError)
+    async def pinned_business_source_unavailable(_request, _exc) -> JSONResponse:
+        # Never serve a stale Business gate claim or expose local file paths.
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "PINNED_BUSINESS_SOURCE_UNAVAILABLE"},
+        )
 
     verifier = (KeycloakTokenVerifier(config) if isinstance(config, KeycloakConfig)
                 else TokenVerifier(config) if isinstance(config, AuthConfig)

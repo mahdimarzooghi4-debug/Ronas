@@ -1,5 +1,12 @@
 # Ronas: signed-token backend foundation
 
+## خط زمانی مشاهده‌شده بررسی فنی پرونده Domestic — فقط LOCAL/TEST
+
+دو صفحه موجود `/my-drafts/{ref}` خانوارِ مالک و `/agronomy/assigned-drafts/{ref}` کارشناس دارای تخصیص جاری، از `technical_timeline` در قرارداد مشترک `ronas.domestic.preparation-preview.v1` استفاده می‌کنند. این فهرست فقط رویدادهای واقعاً ثبت‌شده `TECH_REVIEW_REQUESTED` و `TECH_HUMAN_RESPONSE_RECORDED` را به ترتیب revision با توضیح ثابت فارسی نمایش می‌دهد؛ رویداد آینده، زمان، هویت طرف مقابل، مرجع خصوصی، تصمیم علمی و تأیید طرح کشت حدس زده نمی‌شود. عنوان معنایی و `aria-label` در HTML حفظ شده است.
+
+قرارداد: [domestic-observed-progress-timeline-contract.md](domestic-observed-progress-timeline-contract.md). ۶ آزمون جدید در `backend/tests/test_agronomy_workspace.py` برای رد مرحله جعلی، مشاهده مرحله ثبت‌شده، فیلتر حریم خصوصی، دسترسی مستقل و توضیح فارسی. همه این داده‌ها فقط DEMO هستند و ثبت واقعی کشت/رضایت/تأیید هنوز مسدود است.
+
+
 ## نمای هماهنگ پیش‌نیازهای کشت برای خانوار و کارشناس — فقط LOCAL/TEST
 
 در دو صفحه موجود `/my-drafts/{ref}` (فقط مالک خانوار) و `/agronomy/assigned-drafts/{ref}` (فقط کارشناس دارای تخصیص معتبر و جاری)، جایگاه‌های نمایشی محصول، مساحت، آب، خاک و موقعیت از قرارداد واحد `ronas.domestic.preparation-preview.v1` ارائه می‌شوند. همه مقادیر `null` و وضعیت طرح کشت `NOT_AUTHORED` هستند؛ نه معیار کفایت اطلاعات تعیین شده، نه رضایت واقعی و صلاحیت حرفه‌ای احراز شده و نه برنامه علمی/عملیاتی ساخته شده است. ثبت مرجع پاسخ انسانی در بررسی فنی هرگز این نتیجه را تغییر نمی‌دهد.

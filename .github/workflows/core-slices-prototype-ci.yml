@@ -28,7 +28,7 @@ jobs:
       - run: node --test prototype/tests/test_demo_model.mjs
 
   secure-api-contracts:
-    name: Python 3.12 RS256 verification and server-side role isolation
+    name: Python 3.12 Keycloak JWKS and client-role isolation
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:

@@ -225,7 +225,7 @@ class SqliteSyntheticGateEvidenceHandoff:
             raise HandoffNotAuthorized("synthetic domain role required")
         return digest(principal.subject)
 
-    def _append(self, db: sqlite3.Connection, *, principal: Principal,
+    def _append(self, *, principal: Principal,
                 domain: str, evidence_id: str, action_id: str, stage: str,
                 reference_ref: str, claimed_sha256: str, note_ref: str | None,
                 expected_revision: int) -> HandoffEvent:
@@ -239,6 +239,13 @@ class SqliteSyntheticGateEvidenceHandoff:
         with self._transaction() as db:
             events = self._verify(db)
             by_action = next((e for e in events if e.action_id == action_id), None)
+            # Replay is not a bypass for an authority revoked since the
+            # original write. A matching action may be retried only while
+            # the independently injected reviewer authority is still valid.
+            if stage == STAGES[1] and not self._review_authorizer(
+                principal.subject, domain, evidence_id
+            ):
+                raise HandoffNotAuthorized("no independent reviewer authority")
             if by_action is not None:
                 if (by_action.domain == domain and by_action.evidence_id == evidence_id
                         and by_action.stage == stage and by_action.actor_digest == actor
@@ -259,10 +266,6 @@ class SqliteSyntheticGateEvidenceHandoff:
                         or current.actor_digest == actor
                         or note_ref is None))):
                 raise HandoffConflict("unexpected technical review revision")
-            if stage == STAGES[1] and not self._review_authorizer(
-                principal.subject, domain, evidence_id
-            ):
-                raise HandoffNotAuthorized("no independent reviewer authority")
             sequence = len(events) + 1
             previous = events[-1].event_digest if events else GENESIS
             raw = {
@@ -285,7 +288,7 @@ class SqliteSyntheticGateEvidenceHandoff:
                          evidence_id: str, action_id: str, reference_ref: str,
                          claimed_sha256: str, expected_revision: int = 0) -> HandoffEvent:
         return self._append(
-            None, principal=principal, domain=domain, evidence_id=evidence_id,
+            principal=principal, domain=domain, evidence_id=evidence_id,
             action_id=action_id, reference_ref=reference_ref,
             claimed_sha256=claimed_sha256, expected_revision=expected_revision,
             stage=STAGES[0], note_ref=None,
@@ -296,7 +299,7 @@ class SqliteSyntheticGateEvidenceHandoff:
                           claimed_sha256: str, note_ref: str,
                           expected_revision: int = 1) -> HandoffEvent:
         return self._append(
-            None, principal=principal, domain=domain, evidence_id=evidence_id,
+            principal=principal, domain=domain, evidence_id=evidence_id,
             action_id=action_id, reference_ref=reference_ref,
             claimed_sha256=claimed_sha256, expected_revision=expected_revision,
             stage=STAGES[1], note_ref=note_ref,

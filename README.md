@@ -8,10 +8,11 @@
 - **منبع پایه:** «طرح نامه جامع روناس»، مرداد ۱۴۰۵، سفارش معاونت اشتغال کمیته امداد امام خمینی(ره)، طراحی خانه خلاق و نوآوری آینه (سند مبنا در اختیار کارفرما)
 - **تصمیم راهبردی تأییدشده:** طراحی هم‌زمان **دو موتور مستقل بازار داخلی و صادرات**، با قراردادها، مدل اقتصادی، ریسک‌ها و مسیر تحقق جداگانه.
 - **وضعیت پیاده‌سازی:** هنوز کد محصول، معماری مصوب، استقرار یا خدمات عملیاتی وجود ندارد.
-- **Business v0.37 (۱۴۰۵/۰۷/۱۷):** جهت‌گیری‌های RON-DEC-022..025، آماده‌سازی موازی D0/E0 طبق RON-DEC-026 و **سیاست هوش کاملاً داخلی روناس طبق RON-DEC-027** تصویب شده‌اند؛ این تصویب‌ها هیچ گیت اجرایی را عبور نمی‌دهند.
+- **Business v0.38 (2026-10-10):** جهت‌گیری‌های RON-DEC-022..025، آماده‌سازی موازی D0/E0 طبق RON-DEC-026 و **سیاست هوش کاملاً داخلی روناس طبق RON-DEC-027** تصویب شده‌اند؛ این تصویب‌ها هیچ گیت اجرایی را عبور نمی‌دهند.
 - **هوش روناس:** [سیاست مصوب Business: Dataset اولیه دارای حق استفاده، یادگیری/بازآموزی نسخه‌دار و ارتقای انسانی](docs/business/64-ronas-internal-ai-progressive-learning-business-direction.md). **طبق RON-DEC-028، مسیر مدل پایه Open-Weight دارای مجوز معتبر با Fine-tuning و اجرای کاملاً داخلی تصویب شده**؛ مدل/نسخه/مجوز مشخص، حقوق Training، دیتاست اولیه و طراحی فنی هنوز انتخاب/تأیید نشده‌اند. هیچ مدل یا دیتاست Training واقعی ساخته نشده است. [نقشه شواهد](docs/business/65-initial-ai-dataset-and-controlled-learning-evidence-blueprint.md).
 - **بررسی نامزد مدل (Business / غیرمصوب):** [مقایسه Gemma 4، Qwen3.5 و Qwen3](docs/business/66-open-weight-base-model-candidate-screening.md) فقط ثبت منابع رسمی و شکاف‌های حقوق/ارزیابی است؛ هنوز مدل روناس انتخاب نشده.
 - **روش ساخت هوش — RON-DEC-028:** انتخاب **گزینه ب** در سطح Business است، نه مجوز ورود به Technical، دانلود وزن، آموزش، کدنویسی یا استقرار.
+- **ترتیب آماده‌سازی هوش — RON-DEC-029:** [D0 ابتدا برای شواهد Business و E0 موازی و مستقل](docs/business/69-d0-first-evidence-execution-plan-e0-parallel.md) تصویب شده؛ **نه نخستین Task واقعی Training یا Dataset**. گیت Technical و Code هنوز بسته‌اند.
 - **گیت‌ها:** [Domestic #2](https://github.com/mahdimarzooghi4-debug/Ronas/issues/2)، [Export #3](https://github.com/mahdimarzooghi4-debug/Ronas/issues/3) و [Finance #4](https://github.com/mahdimarzooghi4-debug/Ronas/issues/4) **OPEN**؛ [PR #1](https://github.com/mahdimarzooghi4-debug/Ronas/pull/1) Draft/Unmerged، [PR #6](https://github.com/mahdimarzooghi4-debug/Ronas/pull/6) HOLD، [PR #8](https://github.com/mahdimarzooghi4-debug/Ronas/pull/8) Discovery-only.
 
 ## شیوه کار

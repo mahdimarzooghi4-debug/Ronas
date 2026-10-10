@@ -68,6 +68,42 @@ authenticated, exact-case-checked facade and must not trust a client-
 supplied `Principal`. No new review endpoint has been mounted. This is
 not a Production read/authorization policy and no new user role is granted.
 
+## Opt-in signed-Keycloak HTTP read boundary (LOCAL/TEST ONLY)
+
+`backend/ronas_api/technical_review_api.py` provides two **GET-only**
+technical evidence-reference views, each inside the one unified admin
+environment and isolated by engine:
+
+- `GET /api/v1/admin/domestic/household-intake/drafts/{ref}/technical-review`
+- `GET /api/v1/admin/export/research/drafts/{ref}/technical-review`
+
+The default `app = create_app(KeycloakConfig.from_environment())` does **not**
+mount them. Even passing a `scoped_registry` alone does not mount them. Local
+offline tests must explicitly construct an `SqliteSyntheticHumanReviewLedger`
+and pass that exact same object as **both** `scoped_registry` and
+`technical_review_ledger` to `create_app(KeycloakConfig, ...)`. A
+generic OIDC verifier, missing ledger or differing grant catalogue is rejected
+at application construction. Neither handler accepts an actor/role from
+query parameters, request body or client headers. Authentication uses the
+app's existing signed Keycloak client-token verifier (or an independently
+validated browser flow bound to that Keycloak configuration), followed by
+the ledger's exact-case current grant check and a transactional read audit.
+
+Response semantics: `401` for missing/bad JWT; identical `404
+DRAFT_NOT_FOUND` for absent, unassigned, cross-engine or revoked cases;
+`503 TECHNICAL_REVIEW_UNAVAILABLE` for verified audit corruption or
+SQLite failure (no untrusted references in the HTTP response). Authorized
+reads return a bounded DEMO-only history without actor/command digests or
+real note text. `Cache-Control: no-store` is applied globally. No POST,
+workflow decision, consent mutation, external supplier verification or
+Business state transition is exposed, and no new portal is created.
+
+Existing `review_state()` and `review_history()` are INTERNAL
+diagnostics and MUST NOT be used in an HTTP handler. Keycloak client
+role verification alone cannot authorize history reads. The allowed
+technical state `HUMAN_RESPONSE_RECORDED` is explicitly **not** a
+Business approval. These routes do not form a Production API contract.
+
 ## Tests and exclusions
 
 Tests: backend/tests/test_human_review_sqlite.py (27 offline tests).
@@ -75,7 +111,7 @@ Scenarios cover restart/reopen, independent authorization, revoked
 grant, cross-engine isolation, request binding, forced SQL insert
 rollback, audit tampering, SQLite append-only triggers, concurrent
 replay/CAS, missing request and absence of public decision endpoints.
-Additional scenarios exercise exact-case read authorization, denied-role/assignment/engine access, immediate revocation, atomic audit-write failure and concurrent read/revocation ordering. Existing Keycloak and synthetic domain tests remain in the same CI.
+Additional scenarios exercise exact-case read authorization, denied-role/assignment/engine access, immediate revocation, atomic audit-write failure and concurrent read/revocation ordering. The separate backend/tests/test_technical_review_api.py suite adds 10 real HTTP admission and denial tests with ephemeral locally signed test JWTs: positive Domestic and Export, response-only reference, invalid claims, role and assignment denial, immediate revocation, corrupted audit, rollback-on-audit-error, default route disabled and mismatched injection blocked. Existing Keycloak and synthetic domain tests remain in the same CI.
 
 This is a local single-host SQLite simulation, NOT a production store,
 distributed consistent authorizer, tamper-proof independent audit or

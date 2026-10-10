@@ -129,7 +129,14 @@ class TwoShellUXTests(unittest.TestCase):
                 if url.startswith("#"):
                     self.assertIn(url[1:], ids)
                 else:
-                    self.assertIn(url, ("index.html", "admin.html"))
+                    target_page, sep, fragment = url.partition("#")
+                    self.assertIn(target_page, ("index.html", "admin.html"))
+                    if sep:
+                        target_path = ROOT / target_page
+                        target_doc = read(target_path)
+                        target_ids = {a["id"] for _, a in target_doc.nodes
+                                      if "id" in a}
+                        self.assertIn(fragment, target_ids)
 
     def test_both_pages_link_to_each_other(self):
         for path in (PUBLIC, ADMIN):

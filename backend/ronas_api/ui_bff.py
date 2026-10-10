@@ -24,6 +24,10 @@ from .agronomy_workspace import SyntheticAgronomyWorkspace
 from .export_supplier_workspace import (
     SyntheticSupplierUnavailable, SyntheticSupplierWorkspace,
 )
+from .domestic_partner_workspace import (
+    FIELDS as DOMESTIC_PARTNER_FIELDS, SyntheticDomesticPartnerUnavailable,
+    SyntheticDomesticPartnerWorkspace,
+)
 from .domestic_preparation_preview import (
     REVIEW_STATES, domestic_preparation_preview,
 )
@@ -164,6 +168,7 @@ def build_authenticated_ui_router(
     authority_enquiry_ledger: SqliteSyntheticAuthorityEnquiryLedger | None = None,
     agronomy_workspace: SyntheticAgronomyWorkspace | None = None,
     export_supplier_workspace: SyntheticSupplierWorkspace | None = None,
+    domestic_partner_workspace: SyntheticDomesticPartnerWorkspace | None = None,
 ) -> APIRouter:
     # Only the opt-in same-instance ledger injected by create_app may
     # provide the synthetic worklist. Never trust a client-side role list.
@@ -191,6 +196,10 @@ def build_authenticated_ui_router(
     if (export_supplier_workspace is not None
             and not isinstance(export_supplier_workspace, SyntheticSupplierWorkspace)):
         raise ValueError("explicit synthetic supplier workspace required")
+    if (domestic_partner_workspace is not None
+            and not isinstance(domestic_partner_workspace,
+                               SyntheticDomesticPartnerWorkspace)):
+        raise ValueError("explicit synthetic Domestic partner workspace required")
     router = APIRouter()
     cookie_name = "__Host-ronas_session"
 
@@ -318,6 +327,7 @@ def build_authenticated_ui_router(
             ),
             agronomy_cases=agronomy_workspace is not None,
             export_supplier_preview=export_supplier_workspace is not None,
+            domestic_partner_preview=domestic_partner_workspace is not None,
         )
         assigned = next((w for w in active if w["role"] == role), None)
         if assigned is None:
@@ -372,6 +382,29 @@ def build_authenticated_ui_router(
                    + quote(listing["next_cursor"])
                    + '">ادامه پرونده‌ها</a></p>'
                    if listing["next_cursor"] else '')
+            )
+        elif (role in ("local_buyer", "equipment_seller")
+              and domestic_partner_workspace is not None):
+            try:
+                preview = domestic_partner_workspace.own_preview(
+                    role, Principal(session.subject, session.roles)
+                )
+            except SyntheticDomesticPartnerUnavailable as exc:
+                raise HTTPException(
+                    503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE",
+                ) from exc
+            link = (
+                "/local-buyer/my-preview" if role == "local_buyer"
+                else "/equipment-seller/my-preview"
+            )
+            local_read = (
+                '<h3>پیش‌نمای شخصی نقش داخلی (فقط DEMO)</h3>'
+                '<p>این جایگاه آزمایشی به معنی وجود درخواست خرید، موجودی '
+                'تجهیزات، مجوز، پیشنهاد یا معامله نیست.</p>'
+                + ('<p><a href="' + link
+                   + '">مشاهده پیش‌نمای آماده‌سازی شخصی</a></p>'
+                   if preview is not None else
+                   '<p>نمونه شخصی دارای مجوز جاری موجود نیست.</p>')
             )
         elif role == "export_supplier" and export_supplier_workspace is not None:
             try:
@@ -441,6 +474,77 @@ def build_authenticated_ui_router(
             )
             return page("روناس — فضای کار کارشناس کشاورزی (آزمایشی)",
                         body, logged_in=True)
+
+    if domestic_partner_workspace is not None:
+        def partner_page(
+            role: str, sid: str | None,
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            try:
+                view = domestic_partner_workspace.own_preview(
+                    role, Principal(session.subject, session.roles),
+                )
+            except SyntheticDomesticPartnerUnavailable as exc:
+                raise HTTPException(
+                    503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE",
+                ) from exc
+            if view is None:
+                raise HTTPException(404, detail="PREVIEW_NOT_FOUND")
+            if (view["profile_state"] != "NOT_SUBMITTED_DEMO"
+                    or view["commercial_actions_enabled"] is not False
+                    or view["data_submission_enabled"] is not False
+                    or tuple(view["preparation_fields"]) != DOMESTIC_PARTNER_FIELDS[role]
+                    or any(value is not None
+                           for value in view["preparation_fields"].values())):
+                raise HTTPException(503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE")
+            labels = {
+                "local_buyer": (
+                    "خریدار محلی",
+                    ("هویت", "محصول درخواستی", "مقدار درخواستی",
+                     "محل تحویل", "بودجه"),
+                ),
+                "equipment_seller": (
+                    "فروشنده تجهیزات",
+                    ("هویت", "فهرست تجهیزات", "موجودی",
+                     "محدوده خدمات", "تناسب فنی تجهیزات"),
+                ),
+            }
+            label, slots = labels[role]
+            items = ''.join(
+                '<li>' + name + ': ثبت نشده</li>' for name in slots
+            )
+            body = (
+                '<article class="panel"><h2>پیش‌نمای شخصی '
+                + label + ' (فقط DEMO)</h2>'
+                '<p>شناسه نمونه: ' + escape(view["profile_ref"])
+                + ' — نسخه ' + str(view["profile_version"]) + '</p>'
+                '<p>وضعیت: NOT_SUBMITTED_DEMO؛ هیچ اطلاعاتی ارسال نشده است.</p>'
+                '<h3>جایگاه‌های آماده‌سازی</h3><ul>' + items + '</ul>'
+                '<p>این جایگاه‌ها معیار پذیرش یا اظهار واقعی نیستند. '
+                'هویت، رضایت، موجودی یا تقاضا احراز نشده‌اند.</p>'
+                '<p>خریدوفروش، پیشنهاد، سفارش، قیمت، پرداخت و '
+                'تأیید تناسب فنی فعال نیستند.</p>'
+                '<p><a href="/workspace/' + role
+                + '">بازگشت به فضای کار نقش من</a></p>'
+                '</article>'
+            )
+            return page("روناس — پیش‌نمای داخلی " + label + " (DEMO)",
+                        body, logged_in=True)
+
+        @router.get("/local-buyer/my-preview")
+        def buyer_page(
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            return partner_page("local_buyer", sid)
+
+        @router.get("/equipment-seller/my-preview")
+        def equipment_page(
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            return partner_page("equipment_seller", sid)
 
     if export_supplier_workspace is not None:
         @router.get("/export-supplier/my-preview")

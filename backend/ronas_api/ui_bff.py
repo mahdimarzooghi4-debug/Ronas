@@ -5,12 +5,14 @@ rendered from fixed templates, not client-supplied text or arbitrary files.
 No live workflow or personal data exists in this UI foundation.
 """
 from html import escape
+from urllib.parse import quote
 from pathlib import Path
 
 from fastapi import APIRouter, Cookie, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
-from .auth import InvalidToken
+from .auth import InvalidToken, Principal
+from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
 from .oidc_browser import BrowserOIDC
 
 USER_ROLES = {
@@ -80,7 +82,15 @@ def page(title: str, body: str, *, logged_in: bool, code: int = 200) -> HTMLResp
     return response
 
 
-def build_authenticated_ui_router(flow: BrowserOIDC) -> APIRouter:
+def build_authenticated_ui_router(
+    flow: BrowserOIDC,
+    technical_review_ledger: SqliteSyntheticHumanReviewLedger | None = None,
+) -> APIRouter:
+    # Only the opt-in same-instance ledger injected by create_app may
+    # provide the synthetic worklist. Never trust a client-side role list.
+    if (technical_review_ledger is not None
+            and not isinstance(technical_review_ledger, SqliteSyntheticHumanReviewLedger)):
+        raise ValueError("technical review worklist requires explicit ledger")
     router = APIRouter()
     cookie_name = "__Host-ronas_session"
 
@@ -120,9 +130,48 @@ def build_authenticated_ui_router(flow: BrowserOIDC) -> APIRouter:
             cards = '<p>هیچ نمای کاربری بیرونی برای دسترسی‌های فعلی شما تخصیص نیافته است.</p>'
         return page("روناس — محیط کاربران و همکاران", cards, logged_in=True)
 
+    def technical_worklist(engine: str, principal: Principal,
+                           after_ref: str | None) -> str:
+        if technical_review_ledger is None:
+            return ""
+        try:
+            result = technical_review_ledger.list_technical_review_worklist(
+                engine, principal, after_ref=after_ref, limit=20
+            )
+        except ValueError as exc:
+            raise HTTPException(422, detail="INVALID_WORKLIST_QUERY") from exc
+        links = []
+        for item in result["items"]:
+            ref = escape(item["ref"])
+            url = ("/api/v1/admin/domestic/household-intake/drafts/"
+                   if engine == "DOMESTIC" else
+                   "/api/v1/admin/export/research/drafts/")
+            links.append(
+                '<li><a href="' + url + ref + '/technical-review">'
+                + ref + '</a> — ' + escape(item["technical_review_state"])
+                + ' · DRAFT_ONLY</li>'
+            )
+        body = ('<ul>' + ''.join(links) + '</ul>' if links
+                else '<p>پرونده ساختگی تخصیص‌یافته‌ای برای این بخش وجود ندارد.</p>')
+        if result["next_cursor"]:
+            parameter = ("domestic_after_ref" if engine == "DOMESTIC"
+                         else "export_after_ref")
+            body += ('<a href="/admin?' + parameter + '='
+                     + quote(result["next_cursor"]) + '">پرونده‌های بعدی</a>')
+        return ('<section class="section"><h3>فهرست فنی بررسی شواهد'
+                ' (فقط نمونه آزمایشی)</h3>' + body + '</section>')
+
     @router.get("/admin")
-    def admin_ui(sid: str | None = Cookie(default=None, alias=cookie_name)) -> HTMLResponse:
-        grants = roles(sid)
+    def admin_ui(
+        sid: str | None = Cookie(default=None, alias=cookie_name),
+        domestic_after_ref: str | None = None,
+        export_after_ref: str | None = None,
+    ) -> HTMLResponse:
+        try:
+            session = flow.session(sid)
+        except InvalidToken:
+            session = None
+        grants = session.roles if session is not None else None
         if grants is None:
             return page("مدیریت روناس — ورود الزامی", '<p>ورود امن لازم است.</p>',
                         logged_in=False, code=401)
@@ -139,8 +188,20 @@ def build_authenticated_ui_router(flow: BrowserOIDC) -> APIRouter:
                 "finance": "پرداخت، تسویه و انتقال وجه غیرفعال هستند.",
                 "governance": "راهبری به معنی مجوز خودکار مالی، کشاورزی یا صادرات نیست.",
             }[role]
+            worklist = ""
+            if technical_review_ledger is not None and session is not None:
+                if role == "domestic_ops":
+                    worklist = technical_worklist(
+                        "DOMESTIC", Principal(session.subject, session.roles),
+                        domestic_after_ref,
+                    )
+                elif role == "export_ops":
+                    worklist = technical_worklist(
+                        "EXPORT", Principal(session.subject, session.roles),
+                        export_after_ref,
+                    )
             cards.append('<article class="panel"><h2>' + escape(label) + '</h2><p>'
-                         + escape(note) + '</p></article>')
+                         + escape(note) + '</p>' + worklist + '</article>')
         return page("مدیریت روناس — پنل واحد با دسترسی مجزا",
                     '<div class="columns">' + ''.join(cards) + '</div>', logged_in=True)
 

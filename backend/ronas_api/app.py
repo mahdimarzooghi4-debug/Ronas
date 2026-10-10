@@ -22,6 +22,8 @@ from .business_gate_evidence import (build_business_gate_evidence_router,
 from .gate_evidence_handoff_sqlite import (SqliteSyntheticGateEvidenceHandoff,
                                           HandoffIntegrityError)
 from .gate_evidence_handoff_api import build_gate_handoff_read_router
+from .gate_evidence_authority_enquiry_sqlite import SqliteSyntheticAuthorityEnquiryLedger
+from .gate_evidence_authority_enquiry_api import build_authority_enquiry_read_router
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -39,7 +41,8 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                browser_flow: BrowserOIDC | None = None,
                scoped_registry: ScopedSyntheticDraftRegistry | None = None,
                technical_review_ledger: SqliteSyntheticHumanReviewLedger | None = None,
-               gate_handoff_ledger: SqliteSyntheticGateEvidenceHandoff | None = None) -> FastAPI:
+               gate_handoff_ledger: SqliteSyntheticGateEvidenceHandoff | None = None,
+               authority_enquiry_ledger: SqliteSyntheticAuthorityEnquiryLedger | None = None) -> FastAPI:
     app = FastAPI(
         title="Ronas bounded read-only API foundation",
         docs_url=None, redoc_url=None, openapi_url=None,
@@ -90,6 +93,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             browser_flow, technical_review_ledger=worklist_ledger,
             owned_case_ledger=owner_ledger,
             gate_handoff_ledger=gate_handoff_ledger,
+            authority_enquiry_ledger=authority_enquiry_ledger,
         ))
 
     @app.middleware("http")
@@ -147,6 +151,19 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             )
         app.include_router(build_gate_handoff_read_router(
             gate_handoff_ledger, principal,
+        ))
+
+    if authority_enquiry_ledger is not None:
+        if (not isinstance(config, KeycloakConfig) or browser_flow is None
+                or not isinstance(authority_enquiry_ledger,
+                                  SqliteSyntheticAuthorityEnquiryLedger)
+                or gate_handoff_ledger is None
+                or authority_enquiry_ledger.handoff is not gate_handoff_ledger):
+            raise ValueError(
+                "authority enquiry read model requires identical explicit handoff ledger"
+            )
+        app.include_router(build_authority_enquiry_read_router(
+            authority_enquiry_ledger, principal,
         ))
 
     if scoped_registry is not None:

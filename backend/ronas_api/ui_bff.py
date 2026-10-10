@@ -331,14 +331,20 @@ def build_authenticated_ui_router(
         verify_pinned_business_sources()
         current = dossier_detail(allowed)
         handoff_states: dict[str, str] = {}
+        preflight_notice = ""
         if gate_handoff_ledger is not None:
-            handoff = gate_handoff_ledger.worklist(
+            preflight = gate_handoff_ledger.preflight_worklist(
                 Principal(session.subject, session.roles), domain,
             )
             handoff_states = {
                 item["evidence_id"]: item["technical_state"]
-                for item in handoff["items"]
+                for item in preflight["items"]
             }
+            preflight_notice = (
+                '<p>کنترل پذیرش شواهد: مسدود؛ اصالت منشأ، حق استفاده '
+                'و صلاحیت بازبین تأیید نشده است. حتی تطبیق هش DEMO '
+                'برای تأیید Business کافی نیست.</p>'
+            )
         # All URLs are derived exclusively from pinned repository constants,
         # not from a query or arbitrary user-provided source path.
         official_source = (
@@ -373,6 +379,7 @@ def build_authenticated_ui_router(
             '">سند مبدأ نسخه‌بسته</a> — '
             '<a href="' + escape(issue, quote=True) +
             '">گیت Business در GitHub</a></p>'
+            + preflight_notice +
             '<p>یادداشت بررسی فنی، تأیید اعتبار سند یا تصویب Business نیست.</p>'
             '<p>هیچ تأیید، ثبت مدرک، بودجه، معامله یا تصمیمی در این نما انجام نمی‌شود.</p>'
             '<p><a href="/admin">بازگشت به مدیریت روناس</a></p>'

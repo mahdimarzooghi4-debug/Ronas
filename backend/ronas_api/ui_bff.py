@@ -15,14 +15,7 @@ from .auth import InvalidToken, Principal
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
 from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
 from .oidc_browser import BrowserOIDC
-
-USER_ROLES = {
-    "household": "خانوار / تولیدکننده خانگی",
-    "local_buyer": "خریدار محلی",
-    "agronomy_expert": "کارشناس کشاورزی",
-    "equipment_seller": "فروشنده تجهیزات",
-    "export_supplier": "تأمین‌کننده حرفه‌ای صادرات",
-}
+from .shared_workspaces import USER_ROLES, visible_user_workspaces
 ADMIN_ROLES = {
     "domestic_ops": "عملیات داخلی",
     "export_ops": "عملیات صادرات",
@@ -165,6 +158,42 @@ def build_authenticated_ui_router(
         return ('<section class="section"><h3>پرونده‌های من'
                 ' (فقط نمونه آزمایشی)</h3>' + body + '</section>')
 
+    @router.get("/workspace/{role}")
+    def user_role_workspace(
+        role: str,
+        sid: str | None = Cookie(default=None, alias=cookie_name),
+    ) -> HTMLResponse:
+        try:
+            session = flow.session(sid)
+        except InvalidToken:
+            raise HTTPException(401, detail="INVALID_SESSION") from None
+        active = visible_user_workspaces(
+            Principal(session.subject, session.roles),
+            owned_cases=owned_case_ledger is not None,
+            technical_progress=(
+                technical_review_ledger is not None
+                and owned_case_ledger is technical_review_ledger
+            ),
+        )
+        assigned = next((w for w in active if w["role"] == role), None)
+        if assigned is None:
+            # Unknown and unassigned partner roles are indistinguishable.
+            raise HTTPException(404, detail="WORKSPACE_NOT_FOUND")
+        local_read = (
+            '<p><a href="/">مشاهده پرونده‌های ساختگی متعلق به من</a></p>'
+            if "OWNED_SYNTHETIC_DOMESTIC_DRAFTS" in assigned["local_test_reads"]
+            else '<p>در این نقش، خواندن پرونده عملیاتی فعال نیست.</p>'
+        )
+        body = (
+            '<article class="panel"><h2>' + escape(assigned["label"]) + '</h2>'
+            '<p>محیط کاربران و همکاران — دسترسی صرفاً به نقش امضاشده.</p>'
+            '<p>وضعیت خدمات این نقش: غیرعملیاتی؛ معامله، ثبت‌نام، '
+            'تأیید و تصمیم Business غیرفعال هستند.</p>'
+            + local_read
+            + '<p><a href="/">بازگشت به محیط مشترک</a></p></article>'
+        )
+        return page("روناس — فضای کار نقش من (آزمایشی)", body, logged_in=True)
+
     @router.get("/")
     def public_ui(
         sid: str | None = Cookie(default=None, alias=cookie_name),
@@ -193,6 +222,8 @@ def build_authenticated_ui_router(
                 )
             cards += ('<article class="panel"><h2>' + escape(label) + '</h2>'
                       '<p>وضعیت خدمت: نیازمند شواهد و مجوز عملیاتی.</p>'
+                      '<p><a href="/workspace/' + quote(name)
+                      + '">مشاهده فضای کار این نقش</a></p>'
                       + household + '</article>')
         if not cards:
             cards = '<p>هیچ نمای کاربری بیرونی برای دسترسی‌های فعلی شما تخصیص نیافته است.</p>'

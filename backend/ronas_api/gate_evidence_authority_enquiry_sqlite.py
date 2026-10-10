@@ -365,6 +365,71 @@ class SqliteSyntheticAuthorityEnquiryLedger:
                 "items": rows,
             }
 
+    def pending_connector_request_identities(
+        self, principal: Principal, domain: str,
+    ) -> tuple:
+        """Internal only. Full lineage check in one DB transaction.
+
+        Never exposed in HTTP/UI: these envelopes contain private DEMO
+        request/source identifiers for a future *approved* integration.
+        Preparing an identity is not dispatch permission.
+        """
+        from .gate_authority_connector_boundary import pending_identity
+
+        self.handoff._actor(principal, domain)
+        verify_pinned_business_sources()
+        with self.handoff._transaction() as db:
+            handoffs, enquiries = self._verify(db)
+            originals = {
+                (e.domain, e.evidence_id): e for e in handoffs
+                if e.stage == "REFERENCE_RECORDED"
+            }
+            latest = {
+                (e.domain, e.evidence_id, e.check_kind): e
+                for e in enquiries
+            }
+            pending = []
+            for key, event in sorted(latest.items()):
+                if key[0] != domain or event.stage != REQUESTED:
+                    continue
+                source = originals.get((event.domain, event.evidence_id))
+                if source is None:
+                    raise HandoffIntegrityError("missing source reference")
+                pending.append(pending_identity(handoff=source, enquiry=event))
+            return tuple(pending)
+
+    def connector_readiness(self, principal: Principal, domain: str) -> dict:
+        """Read-only: enumerate unadmitted provider channels, no real results."""
+        from .gate_authority_connector_boundary import (
+            CONNECTOR_STATE, CONTRACT_VERSION, blocked_connector_status,
+        )
+
+        self.handoff._actor(principal, domain)
+        verify_pinned_business_sources()
+        with self.handoff._transaction() as db:
+            _, events = self._verify(db)
+            last = {
+                (e.domain, e.evidence_id, e.check_kind): e
+                for e in events
+            }
+            dossier = next(d for d in DOSSIERS if d.domain == domain)
+            items = []
+            for requirement in dossier.evidence:
+                for kind in CHECKS:
+                    event = last.get((domain, requirement.evidence_id, kind))
+                    items.append(blocked_connector_status(
+                        domain, requirement.evidence_id, kind,
+                        event.stage if event else "NO_REQUEST",
+                    ))
+            return {
+                "domain": domain,
+                "business_source_sha": BUSINESS_SOURCE_SHA,
+                "snapshot_state": "PINNED_DRAFT_SNAPSHOT_NOT_LIVE",
+                "connector_state": CONNECTOR_STATE,
+                "contract_version": CONTRACT_VERSION,
+                "items": items,
+            }
+
     def verify_integrity(self) -> bool:
         from .business_gate_evidence import BusinessSourceSnapshotError
         try:

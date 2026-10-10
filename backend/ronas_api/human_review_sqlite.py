@@ -215,6 +215,55 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             self._verify(db)
             return tuple(self._steps(db, engine, ref))
 
+    def read_review_for_operator(self, engine: str, ref: str,
+                                 principal: Principal) -> dict | None:
+        """Audit an exact-case, currently authorized technical-history read.
+
+        This opt-in, internal-only facade expects a principal independently
+        verified by the Keycloak authentication boundary. It does not verify
+        JWT signatures itself, and must not be wired to an unauthenticated
+        route. An unrelated role, unassigned operator or revoked grant cannot
+        read request/evidence/note references, even with a previously signed
+        token. Unknown records are indistinguishable from denied records to
+        callers; they cannot create audit events against nonexistent cases.
+        """
+        with self._transaction() as db:
+            self._verify(db)
+            if ((engine, ref) not in self._catalogue
+                    or not isinstance(principal, Principal)
+                    or not _synthetic_subject(principal.subject)):
+                return None
+            allowed = self._active_operator(db, engine, ref, principal)
+            # The decision and append are in the same BEGIN IMMEDIATE
+            # transaction, preventing a concurrent grant revocation from
+            # racing between the permission check and the read.
+            if allowed:
+                steps = self._steps(db, engine, ref)
+                result = {
+                    "engine": engine,
+                    "ref": ref,
+                    "case_version": self._catalogue[(engine, ref)].version,
+                    "case_status": "DRAFT_ONLY",
+                    "review_revision": len(steps),
+                    "technical_review_state": STATES[len(steps)],
+                    "history": tuple({
+                        "revision": step.revision,
+                        "stage": step.stage,
+                        "request_ref": step.request_ref,
+                        "evidence_ref": step.evidence_ref,
+                        "decision_ref": step.decision_ref,
+                        "audit_sequence": step.audit_sequence,
+                    } for step in steps),
+                }
+            else:
+                result = None
+            self._append(
+                db, kind="READ_ALLOWED" if allowed else "READ_DENIED",
+                engine=engine, ref=ref, actor=principal.subject,
+                mode="TECHNICAL_REVIEW_HISTORY",
+            )
+            return result
+
     def _apply(self, *, stage: str, engine: str, ref: str, actor: Principal,
                expected_case_version: int, expected_review_revision: int,
                action_id: str, request_ref: str, evidence_ref: str,

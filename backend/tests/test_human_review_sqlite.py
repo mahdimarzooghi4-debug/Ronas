@@ -292,6 +292,56 @@ class DurableHumanReviewTests(unittest.TestCase):
         with self.assertRaises(LedgerIntegrityError):
             self.ledger.review_state("DOMESTIC", "DEMO-D-001")
 
+    def test_review_sensitive_columns_tampering_fails_closed_on_reopen(self):
+        # Independent databases ensure each mutation is detected on its own.
+        # This is corruption testing, not a claim of protection against a
+        # privileged attacker rewriting the entire local SQLite audit chain.
+        mutations = (
+            ("action_id", "DEMO-ACTION-ALTERED"),
+            ("stage", "TECH_HUMAN_RESPONSE_RECORDED"),
+            ("actor_digest", "a" * 64),
+            ("request_ref", "DEMO-REQUEST-ALTERED"),
+            ("evidence_ref", "DEMO-EVIDENCE-ALTERED"),
+            ("command_digest", "b" * 64),
+            ("audit_sequence", 999),
+        )
+        for column, replacement in mutations:
+            with self.subTest(column=column):
+                path = Path(self.temp.name) / f"tamper-{column}.db"
+                ledger = SqliteSyntheticHumanReviewLedger(
+                    path, records(), previous_versions=history(),
+                    trusted_revoke_authorizer=revoke_authority,
+                    trusted_human_review_authorizer=human_authority,
+                )
+                self.request(ledger)
+                with sqlite3.connect(path) as db:
+                    db.execute("DROP TRIGGER review_no_update")
+                    db.execute(
+                        f"UPDATE technical_review_step SET {column}=?",
+                        (replacement,),
+                    )
+                with self.assertRaises(LedgerIntegrityError):
+                    SqliteSyntheticHumanReviewLedger(
+                        path, records(), previous_versions=history(),
+                        trusted_revoke_authorizer=revoke_authority,
+                        trusted_human_review_authorizer=human_authority,
+                    )
+                self.assertFalse(ledger.verify_integrity())
+
+    def test_response_note_reference_tampering_fails_closed(self):
+        self.request()
+        self.respond()
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER review_no_update")
+            db.execute(
+                "UPDATE technical_review_step SET decision_ref=? "
+                "WHERE stage=?",
+                ("DEMO-HUMAN-NOTE-TAMPERED", RECORDED),
+            )
+        with self.assertRaises(LedgerIntegrityError):
+            self.open()
+        self.assertFalse(self.ledger.verify_integrity())
+
     def test_missing_review_row_with_existing_audit_fails_closed(self):
         self.request()
         with sqlite3.connect(self.path) as db:

@@ -164,7 +164,9 @@ def build_authenticated_ui_router(
             '<li><a href="' + link_base + escape(item["ref"]) + '">'
             + escape(item["ref"]) + '</a> — DRAFT_ONLY'
             + (' · ' + escape(labels[item["technical_review_state"]])
-               if progress_enabled else '') + '</li>'
+               if progress_enabled else '')
+            + ' · <a href="/my-drafts/' + escape(item["ref"], quote=True)
+            + '/versions">تاریخچه نسخه‌ها</a></li>'
             for item in result["items"]
         ]
         body = ('<ul>' + ''.join(rows) + '</ul>' if rows else
@@ -246,6 +248,43 @@ def build_authenticated_ui_router(
             cards = '<p>هیچ نمای کاربری بیرونی برای دسترسی‌های فعلی شما تخصیص نیافته است.</p>'
         return page("روناس — محیط کاربران و همکاران", cards, logged_in=True)
 
+    if owned_case_ledger is not None:
+        @router.get("/my-drafts/{ref}/versions")
+        def household_versions_page(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            principal = Principal(session.subject, session.roles)
+            result = owned_case_ledger.read_owned_domestic_version_history(
+                ref, principal,
+            )
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            versions = ''.join(
+                '<li>نسخه ' + str(entry["version"]) +
+                (' — نسخه موجود (ساختگی)' if entry["is_current"]
+                 else ' — نسخه پیشین (ساختگی)')
+                + '</li>' for entry in result["versions"]
+            )
+            body = (
+                '<article class="panel"><h2>تاریخچه نسخه‌های پرونده '
+                + escape(result["ref"]) + '</h2>'
+                '<p>این فهرست فقط نسخه‌های از پیش ثبت‌شده نمونه DEMO است؛ '
+                'فرایند اصلاح واقعی، تاریخ تغییرات یا تأیید متخصص '
+                'از این داده‌ها استنتاج نمی‌شود.</p>'
+                '<p>وضعیت همه نسخه‌ها: DRAFT_ONLY؛ '
+                'رضایت، طرح کشت و تأیید متخصص واقعی وجود ندارد.</p>'
+                '<ol>' + versions + '</ol>'
+                '<p><a href="/">بازگشت به پرونده‌های من</a></p>'
+                '</article>'
+            )
+            return page("روناس — تاریخچه پرونده ساختگی من",
+                        body, logged_in=True)
+
     if (technical_review_ledger is not None
             and owned_case_ledger is technical_review_ledger):
         @router.get("/my-drafts/{ref}")
@@ -280,6 +319,9 @@ def build_authenticated_ui_router(
                 '<p>پیگیری فنی: ' + escape(state) + '</p>'
                 '<p>رضایت واقعی احراز نشده و طرح کشت به تأیید متخصص '
                 'نرسیده است. هیچ تصمیم تجاری یا عملیاتی ثبت نشده است.</p>'
+                '<p><a href="/my-drafts/' +
+                escape(result["ref"], quote=True) +
+                '/versions">مشاهده تاریخچه نسخه‌ها</a></p>'
                 '<p><a href="/">بازگشت به پرونده‌های من</a></p>'
                 '</article>'
             )

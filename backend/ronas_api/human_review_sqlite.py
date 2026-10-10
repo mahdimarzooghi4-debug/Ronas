@@ -120,6 +120,7 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                     or audit.get("ref") != ref or audit.get("action_id") != action
                     or audit.get("actor_digest") != actor_digest
                     or audit.get("reason_ref") != evidence_ref
+                    or audit.get("target_digest") != _hash(command_digest)
                     or audit.get("case_version") != self._catalogue[(engine, ref)].version
                     or audit.get("access_mode") != "TECHNICAL_ONLY"):
                 raise LedgerIntegrityError("review/audit record mismatch")
@@ -253,7 +254,8 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                 raise GrantConflict("review already requested")
             event = self._append(
                 db, kind=stage, engine=engine, ref=ref, actor=actor.subject,
-                action_id=action_id, reason_ref=evidence_ref, mode="TECHNICAL_ONLY",
+                action_id=action_id, reason_ref=evidence_ref,
+                target=command_digest, mode="TECHNICAL_ONLY",
             )
             db.execute(
                 "INSERT INTO technical_review_step VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

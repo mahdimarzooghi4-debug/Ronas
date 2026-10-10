@@ -9,6 +9,8 @@ from .keycloak import KeycloakConfig, KeycloakTokenVerifier
 from .oidc_browser import BrowserOIDC, build_browser_router
 from .ui_bff import build_authenticated_ui_router
 from .scoped_drafts import ScopedSyntheticDraftRegistry, build_scoped_draft_router
+from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
+from .technical_review_api import build_technical_review_read_router
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -24,7 +26,8 @@ EXPORT_EXAMPLE = {
 
 def create_app(config: AuthConfig | KeycloakConfig | None = None,
                browser_flow: BrowserOIDC | None = None,
-               scoped_registry: ScopedSyntheticDraftRegistry | None = None) -> FastAPI:
+               scoped_registry: ScopedSyntheticDraftRegistry | None = None,
+               technical_review_ledger: SqliteSyntheticHumanReviewLedger | None = None) -> FastAPI:
     app = FastAPI(
         title="Ronas bounded read-only API foundation",
         docs_url=None, redoc_url=None, openapi_url=None,
@@ -72,6 +75,18 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         if not isinstance(config, KeycloakConfig):
             raise ValueError("record-scoped technical fixtures require Keycloak")
         app.include_router(build_scoped_draft_router(scoped_registry, principal))
+
+    if technical_review_ledger is not None:
+        # Opt-in LOCAL/TEST only: the review store and the case-grant store
+        # must be the *identical* object. Reject generic token verification,
+        # absent scopes, or a parallel catalogue that can diverge on revoke.
+        if (not isinstance(config, KeycloakConfig)
+                or not isinstance(technical_review_ledger, SqliteSyntheticHumanReviewLedger)
+                or scoped_registry is not technical_review_ledger):
+            raise ValueError("review API requires the same explicit Keycloak-scoped human review ledger")
+        app.include_router(build_technical_review_read_router(
+            technical_review_ledger, principal
+        ))
 
     def grant(name: str):
         def dependency(p: Principal = Depends(principal)) -> Principal:

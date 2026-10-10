@@ -1,0 +1,147 @@
+"""Two authenticated, strictly role-scoped HTML shells for opt-in Keycloak BFF.
+
+The default production entrypoint never mounts these routes. The HTML is
+rendered from fixed templates, not client-supplied text or arbitrary files.
+No live workflow or personal data exists in this UI foundation.
+"""
+from html import escape
+from pathlib import Path
+
+from fastapi import APIRouter, Cookie, HTTPException
+from fastapi.responses import HTMLResponse, PlainTextResponse
+
+from .auth import InvalidToken
+from .oidc_browser import BrowserOIDC
+
+USER_ROLES = {
+    "household": "خانوار / تولیدکننده خانگی",
+    "local_buyer": "خریدار محلی",
+    "agronomy_expert": "کارشناس کشاورزی",
+    "equipment_seller": "فروشنده تجهیزات",
+    "export_supplier": "تأمین‌کننده حرفه‌ای صادرات",
+}
+ADMIN_ROLES = {
+    "domestic_ops": "عملیات داخلی",
+    "export_ops": "عملیات صادرات",
+    "finance": "مالی",
+    "governance": "راهبری",
+}
+STYLE = Path(__file__).resolve().parents[2] / "prototype" / "ui" / "styles.css"
+
+LOGOUT_SCRIPT = """document.addEventListener('DOMContentLoaded', () => {
+  const button = document.getElementById('ronas-logout');
+  if (!button) return;
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      const status = await fetch('/api/auth/session', {credentials:'same-origin', cache:'no-store'});
+      if (!status.ok) throw Error('NO_ACTIVE_SESSION');
+      const data = await status.json();
+      const result = await fetch('/api/auth/logout', {
+        method:'POST', credentials:'same-origin', cache:'no-store',
+        headers:{'X-CSRF-Token':data.csrf}
+      });
+      if (!result.ok) throw Error('LOGOUT_REJECTED');
+      window.location.replace('/');
+    } catch {
+      button.disabled = false;
+      const notice = document.getElementById('logout-message');
+      if (notice) notice.textContent = 'خروج تأیید نشد؛ نشست را بسته فرض نکنید.';
+    }
+  });
+});"""
+
+def page(title: str, body: str, *, logged_in: bool, code: int = 200) -> HTMLResponse:
+    logout = (
+        '<button type="button" id="ronas-logout">خروج امن</button>'
+        '<p id="logout-message" role="status" aria-live="polite"></p>'
+        if logged_in else '<a class="btn" href="/api/auth/start">ورود با Keycloak</a>'
+    )
+    html = ('<!doctype html><html lang="fa" dir="rtl"><head>'
+            '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>' + escape(title) + '</title>'
+            '<link rel="stylesheet" href="/assets/ronas.css">'
+            '</head><body><header class="top"><a class="brand" href="/">روناس</a>'
+            '<nav aria-label="دو محیط روناس"><a href="/">روناس</a>'
+            '<a href="/admin">مدیریت روناس</a></nav></header>'
+            '<div class="demo"><strong>نسخه آزمایشی</strong> · همه اطلاعات نمونه هستند؛ '
+            'هیچ عملیات مالی، صادرات، ثبت‌نام یا تأیید علمی انجام نمی‌شود.</div>'
+            '<main class="wrap" id="main"><h1>' + escape(title) + '</h1>'
+            + body + '<section class="section">' + logout + '</section></main>'
+            '<script src="/assets/ronas-auth.js" defer></script></body></html>')
+    response = HTMLResponse(html, status_code=code)
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; style-src 'self'; script-src 'self'; "
+        "connect-src 'self'; base-uri 'none'; form-action 'none'; "
+        "frame-ancestors 'none'; object-src 'none'"
+    )
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def build_authenticated_ui_router(flow: BrowserOIDC) -> APIRouter:
+    router = APIRouter()
+    cookie_name = "__Host-ronas_session"
+
+    def roles(sid: str | None) -> frozenset[str] | None:
+        if sid is None:
+            return None
+        try:
+            return flow.session(sid).roles
+        except InvalidToken:
+            return None
+
+    @router.get("/assets/ronas.css")
+    def style() -> PlainTextResponse:
+        # Exactly this trusted repository-owned CSS file; no path input.
+        if not STYLE.is_file():
+            raise HTTPException(503, detail="UI_ASSET_NOT_AVAILABLE")
+        return PlainTextResponse(STYLE.read_text(encoding="utf-8"), media_type="text/css")
+
+    @router.get("/assets/ronas-auth.js")
+    def client_script() -> PlainTextResponse:
+        return PlainTextResponse(LOGOUT_SCRIPT, media_type="text/javascript")
+
+    @router.get("/")
+    def public_ui(sid: str | None = Cookie(default=None, alias=cookie_name)) -> HTMLResponse:
+        grants = roles(sid)
+        if grants is None:
+            return page("روناس — محیط کاربران و همکاران",
+                        '<p>برای مشاهده بخش مربوط به نقش خود، با Keycloak وارد شوید. '
+                        'این نسخه فقط داده ساختگی نمایش می‌دهد.</p>', logged_in=False)
+        active = [(name, label) for name, label in USER_ROLES.items() if name in grants]
+        cards = ''.join('<article class="panel"><h2>' + escape(label) + '</h2>'
+                        '<p>وضعیت خدمت: نیازمند شواهد و مجوز عملیاتی.</p>'
+                        + ('<p>پرونده ساختگی DEMO-H01؛ رضایت واقعی و تأیید متخصص وجود ندارد.</p>'
+                           if name == "household" else '') + '</article>'
+                        for name, label in active)
+        if not cards:
+            cards = '<p>هیچ نمای کاربری بیرونی برای دسترسی‌های فعلی شما تخصیص نیافته است.</p>'
+        return page("روناس — محیط کاربران و همکاران", cards, logged_in=True)
+
+    @router.get("/admin")
+    def admin_ui(sid: str | None = Cookie(default=None, alias=cookie_name)) -> HTMLResponse:
+        grants = roles(sid)
+        if grants is None:
+            return page("مدیریت روناس — ورود الزامی", '<p>ورود امن لازم است.</p>',
+                        logged_in=False, code=401)
+        active = [(name, label) for name, label in ADMIN_ROLES.items() if name in grants]
+        if not active:
+            return page("دسترسی مدیریت مجاز نیست",
+                        '<p>مجوز ورود به هیچ‌یک از چهار حوزه مدیریت وجود ندارد.</p>',
+                        logged_in=True, code=403)
+        cards = []
+        for role, label in active:
+            note = {
+                "domestic_ops": "نمونه پرونده خانوار DEMO-H01؛ رضایت و تأیید کارشناس وجود ندارد.",
+                "export_ops": "نمونه پژوهش DEMO-SOURCE-01؛ حقوق منبع و خریدار احراز نشده است.",
+                "finance": "پرداخت، تسویه و انتقال وجه غیرفعال هستند.",
+                "governance": "راهبری به معنی مجوز خودکار مالی، کشاورزی یا صادرات نیست.",
+            }[role]
+            cards.append('<article class="panel"><h2>' + escape(label) + '</h2><p>'
+                         + escape(note) + '</p></article>')
+        return page("مدیریت روناس — پنل واحد با دسترسی مجزا",
+                    '<div class="columns">' + ''.join(cards) + '</div>', logged_in=True)
+
+    return router

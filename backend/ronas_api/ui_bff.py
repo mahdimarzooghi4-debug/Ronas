@@ -266,6 +266,7 @@ def build_authenticated_ui_router(
         role: str,
         sid: str | None = Cookie(default=None, alias=cookie_name),
         after_ref: str | None = None,
+        technical_state: str = "ALL",
     ) -> HTMLResponse:
         try:
             session = flow.session(sid)
@@ -286,24 +287,51 @@ def build_authenticated_ui_router(
             # Unknown and unassigned partner roles are indistinguishable.
             raise HTTPException(404, detail="WORKSPACE_NOT_FOUND")
         if role == "agronomy_expert" and agronomy_workspace is not None:
-            listing = agronomy_workspace.list_assigned_cases(
-                Principal(session.subject, session.roles),
-                after_ref=after_ref, limit=20,
+            try:
+                listing = agronomy_workspace.list_assigned_cases(
+                    Principal(session.subject, session.roles),
+                    after_ref=after_ref, limit=20,
+                    technical_state=technical_state,
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    422, detail="INVALID_ASSIGNED_CASE_QUERY",
+                ) from exc
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            labels = {
+                "ALL": "همه مراحل ثبت‌شده",
+                "UNREQUESTED": "بدون درخواست بررسی فنی",
+                "EVIDENCE_REVIEW_REQUESTED": "درخواست بررسی ثبت‌شده",
+                "HUMAN_RESPONSE_RECORDED": "مرجع پاسخ فنی ثبت‌شده",
+            }
+            filters = ' · '.join(
+                ('<strong>' + escape(label) + '</strong>'
+                 if state == technical_state else
+                 '<a href="/workspace/agronomy_expert?technical_state='
+                 + quote(state) + '">' + escape(label) + '</a>')
+                for state, label in labels.items()
             )
             links = ''.join(
                 '<li><a href="/agronomy/assigned-drafts/'
                 + quote(item["ref"]) + '">'
                 + escape(item["ref"]) + '</a> — '
-                + escape(item["technical_review_state"])
+                + escape(labels[item["technical_review_state"]])
                 + ' · طرح کشت تدوین نشده</li>'
                 for item in listing["items"]
             )
             local_read = (
                 '<h3>پرونده‌های تخصیص‌یافته آزمایشی</h3>'
-                '<p>تخصیص پرونده، اثبات صلاحیت حرفه‌ای یا مجوز صدور طرح نیست.</p>'
+                '<p>تخصیص پرونده، اثبات صلاحیت حرفه‌ای یا مجوز صدور طرح نیست.'
+                ' فیلتر فقط وضعیت فنی ثبت‌شده را نشان می‌دهد، نه تأیید علمی.</p>'
+                '<nav aria-label="فیلتر مراحل فنی کارشناس">'
+                + filters + '</nav>'
                 + ('<ul>' + links + '</ul>' if links else
-                   '<p>پرونده آزمایشی فعالی به این نقش تخصیص نیافته است.</p>')
-                + ('<p><a href="/workspace/agronomy_expert?after_ref='
+                   '<p>در این فیلتر پرونده آزمایشی تخصیص‌یافته‌ای یافت نشد.</p>')
+                + ('<p><a href="/workspace/agronomy_expert?technical_state='
+                   + quote(technical_state) + '&after_ref='
                    + quote(listing["next_cursor"])
                    + '">ادامه پرونده‌ها</a></p>'
                    if listing["next_cursor"] else '')

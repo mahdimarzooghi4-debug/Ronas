@@ -35,4 +35,19 @@ def build_authority_enquiry_read_router(
                 status_code=503, detail="TECHNICAL_HANDOFF_UNAVAILABLE",
             ) from exc
 
+    @router.get("/api/v1/admin/gate-evidence/{domain}/readiness-matrix")
+    def read_verified_readiness_matrix(
+        domain: str, p: Principal = Depends(verified_principal),
+    ) -> dict:
+        try:
+            return ledger.read_readiness_matrix(p, domain)
+        except HandoffNotAuthorized as exc:
+            raise HTTPException(
+                status_code=404, detail="READINESS_MATRIX_NOT_FOUND",
+            ) from exc
+        except (HandoffIntegrityError, sqlite3.DatabaseError) as exc:
+            raise HTTPException(
+                status_code=503, detail="TECHNICAL_HANDOFF_UNAVAILABLE",
+            ) from exc
+
     return router

@@ -1,5 +1,10 @@
 # Ronas: signed-token backend foundation
 
+## محدوده دسترسی هر پرونده (نمونه، 2026-10-10)
+
+[قرارداد پرونده‌های سطح رکورد](scoped-records-contract.md) و ماژول scoped_drafts.py اضافه شده‌اند. کارشناس Domestic یا Export حتی با نقش امضاشده Keycloak فقط پرونده ساختگی‌ای را می‌خواند که صریحاً به شناسه وی تخصیص داده شده باشد؛ خانوار تنها پرونده خود را می‌خواند. داده واقعی، تأیید و تراکنش نداریم؛ مسیرهای جدید در اجرای پیش‌فرض غیرفعال هستند.
+
+
 ## CURRENT: encrypted local session reference and role-gated two-shell BFF (2026-10-10)
 
 These are tested implementation candidates, not a selected production datastore or live service. The explicit optional BFF serves exactly TWO server-authenticated HTML views: / for Ronas users/partners, /admin for one admin panel whose sections are filtered by signed Keycloak client roles. No customer PII, commercial activity, real login or hosting is activated.

@@ -45,6 +45,59 @@ person, file, cost or approval is stored or collected. The snapshot has
 no POST, upload, delete, decision command, timer, refresh job, model
 inference or evaluation threshold.
 
+## Local source-blob integrity / fail-closed drift detection (2026-10-10)
+
+The source commit hash above is a historical Business PR #1 **commit**,
+not proof of the current PR HEAD. The opt-in gate display now has a
+separate, stronger **local file-level** check:
+
+| Checked source path | Pinned Git blob SHA-1 |
+| --- | --- |
+| `docs/business/73-core-d1-e0-limited-scope-gate-decision-sheet.md` | `86da48af24adc49976921033eeb74eb3b67b5cbc` |
+| `docs/business/61-finance-legal-evidence-workstreams-for-d0-e0.md` | `642f5b0e1d506d436c4f379a6ad0b1624b5bbb0c` |
+
+`verify_pinned_business_sources()` reads exactly these two local
+repository files, restricts resolution to the local checkout root,
+computes the canonical Git blob identifier over original **bytes**
+(including the Git blob NUL separator), checks each of the 19 evidence
+ID/status pairs in the original source-table rows, and rejects missing,
+changed, redirected, oversized, non-UTF-8 or otherwise inconsistent
+files. Source-level statuses are not recomputed, improved, decided,
+or reclassified by the app.
+
+On success the read-only API additionally returns
+`source_integrity_state=LOCAL_REPOSITORY_FILES_MATCH_PINNED_BLOBS`
+and exact source blob identity in dossier detail. This means **only**
+that the two files available to the test instance match the pinned
+historical blobs, not that the live GitHub PR/Issues, business authority
+or rights are still current. The existing
+`PINNED_DRAFT_SNAPSHOT_NOT_LIVE` marker remains mandatory.
+
+On any mismatch, GET list, GET detail and HTML gate-detail fail closed
+with sanitized **HTTP 503**
+`PINNED_BUSINESS_SOURCE_UNAVAILABLE`, withholding *all* outdated
+evidence cards. The normal admin landing page continues to serve its
+independent role/case read models but **hides the outdated gate links**
+and shows a Persian integrity warning. Unassigned roles still receive
+403/404 before source inspection. The default runtime has no gate
+routes at all.
+
+**Change protocol (human, not auto-upgrade):** if PR #1 or either file
+changes, inspect the actual source diff and gate issue state; confirm
+what the authorized Business review really decided; pin any new
+snapshot to an exact revised source commit and both Git blob IDs;
+update only source-accurate requirement IDs/statuses after separate
+review; keep all `verified_here=false` and no gate PASS unless
+real authorized evidence establishes it. Run all tests and full
+exact-HEAD CI; retain old snapshots as Git history. Do not bypass a
+red integrity check by changing a hash alone, guessing a status,
+migrating unapproved evidence or claiming a verified live Gate.
+
+Nine additional regression tests exercise source bytes, exact Git
+objects, missing/altered files, redirected symlink, status mutation
+even with a deliberately recalculated hash, sanitized 503 for API
+and HTML, preserved independent admin work, and denial precedence.
+
 ## Admission and authorization
 
 The endpoints are mounted **only** with the explicit
@@ -78,7 +131,7 @@ governed externally.
 
 ## Verification and open blockers
 
-`backend/tests/test_business_gate_evidence.py` contains **17**
+`backend/tests/test_business_gate_evidence.py` contains **26**
 offline integration checks: 19 canonical source IDs, pinned SHA and
 source status fidelity; independent three-domain role isolation;
 governance metadata-only access; 401/403/404 boundaries; multi-role

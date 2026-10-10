@@ -8,6 +8,7 @@ from .auth import AuthConfig, InvalidToken, Principal, TokenVerifier, require_ro
 from .keycloak import KeycloakConfig, KeycloakTokenVerifier
 from .oidc_browser import BrowserOIDC, build_browser_router
 from .ui_bff import build_authenticated_ui_router
+from .scoped_drafts import ScopedSyntheticDraftRegistry, build_scoped_draft_router
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -22,7 +23,8 @@ EXPORT_EXAMPLE = {
 }
 
 def create_app(config: AuthConfig | KeycloakConfig | None = None,
-               browser_flow: BrowserOIDC | None = None) -> FastAPI:
+               browser_flow: BrowserOIDC | None = None,
+               scoped_registry: ScopedSyntheticDraftRegistry | None = None) -> FastAPI:
     app = FastAPI(
         title="Ronas bounded read-only API foundation",
         docs_url=None, redoc_url=None, openapi_url=None,
@@ -65,6 +67,11 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         except InvalidToken:
             raise HTTPException(status_code=401, detail="INVALID_TOKEN",
                                 headers={"WWW-Authenticate": "Bearer"}) from None
+
+    if scoped_registry is not None:
+        if not isinstance(config, KeycloakConfig):
+            raise ValueError("record-scoped technical fixtures require Keycloak")
+        app.include_router(build_scoped_draft_router(scoped_registry, principal))
 
     def grant(name: str):
         def dependency(p: Principal = Depends(principal)) -> Principal:

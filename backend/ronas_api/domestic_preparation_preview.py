@@ -1,33 +1,48 @@
-"""Canonical LOCAL/TEST Domestic cultivation-preparation *display* contract.
+"""Canonical LOCAL/TEST Domestic cultivation-preparation display contract.
 
-This is not an intake schema, criteria to author a cultivation plan, consent,
-professional eligibility or a recommendation. All slots are intentionally
-unknown because the seeded cases contain NO agricultural inputs. The same
-minimal projection is safe for independently authorized household owners and
-synthetic assigned agronomy experts; neither can see the other party's identity.
+This is neither an intake schema nor a cultivation-plan readiness decision.
+Only *observed*, integrity-checked technical review steps may appear on the
+shared household / separately assigned agronomy expert progress timeline.
 """
 from __future__ import annotations
 
 CONTRACT_VERSION = "ronas.domestic.preparation-preview.v1"
 SLOT_NAMES = ("crop", "growing_area", "water", "soil", "location")
+REVIEW_EVENTS = ("TECH_REVIEW_REQUESTED", "TECH_HUMAN_RESPONSE_RECORDED")
+REVIEW_STATES = ("UNREQUESTED", "EVIDENCE_REVIEW_REQUESTED", "HUMAN_RESPONSE_RECORDED")
 
 
 def domestic_preparation_preview(
     *, case_version: int, review_revision: int, technical_review_state: str,
     valid_review_states: tuple[str, ...],
+    observed_review_steps: tuple[str, ...] = (),
 ) -> dict:
-    """Only represent missing DEMO slots; never calculate plan readiness."""
+    """Expose only real DEMO technical stages, never future or inferred steps.
+
+    The originating ledger independently verifies event/actor/evidence
+    lineage. This pure function takes only the redacted names, and returns
+    no reviewer identity, source reference, event time or decision text.
+    """
     if (type(case_version) is not int or case_version < 1
             or type(review_revision) is not int
-            or not isinstance(valid_review_states, tuple)
-            or not 0 <= review_revision < len(valid_review_states)
-            or technical_review_state != valid_review_states[review_revision]):
+            or type(valid_review_states) is not tuple
+            or valid_review_states != REVIEW_STATES
+            or not 0 <= review_revision < len(REVIEW_STATES)
+            or technical_review_state != REVIEW_STATES[review_revision]
+            or type(observed_review_steps) is not tuple
+            or observed_review_steps != REVIEW_EVENTS[:review_revision]):
         raise ValueError("inconsistent immutable Domestic review snapshot")
+    timeline = [
+        {"revision": revision, "technical_event": event}
+        for revision, event in enumerate(observed_review_steps, start=1)
+    ]
     return {
         "contract_version": CONTRACT_VERSION,
         "case_version": case_version,
         "technical_review_state": technical_review_state,
         "review_revision": review_revision,
+        "technical_timeline": timeline,
+        "timeline_semantics": "OBSERVED_TECHNICAL_STEPS_ONLY",
         "input_state": "NOT_RECORDED_IN_DEMO",
         "cultivation_inputs": {key: None for key in SLOT_NAMES},
         "purpose_consent_verified": False,

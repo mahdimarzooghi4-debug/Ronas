@@ -50,4 +50,19 @@ def build_authority_enquiry_read_router(
                 status_code=503, detail="TECHNICAL_HANDOFF_UNAVAILABLE",
             ) from exc
 
+    @router.get("/api/v1/admin/gate-evidence/{domain}/authority-connectors")
+    def read_unadmitted_connectors(
+        domain: str, p: Principal = Depends(verified_principal),
+    ) -> dict:
+        try:
+            return ledger.connector_readiness(p, domain)
+        except HandoffNotAuthorized as exc:
+            raise HTTPException(
+                status_code=404, detail="AUTHORITY_CONNECTOR_NOT_FOUND",
+            ) from exc
+        except (HandoffIntegrityError, sqlite3.DatabaseError) as exc:
+            raise HTTPException(
+                status_code=503, detail="TECHNICAL_HANDOFF_UNAVAILABLE",
+            ) from exc
+
     return router

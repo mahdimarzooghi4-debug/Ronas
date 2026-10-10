@@ -215,6 +215,57 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             self._verify(db)
             return tuple(self._steps(db, engine, ref))
 
+    def list_owned_domestic_progress(
+        self, principal: Principal, *, after_ref: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        """One verified, audited snapshot of an owner's observed DEMO progress.
+
+        This read-only projection uses the identical ledger transaction for
+        exact immutable ownership, per-case technical history and per-row
+        audit. It must never expose reviewer identities or evidence references
+        and cannot imply Business acceptance from a technical human response.
+        """
+        if (type(limit) is not int or not 1 <= limit <= 50
+                or after_ref is not None and not _synthetic_ref(after_ref)):
+            raise ValueError("invalid synthetic progress list query")
+        with self._transaction() as db:
+            self._verify(db)
+            items: list[dict] = []
+            next_cursor = None
+            if (isinstance(principal, Principal)
+                    and _synthetic_subject(principal.subject)
+                    and "household" in principal.roles):
+                owned = [
+                    ref for (engine, ref), record in sorted(self._catalogue.items())
+                    if engine == "DOMESTIC"
+                    and record.owner_subject == principal.subject
+                    and (after_ref is None or ref > after_ref)
+                ]
+                for ref in owned[:limit]:
+                    record = self._catalogue[("DOMESTIC", ref)]
+                    steps = self._steps(db, "DOMESTIC", ref)
+                    item = record.public_view()
+                    item.update({
+                        "review_revision": len(steps),
+                        "technical_review_state": STATES[len(steps)],
+                    })
+                    items.append(item)
+                    # Disclosure and event insertion are in one transaction:
+                    # if any audit append fails, the entire page fails.
+                    self._append(
+                        db, kind="READ_ALLOWED", engine="DOMESTIC",
+                        ref=ref, actor=principal.subject,
+                        mode="HOUSEHOLD_PROGRESS_WORKLIST",
+                    )
+                if len(owned) > limit:
+                    next_cursor = items[-1]["ref"]
+            return {
+                "engine": "DOMESTIC",
+                "items": items,
+                "next_cursor": next_cursor,
+            }
+
     def read_owned_domestic_status(self, ref: str,
                                    principal: Principal) -> dict | None:
         """Expose minimal observed technical progress to the exact owner.

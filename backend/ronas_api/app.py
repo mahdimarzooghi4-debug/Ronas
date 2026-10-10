@@ -17,6 +17,8 @@ from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedge
 from .owner_case_api import build_owned_household_router
 from .technical_review_api import build_technical_review_read_router
 from .shared_workspaces import build_user_workspaces_router
+from .agronomy_workspace import SyntheticAgronomyWorkspace
+from .agronomy_workspace_api import build_agronomy_workspace_router
 from .business_gate_evidence import (build_business_gate_evidence_router,
                                      BusinessSourceSnapshotError)
 from .gate_evidence_handoff_sqlite import (SqliteSyntheticGateEvidenceHandoff,
@@ -42,7 +44,8 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                scoped_registry: ScopedSyntheticDraftRegistry | None = None,
                technical_review_ledger: SqliteSyntheticHumanReviewLedger | None = None,
                gate_handoff_ledger: SqliteSyntheticGateEvidenceHandoff | None = None,
-               authority_enquiry_ledger: SqliteSyntheticAuthorityEnquiryLedger | None = None) -> FastAPI:
+               authority_enquiry_ledger: SqliteSyntheticAuthorityEnquiryLedger | None = None,
+               agronomy_workspace: SyntheticAgronomyWorkspace | None = None) -> FastAPI:
     app = FastAPI(
         title="Ronas bounded read-only API foundation",
         docs_url=None, redoc_url=None, openapi_url=None,
@@ -94,6 +97,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             owned_case_ledger=owner_ledger,
             gate_handoff_ledger=gate_handoff_ledger,
             authority_enquiry_ledger=authority_enquiry_ledger,
+            agronomy_workspace=agronomy_workspace,
         ))
 
     @app.middleware("http")
@@ -164,6 +168,20 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             )
         app.include_router(build_authority_enquiry_read_router(
             authority_enquiry_ledger, principal,
+        ))
+
+    if agronomy_workspace is not None:
+        if (not isinstance(config, KeycloakConfig)
+                or browser_flow is None
+                or not isinstance(agronomy_workspace, SyntheticAgronomyWorkspace)
+                or technical_review_ledger is None
+                or scoped_registry is not technical_review_ledger
+                or agronomy_workspace.ledger is not technical_review_ledger):
+            raise ValueError(
+                "agronomy requires the identical explicitly injected review ledger and browser"
+            )
+        app.include_router(build_agronomy_workspace_router(
+            agronomy_workspace, principal,
         ))
 
     if scoped_registry is not None:

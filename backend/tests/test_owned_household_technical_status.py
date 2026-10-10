@@ -25,6 +25,7 @@ API, WEB = "ronas-api", "ronas-web"
 ORIGIN = "https://ronas.example.test"
 OWN = "/api/v1/domestic/household-intake/my-drafts"
 STATUS = OWN + "/DEMO-D-001/technical-status"
+PROGRESS = OWN + "/technical-progress"
 DETAIL = "/my-drafts/DEMO-D-001"
 
 
@@ -35,6 +36,9 @@ def records():
             ScopedGrant("synthetic-domestic-reviewer", "domestic_ops"),
         )),
         ScopedDraft("DEMO-D-002", "DOMESTIC", "synthetic-household-two", 2, (
+            ScopedGrant("synthetic-domestic-requester", "domestic_ops"),
+        )),
+        ScopedDraft("DEMO-D-003", "DOMESTIC", "synthetic-household-one", 1, (
             ScopedGrant("synthetic-domestic-requester", "domestic_ops"),
         )),
         ScopedDraft("DEMO-E-001", "EXPORT", "synthetic-household-one", 1, (
@@ -369,6 +373,205 @@ class HouseholdProgressTests(unittest.TestCase):
         self.assertEqual(self.client.get(STATUS, headers=self.headers()).json()[
             "technical_review_state"], "HUMAN_RESPONSE_RECORDED")
         self.assertTrue(self.reopen().verify_integrity())
+
+
+    def test_progress_filters_only_own_observed_technical_states(self):
+        def read(state, *, subject="synthetic-household-one",
+                 roles=("household",)):
+            return self.client.get(
+                PROGRESS, params={"technical_state": state},
+                headers=self.headers(subject, roles),
+            )
+        initial = read("UNREQUESTED")
+        self.assertEqual(initial.status_code, 200)
+        self.assertEqual([r["ref"] for r in initial.json()["items"]],
+                         ["DEMO-D-001", "DEMO-D-003"])
+        self.assertEqual(initial.json()["technical_state_filter"], "UNREQUESTED")
+        self.assertNotIn("DEMO-D-002", initial.text)
+        self.assertNotIn("DEMO-E-001", initial.text)
+        self.assertNotIn("owner_subject", initial.text)
+        self.assertEqual(read("EVIDENCE_REVIEW_REQUESTED").json()["items"], [])
+        self.request()
+        self.assertEqual(
+            [r["ref"] for r in read("UNREQUESTED").json()["items"]],
+            ["DEMO-D-003"],
+        )
+        self.assertEqual(
+            [r["ref"] for r in read("EVIDENCE_REVIEW_REQUESTED").json()["items"]],
+            ["DEMO-D-001"],
+        )
+        self.respond()
+        self.assertEqual(read("EVIDENCE_REVIEW_REQUESTED").json()["items"], [])
+        done = read("HUMAN_RESPONSE_RECORDED")
+        self.assertEqual([r["ref"] for r in done.json()["items"]],
+                         ["DEMO-D-001"])
+        self.assertEqual(done.json()["items"][0]["technical_review_state"],
+                         "HUMAN_RESPONSE_RECORDED")
+        self.assertFalse(done.json()["items"][0]["plan_accepted"])
+        self.assertFalse(done.json()["items"][0]["expert_approved"])
+        self.assertNotIn("DEMO-PRIVATE", done.text)
+        self.assertEqual(
+            [r["ref"] for r in read("ALL").json()["items"]],
+            ["DEMO-D-001", "DEMO-D-003"],
+        )
+        self.assertEqual(
+            [r["ref"] for r in read("ALL", subject="synthetic-household-two").json()["items"]],
+            ["DEMO-D-002"],
+        )
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_filtered_owner_keyset_cursor_excludes_other_household(self):
+        first = self.client.get(
+            PROGRESS, params={"technical_state": "UNREQUESTED", "limit": 1},
+            headers=self.headers(),
+        )
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual([item["ref"] for item in first.json()["items"]],
+                         ["DEMO-D-001"])
+        self.assertEqual(first.json()["next_cursor"], "DEMO-D-001")
+        self.assertNotIn("total", first.json())
+        other = self.client.get(
+            PROGRESS, params={
+                "technical_state": "UNREQUESTED", "after_ref": "DEMO-D-001",
+                "limit": 1,
+            }, headers=self.headers(),
+        )
+        self.assertEqual([item["ref"] for item in other.json()["items"]],
+                         ["DEMO-D-003"])
+        self.assertIsNone(other.json()["next_cursor"])
+        audited = [e.ref for e in self.ledger.audit_snapshot()
+                   if e.access_mode == "HOUSEHOLD_PROGRESS_WORKLIST"]
+        self.assertEqual(audited, ["DEMO-D-001", "DEMO-D-003"])
+        self.request()
+        after = self.client.get(
+            PROGRESS, params={"technical_state": "UNREQUESTED", "limit": 1},
+            headers=self.headers(),
+        )
+        self.assertEqual([item["ref"] for item in after.json()["items"]],
+                         ["DEMO-D-003"])
+        self.assertIsNone(after.json()["next_cursor"])
+
+    def test_invalid_owner_filter_and_cursor_do_not_read_audit(self):
+        original = len(self.ledger.audit_snapshot())
+        for params in ({"technical_state": "APPROVED"},
+                       {"technical_state": "human_response_recorded"},
+                       {"technical_state": ""},
+                       {"after_ref": "D-001"},
+                       {"limit": 0},
+                       {"limit": 51}):
+            with self.subTest(params=params):
+                r = self.client.get(
+                    PROGRESS, params=params, headers=self.headers(),
+                )
+                self.assertEqual(r.status_code, 422)
+                self.assertNotIn("DEMO-D-001", r.text)
+        self.assertEqual(len(self.ledger.audit_snapshot()), original)
+
+    def test_owner_filter_role_is_independent_of_domestic_staff(self):
+        for subject, roles in (
+            ("synthetic-domestic-requester", ("domestic_ops",)),
+            ("synthetic-household-one", ("finance",)),
+            ("synthetic-no-household", ("household",)),
+            ("synthetic-export-requester", ("export_ops",)),
+        ):
+            r = self.client.get(
+                PROGRESS, params={"technical_state": "ALL"},
+                headers=self.headers(subject, roles),
+            )
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json()["items"], [])
+            self.assertIsNone(r.json()["next_cursor"])
+        self.assertEqual(
+            self.client.get(PROGRESS).status_code, 401,
+        )
+        self.assertEqual(
+            self.client.get(
+                PROGRESS, headers={"Authorization": "Bearer forged"},
+            ).status_code, 401,
+        )
+        reads = [x for x in self.ledger.audit_snapshot()
+                 if x.access_mode == "HOUSEHOLD_PROGRESS_WORKLIST"]
+        self.assertEqual(reads, [])
+
+    def test_filtered_progress_failed_audit_returns_503_without_partial_page(self):
+        with sqlite3.connect(self.path) as db:
+            db.execute("""
+                CREATE TRIGGER fail_filtered_owner BEFORE INSERT ON audit_event
+                WHEN NEW.payload LIKE '%HOUSEHOLD_PROGRESS_WORKLIST%'
+                BEGIN SELECT RAISE(ABORT, 'no filtered owner audit'); END;
+            """)
+        failed = self.client.get(
+            PROGRESS, params={"technical_state": "UNREQUESTED"},
+            headers=self.headers(),
+        )
+        self.assertEqual(failed.status_code, 503)
+        self.assertNotIn("DEMO-D-001", failed.text)
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER fail_filtered_owner")
+        self.assertEqual(self.ledger.audit_snapshot(), ())
+        self.assertEqual(self.client.get(
+            PROGRESS, headers=self.headers(),
+        ).status_code, 200)
+
+    def test_filtered_progress_corrupted_review_history_is_503(self):
+        self.request()
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER review_no_update")
+            db.execute("""
+                UPDATE technical_review_step SET request_ref='DEMO-FORGED'
+                WHERE engine='DOMESTIC' AND ref='DEMO-D-001'
+            """)
+        filtered = self.client.get(
+            PROGRESS, params={"technical_state": "EVIDENCE_REVIEW_REQUESTED"},
+            headers=self.headers(),
+        )
+        self.assertEqual(filtered.status_code, 503)
+        self.assertNotIn("DEMO-FORGED", filtered.text)
+
+    def test_household_rtl_filter_is_visible_only_in_review_aware_shell(self):
+        client, _, _ = self.browser()
+        home = client.get("/?household_technical_state=UNREQUESTED")
+        self.assertEqual(home.status_code, 200)
+        self.assertIn('aria-label="فیلتر پیگیری پرونده‌های خانوار"', home.text)
+        self.assertIn("DEMO-D-001", home.text)
+        self.assertIn("DEMO-D-003", home.text)
+        self.assertNotIn("DEMO-D-002", home.text)
+        self.assertIn("پاسخ انسانی به معنی تأیید طرح کشت نیست", home.text)
+        self.request()
+        requested = client.get(
+            "/?household_technical_state=EVIDENCE_REVIEW_REQUESTED"
+        )
+        self.assertEqual(requested.status_code, 200)
+        self.assertIn("/my-drafts/DEMO-D-001", requested.text)
+        self.assertNotIn("/my-drafts/DEMO-D-003", requested.text)
+        self.assertNotIn("DEMO-PRIVATE", requested.text)
+        empty = client.get("/?household_technical_state=HUMAN_RESPONSE_RECORDED")
+        self.assertEqual(empty.status_code, 200)
+        self.assertIn("در این فیلتر", empty.text)
+        self.assertEqual(client.get(
+            "/?household_technical_state=APPROVED",
+        ).status_code, 422)
+        simple, _, _ = self.browser(review_enabled=False)
+        self.assertEqual(simple.get(
+            "/?household_technical_state=UNREQUESTED",
+        ).status_code, 422)
+        self.assertNotIn(
+            'aria-label="فیلتر پیگیری پرونده‌های خانوار"',
+            simple.get("/").text,
+        )
+
+    def test_household_status_detail_preserves_no_scientific_approval_after_filter(self):
+        self.request()
+        client, _, _ = self.browser()
+        listing = client.get("/?household_technical_state=EVIDENCE_REVIEW_REQUESTED")
+        self.assertEqual(listing.status_code, 200)
+        self.assertIn('/my-drafts/DEMO-D-001', listing.text)
+        self.assertIn('/my-drafts/DEMO-D-001/versions', listing.text)
+        detail = client.get(DETAIL)
+        self.assertIn("سابقه پیگیری فنی", detail.text)
+        self.assertIn("تأیید علمی", detail.text)
+        self.assertIn("هیچ تصمیم تجاری", detail.text)
+        self.assertEqual(detail.headers["cache-control"], "no-store")
 
 
 if __name__ == "__main__":

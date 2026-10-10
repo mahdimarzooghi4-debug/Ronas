@@ -350,7 +350,11 @@ def build_authenticated_ui_router(
             links.append(
                 '<li><a href="' + url + ref + '/technical-review">'
                 + ref + '</a> — ' + escape(item["technical_review_state"])
-                + ' · DRAFT_ONLY</li>'
+                + ' · DRAFT_ONLY'
+                + (' · <a href="/admin/export/research/drafts/'
+                   + quote(item["ref"]) + '">فضای پژوهش صادرات</a>'
+                   if engine == "EXPORT" else '')
+                + '</li>'
             )
         body = ('<ul>' + ''.join(links) + '</ul>' if links
                 else '<p>پرونده ساختگی تخصیص‌یافته‌ای برای این بخش وجود ندارد.</p>')
@@ -361,6 +365,57 @@ def build_authenticated_ui_router(
                      + quote(result["next_cursor"]) + '">پرونده‌های بعدی</a>')
         return ('<section class="section"><h3>فهرست فنی بررسی شواهد'
                 ' (فقط نمونه آزمایشی)</h3>' + body + '</section>')
+
+    if technical_review_ledger is not None:
+        @router.get("/admin/export/research/drafts/{ref}")
+        def export_research_detail(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            data = technical_review_ledger.read_export_research_workspace(
+                ref, Principal(session.subject, session.roles),
+            )
+            if data is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            stage_labels = {
+                "UNREQUESTED": "درخواست بررسی فنی هنوز ثبت نشده است",
+                "EVIDENCE_REVIEW_REQUESTED": "مرجع درخواست بررسی فنی ثبت شده است",
+                "HUMAN_RESPONSE_RECORDED":
+                    "مرجع پاسخ مستقل ثبت شده؛ نتیجه پژوهش تأیید نشده است",
+            }
+            steps = ''.join(
+                '<li>مرحله فنی ' + str(item["revision"]) + ': '
+                + escape(item["stage"]) + '</li>'
+                for item in data["technical_review_steps"]
+            )
+            if not steps:
+                steps = '<li>هیچ بررسی فنی برای این نمونه ثبت نشده است.</li>'
+            versions = '، '.join(str(v) for v in data["known_versions"])
+            body = (
+                '<article class="panel"><h2>پرونده پژوهش صادرات (آزمایشی): '
+                + escape(data["ref"]) + '</h2>'
+                '<p>وضعیت پرونده: DRAFT_ONLY · نسخه فعلی '
+                + str(data["case_version"]) + '</p>'
+                '<p>نسخه‌های مستند در نمونه: ' + escape(versions) + '</p>'
+                '<h3>تعریف مسئله پژوهش</h3>'
+                '<p>محصول: تعیین نشده · مقصد: تعیین نشده · HS: تعیین نشده</p>'
+                '<p>مرجع منبع صرفاً آزمایشی: '
+                + escape(data["source_ref"]) + '</p>'
+                '<p>حقوق استفاده و بازنشر این منبع احراز نشده است.</p>'
+                '<h3>وضعیت بررسی</h3><p>'
+                + escape(stage_labels[data["technical_review_state"]])
+                + '</p><ul>' + steps + '</ul>'
+                '<p>یافته معتبر بازار، گزارش تأییدشده، خریدار احرازشده، '
+                'قیمت یا قرارداد وجود ندارد؛ این صفحه توصیه تجاری نیست.</p>'
+                '<p><a href="/admin">بازگشت به مدیریت صادرات</a></p>'
+                '</article>'
+            )
+            return page("روناس — فضای پژوهش صادرات آزمایشی",
+                        body, logged_in=True)
 
     if authority_enquiry_ledger is not None:
         @router.get("/admin/gate-evidence/{domain}/readiness")

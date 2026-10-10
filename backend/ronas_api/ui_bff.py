@@ -19,6 +19,7 @@ from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
                                      visible_dossiers, verify_pinned_business_sources,
                                      BusinessSourceSnapshotError, SOURCE_INTEGRITY_STATE)
 from .shared_workspaces import USER_ROLES, visible_user_workspaces
+from .gate_evidence_handoff_sqlite import SqliteSyntheticGateEvidenceHandoff
 ADMIN_ROLES = {
     "domestic_ops": "عملیات داخلی",
     "export_ops": "عملیات صادرات",
@@ -83,6 +84,7 @@ def build_authenticated_ui_router(
     flow: BrowserOIDC,
     technical_review_ledger: SqliteSyntheticHumanReviewLedger | None = None,
     owned_case_ledger: SqliteSyntheticGrantLedger | None = None,
+    gate_handoff_ledger: SqliteSyntheticGateEvidenceHandoff | None = None,
 ) -> APIRouter:
     # Only the opt-in same-instance ledger injected by create_app may
     # provide the synthetic worklist. Never trust a client-side role list.
@@ -92,6 +94,10 @@ def build_authenticated_ui_router(
     if (owned_case_ledger is not None
             and not isinstance(owned_case_ledger, SqliteSyntheticGrantLedger)):
         raise ValueError("owned household list requires explicit grant ledger")
+    if (gate_handoff_ledger is not None
+            and not isinstance(gate_handoff_ledger,
+                               SqliteSyntheticGateEvidenceHandoff)):
+        raise ValueError("technical gate handoff requires explicit synthetic ledger")
     router = APIRouter()
     cookie_name = "__Host-ronas_session"
 
@@ -324,6 +330,15 @@ def build_authenticated_ui_router(
             raise HTTPException(404, detail="GATE_DOSSIER_NOT_FOUND")
         verify_pinned_business_sources()
         current = dossier_detail(allowed)
+        handoff_states: dict[str, str] = {}
+        if gate_handoff_ledger is not None:
+            handoff = gate_handoff_ledger.worklist(
+                Principal(session.subject, session.roles), domain,
+            )
+            handoff_states = {
+                item["evidence_id"]: item["technical_state"]
+                for item in handoff["items"]
+            }
         # All URLs are derived exclusively from pinned repository constants,
         # not from a query or arbitrary user-provided source path.
         official_source = (
@@ -337,7 +352,11 @@ def build_authenticated_ui_router(
         evidence_rows = ''.join(
             '<li><strong>' + escape(e["id"]) + '</strong> — '
             + escape(e["label"]) + ': '
-            + escape(e["source_status"]) + '</li>'
+            + escape(e["source_status"])
+            + (' · پیگیری ارجاع فنی: '
+               + escape(handoff_states[e["id"]])
+               if e["id"] in handoff_states else '')
+            + '</li>'
             for e in current["evidence_items"]
         )
         body = (
@@ -354,6 +373,7 @@ def build_authenticated_ui_router(
             '">سند مبدأ نسخه‌بسته</a> — '
             '<a href="' + escape(issue, quote=True) +
             '">گیت Business در GitHub</a></p>'
+            '<p>یادداشت بررسی فنی، تأیید اعتبار سند یا تصویب Business نیست.</p>'
             '<p>هیچ تأیید، ثبت مدرک، بودجه، معامله یا تصمیمی در این نما انجام نمی‌شود.</p>'
             '<p><a href="/admin">بازگشت به مدیریت روناس</a></p>'
             '</article>'

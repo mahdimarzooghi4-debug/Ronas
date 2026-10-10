@@ -8,20 +8,20 @@ synthetic assigned agronomy experts; neither can see the other party's identity.
 """
 from __future__ import annotations
 
-from .human_review_sqlite import STATES
-
 CONTRACT_VERSION = "ronas.domestic.preparation-preview.v1"
 SLOT_NAMES = ("crop", "growing_area", "water", "soil", "location")
 
 
 def domestic_preparation_preview(
     *, case_version: int, review_revision: int, technical_review_state: str,
+    valid_review_states: tuple[str, ...],
 ) -> dict:
     """Only represent missing DEMO slots; never calculate plan readiness."""
     if (type(case_version) is not int or case_version < 1
             or type(review_revision) is not int
-            or not 0 <= review_revision < len(STATES)
-            or technical_review_state != STATES[review_revision]):
+            or not isinstance(valid_review_states, tuple)
+            or not 0 <= review_revision < len(valid_review_states)
+            or technical_review_state != valid_review_states[review_revision]):
         raise ValueError("inconsistent immutable Domestic review snapshot")
     return {
         "contract_version": CONTRACT_VERSION,

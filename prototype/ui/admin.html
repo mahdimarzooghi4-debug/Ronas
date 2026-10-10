@@ -2,7 +2,7 @@
 <html lang="fa" dir="rtl">
 <head>
  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
- <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+ <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
  <title>مدیریت روناس | نمونه پنل واحد</title>
  <link rel="stylesheet" href="styles.css">
 </head>
@@ -19,9 +19,22 @@
 <main id="main" class="admin-main">
  <header class="admin-hero"><span class="eyebrow dark">RONAS · UI-02</span><h1>دید مشترک، اختیارهای مستقل.</h1><p>عملیات داخلی، صادرات، مالی و راهبری در یک پنل؛ بدون دسترسی خودکار به داده سایر حوزه‌ها.</p></header>
  <div class="stats" aria-label="وضعیت نمایشی گیت‌ها"><div class="stat"><small>Domestic #2</small><strong>گیت باز</strong></div><div class="stat"><small>Export #3</small><strong>گیت باز</strong></div><div class="stat"><small>Finance #4</small><strong>بدون عملیات زنده</strong></div></div>
+<section class="section panel" id="demo-workflows" aria-labelledby="demo-admin-title">
+ <span class="eyebrow dark">تعامل آزمایشی در یک پنل مدیریت</span>
+ <h2 id="demo-admin-title">مرور پرونده‌های ساختگی دو موتور</h2>
+ <p>این دکمه‌ها فقط سناریوهای محلی را تغییر می‌دهند؛ ورود مدیر، حقوق داده، تصمیم علمی یا تجارت واقعی وجود ندارد.</p>
+ <div class="scenario-grid">
+  <div class="scenario"><h3>عملیات داخلی · #10</h3><p class="demo-status" data-demo-household-status aria-live="polite">هنوز پیش‌نویسی نیست.</p><button type="button" data-demo-action="domestic-clarify">علامت‌گذاری نیاز به اصلاح نمونه</button></div>
+  <div class="scenario"><h3>عملیات صادرات · #11</h3><p class="demo-status" data-demo-export-status aria-live="polite">هنوز پرونده‌ای نیست.</p><div class="demo-controls"><button type="button" data-demo-action="export-prepare">ایجاد پژوهش ساختگی</button><button type="button" class="secondary-button" data-demo-action="export-flag">ارجاع نمونه برای بررسی انسانی</button></div></div>
+ </div>
+ <div class="demo-controls lower"><button type="button" class="secondary-button" data-demo-action="demo-reset">پاک‌کردن وضعیت ساختگی نشست</button><span data-demo-revision>نسخه آزمایشی: ۰</span></div>
+ <p class="demo-hint" data-demo-storage-note></p>
+ <p class="demo-error" data-demo-error role="status"></p>
+</section>
  <section class="section" id="domestic"><header class="section-head"><div><span class="eyebrow dark">#10 · CORE-D1-A</span><h2>عملیات داخلی</h2></div><span class="chip">داده ساختگی</span></header><article class="panel"><h3>بررسی پیش‌نویس خانوار</h3><p class="sub">نمونه بدون پرونده یا شخص واقعی</p><dl class="details"><div><dt>مرجع نمونه</dt><dd>DEMO-H01</dd></div><div><dt>رضایت حقوقی احرازشده</dt><dd>وجود ندارد</dd></div><div><dt>جزئیات کشت</dt><dd>تعیین نشده</dd></div><div><dt>تأیید متخصص</dt><dd>وجود ندارد</dd></div></dl><p class="note">مدیر عملیات جای متخصص تصمیم نمی‌گیرد و هیچ برنامه کشت تأیید نشده است.</p></article></section>
  <section class="section" id="export"><header class="section-head"><div><span class="eyebrow dark">#11 · CORE-E0-A</span><h2>پژوهش در عملیات صادرات</h2></div><span class="chip">فقط پیش‌نویس</span></header><article class="panel"><h3>پرونده محصول–مقصد</h3><p class="sub">بدون پنل مجزای کارشناس صادرات</p><dl class="details"><div><dt>محصول</dt><dd>تعیین نشده</dd></div><div><dt>مقصد</dt><dd>تعیین نشده</dd></div><div><dt>منبع نمایشی</dt><dd>DEMO-SOURCE-01</dd></div><div><dt>حق استفاده از داده</dt><dd>بررسی نشده</dd></div><div><dt>خریدار یا قرارداد</dt><dd>وجود ندارد</dd></div></dl><p class="note">منبع ساختگی، خریدار معتبر، معامله، حق انتشار یا اجازه صادرات را اثبات نمی‌کند.</p></article></section>
  <div class="columns"><section class="panel" id="finance"><span class="eyebrow dark">#12 · مالی</span><h2>مالی و تطبیق</h2><p>جریان‌های مالی Domestic و Export مجزا خواهند بود؛ هیچ وجه، کارمزد یا تسویه فعال نیست.</p><span class="chip">Finance #4 باز</span></section><section class="panel" id="governance"><span class="eyebrow dark">#14 · راهبری</span><h2>نظارت و ممیزی</h2><p>عنوان مدیر کل به معنی حق دسترسی نامحدود، تأیید کیفیت یا جایگزینی تصمیم متخصص نیست.</p><span class="chip">بدون دسترسی واقعی</span></section></div>
  <footer>مدیریت روناس · نمونه بدون ورود، سرور، تصمیم یا داده عملیاتی</footer>
 </main></div>
+<script type="module" src="demo-app.mjs"></script>
 </body></html>

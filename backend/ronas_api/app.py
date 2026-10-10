@@ -7,6 +7,7 @@ from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Response, s
 from .auth import AuthConfig, InvalidToken, Principal, TokenVerifier, require_role
 from .keycloak import KeycloakConfig, KeycloakTokenVerifier
 from .oidc_browser import BrowserOIDC, build_browser_router
+from .ui_bff import build_authenticated_ui_router
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -33,6 +34,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         if not isinstance(config, KeycloakConfig) or browser_flow.config.keycloak != config:
             raise ValueError("browser flow must use the same pinned Keycloak realm")
         app.include_router(build_browser_router(browser_flow))
+        app.include_router(build_authenticated_ui_router(browser_flow))
 
     @app.middleware("http")
     async def security_response_headers(request, call_next):

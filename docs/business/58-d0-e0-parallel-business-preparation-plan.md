@@ -55,3 +55,8 @@
 **تصویب اولویت اجرا شد و سه پرونده مستند به‌صورت پیش‌نویس آماده شده‌اند؛ هیچ شواهد خارجی جدید به‌طور مستقل احراز نشده است.** هیچ موقعیت، کشور، محصول، زمان، هزینه، تعداد کاربر، نام شریک، آستانه، قابلیت محصول یا مدل هوش مصنوعی فرض نشده است.
 
 **FINAL:** PREPARATION APPROVED / TWO SCOPED BUSINESS EVIDENCE PACKETS DRAFTED / FINANCE-LEGAL EVIDENCE TRACKING OPEN / BUSINESS GATES 2, 3, 4 OPEN / NO TECHNICAL OR CODE.
+
+
+## تکمیل اولویت زیرمجموعه AI طبق RON-DEC-029 — 2026-10-10
+
+کارفرما **D0-first evidence preparation** را برای آماده‌سازی شواهد AI پذیرفت؛ **E0 همچنان در مسیر مستقل و موازی جمع‌آوری شواهد است**. این تصمیم ترتیب **پرونده AI در سطح Business** را در چارچوب RON-DEC-026 مشخص می‌کند و تصمیم اولیه آماده‌سازی موازی دو موتور را لغو نمی‌کند. [برنامه پیگیری و ماتریس شواهد D0/E0](69-d0-first-evidence-execution-plan-e0-parallel.md) و [دفتر تصمیم‌ها](04-decisions-and-open-questions.md) مرجع جاری‌اند. هیچ Task اول آموزش یا دیتاست، منبع دارای حق Training، بازبین واقعی، مدل، هزینه، Scope یا گیتی تصویب نشده؛ Domestic #2، Export #3 و Finance #4 OPEN و Technical/Code ممنوع است.

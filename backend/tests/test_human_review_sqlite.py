@@ -342,6 +342,133 @@ class DurableHumanReviewTests(unittest.TestCase):
             self.open()
         self.assertFalse(self.ledger.verify_integrity())
 
+    def test_authorized_operator_review_read_is_scoped_and_audited(self):
+        self.request()
+        self.respond()
+        snapshot = self.ledger.read_review_for_operator(
+            "DOMESTIC", "DEMO-D-001", self.requester
+        )
+        self.assertEqual(snapshot["case_status"], "DRAFT_ONLY")
+        self.assertEqual(snapshot["technical_review_state"], "HUMAN_RESPONSE_RECORDED")
+        self.assertEqual(snapshot["review_revision"], 2)
+        self.assertEqual(len(snapshot["history"]), 2)
+        self.assertEqual(snapshot["history"][1]["decision_ref"], "DEMO-HUMAN-NOTE-001")
+        self.assertEqual(snapshot["history"][0]["request_ref"], "DEMO-REQUEST-001")
+        self.assertNotIn("actor_digest", snapshot["history"][0])
+        self.assertNotIn("command_digest", snapshot["history"][0])
+        last = self.ledger.audit_snapshot()[-1]
+        self.assertEqual(last.kind, "READ_ALLOWED")
+        self.assertEqual(last.access_mode, "TECHNICAL_REVIEW_HISTORY")
+        self.assertEqual(last.ref, "DEMO-D-001")
+        self.assertEqual(self.ledger.review_state("DOMESTIC", "DEMO-D-001")[
+            "case_status"], "DRAFT_ONLY")
+        self.assertTrue(self.open().verify_integrity())
+
+    def test_operator_review_read_denies_wrong_role_engine_or_assignment(self):
+        self.request()
+        impostor = Principal("synthetic-domestic-unknown",
+                             frozenset({"domestic_ops"}))
+        wrong_role = Principal(self.requester.subject, frozenset({"finance"}))
+        for engine, ref, principal in (
+            ("DOMESTIC", "DEMO-D-001", impostor),
+            ("DOMESTIC", "DEMO-D-001", wrong_role),
+            ("DOMESTIC", "DEMO-D-001", self.exporter),
+            ("EXPORT", "DEMO-E-001", self.requester),
+        ):
+            with self.subTest(engine=engine, subject=principal.subject,
+                              roles=principal.roles):
+                self.assertIsNone(
+                    self.ledger.read_review_for_operator(engine, ref, principal)
+                )
+                self.assertEqual(self.ledger.audit_snapshot()[-1].kind, "READ_DENIED")
+        count = len(self.ledger.audit_snapshot())
+        self.assertIsNone(self.ledger.read_review_for_operator(
+            "DOMESTIC", "DEMO-MISSING", self.requester
+        ))
+        self.assertEqual(len(self.ledger.audit_snapshot()), count)
+        self.assertEqual(len(self.open().review_history("DOMESTIC", "DEMO-D-001")), 1)
+        self.assertTrue(self.open().verify_integrity())
+
+    def test_operator_review_read_enforces_immediate_grant_revocation(self):
+        self.request()
+        self.ledger.revoke_grant(
+            engine="DOMESTIC", ref="DEMO-D-001",
+            subject=self.requester.subject, role="domestic_ops",
+            actor="synthetic-authority", expected_grant_revision=0,
+            action_id="DEMO-REVOKE-REVIEW-READ", reason_ref="DEMO-REASON-READ",
+        )
+        # The old (previously valid) role principal still cannot read.
+        self.assertIsNone(self.open().read_review_for_operator(
+            "DOMESTIC", "DEMO-D-001", self.requester
+        ))
+        self.assertEqual(self.ledger.audit_snapshot()[-1].kind, "READ_DENIED")
+        other = self.open().read_review_for_operator(
+            "DOMESTIC", "DEMO-D-001", self.reviewer
+        )
+        self.assertEqual(other["technical_review_state"],
+                         "EVIDENCE_REVIEW_REQUESTED")
+        self.assertEqual(self.ledger.audit_snapshot()[-1].kind, "READ_ALLOWED")
+        self.assertTrue(self.open().verify_integrity())
+
+    def test_failed_review_read_audit_append_never_returns_history(self):
+        self.request()
+        before = self.ledger.audit_snapshot()
+        with sqlite3.connect(self.path) as db:
+            db.execute("""
+                CREATE TRIGGER reject_review_read_audit
+                BEFORE INSERT ON audit_event
+                WHEN NEW.payload LIKE '%TECHNICAL_REVIEW_HISTORY%'
+                BEGIN SELECT RAISE(ABORT, 'blocked read audit'); END;
+            """)
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.ledger.read_review_for_operator(
+                "DOMESTIC", "DEMO-D-001", self.requester
+            )
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER reject_review_read_audit")
+        self.assertEqual(self.open().audit_snapshot(), before)
+        self.assertIsNotNone(self.open().read_review_for_operator(
+            "DOMESTIC", "DEMO-D-001", self.requester
+        ))
+        self.assertTrue(self.open().verify_integrity())
+
+    def test_concurrent_review_read_and_revocation_are_serialized(self):
+        self.request()
+        barrier = Barrier(2)
+        def read():
+            barrier.wait(timeout=12)
+            return self.open().read_review_for_operator(
+                "DOMESTIC", "DEMO-D-001", self.requester
+            )
+        def revoke():
+            barrier.wait(timeout=12)
+            return self.open().revoke_grant(
+                engine="DOMESTIC", ref="DEMO-D-001",
+                subject=self.requester.subject, role="domestic_ops",
+                actor="synthetic-authority", expected_grant_revision=0,
+                action_id="DEMO-REVOKE-RACE", reason_ref="DEMO-REASON-RACE",
+            )
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            future_read = pool.submit(read)
+            future_revoke = pool.submit(revoke)
+            result = future_read.result()
+            future_revoke.result()
+        events = self.open().audit_snapshot()
+        read_event = next(e for e in events
+                          if e.access_mode == "TECHNICAL_REVIEW_HISTORY")
+        revoke_event = next(e for e in events if e.kind == "GRANT_REVOKED")
+        if result is None:
+            self.assertEqual(read_event.kind, "READ_DENIED")
+            self.assertLess(revoke_event.sequence, read_event.sequence)
+        else:
+            self.assertEqual(result["case_status"], "DRAFT_ONLY")
+            self.assertEqual(read_event.kind, "READ_ALLOWED")
+            self.assertLess(read_event.sequence, revoke_event.sequence)
+        self.assertIsNone(self.open().read_review_for_operator(
+            "DOMESTIC", "DEMO-D-001", self.requester
+        ))
+        self.assertTrue(self.open().verify_integrity())
+
     def test_missing_review_row_with_existing_audit_fails_closed(self):
         self.request()
         with sqlite3.connect(self.path) as db:

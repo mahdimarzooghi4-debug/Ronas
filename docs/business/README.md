@@ -86,6 +86,7 @@
 71. [قرارداد نامزد عملیات اصلی Domestic: خانوار، برنامه، نظارت، برداشت، عرضه و معامله](70-core-domestic-operational-scope-and-business-acceptance.md): **CORE PRODUCT BUSINESS DRAFT / NOT APPROVED**؛ تفکیک CORE-D1 پرونده کشت و نظارت از CORE-D2 بازار مازاد، تأیید متخصص، کیفیت/صلاحیت عرضه، قیمت تولیدکننده و قرارداد واقعی تحویل/پول.
 72. [قرارداد نامزد عملیات اصلی Export: فرصت، تأمین، قرارداد مستقل، QC و وصول](71-core-export-operational-contract-and-readiness.md): **CORE PRODUCT BUSINESS DRAFT / NOT APPROVED**؛ تفکیک CORE-E0 پژوهش بدون تعهد از CORE-E1 تجارت قراردادی با چهار خانواده قرارداد مستقل و مسئولیت حقوقی/مالی.
 73. [برنامه مسیر بحرانی محصول اصلی و سه گیت Business](72-core-delivery-critical-path-and-business-gate-readiness.md): **OWNER REVIEW PREPARATION / NO GATE PASS**؛ بسته‌های CORE-D1/D2، CORE-E0/E1، FIN-001..007، مسئولیت و شواهد واقعی، تصمیم‌های محدود لازم برای پیشروی بدون اختراع داده/نرخ/طرف.
+74. [برگه تصمیم مشترک برای پذیرش محدود دامنه‌های CORE-D1 و CORE-E0](73-core-d1-e0-limited-scope-gate-decision-sheet.md): **OWNER SCOPE-REVIEW CHOICE PENDING / GATES NOT PASSED**؛ مرز دقیق خدمت، سناریوهای پذیرش/رد Domestic و Export، حقوق/متخصص و تعهدات مالی، گیت‌های #2/#3/#4؛ Core-D2/E1 و معامله/پرداخت واقعی خارج تا گیت مستقل.
 
 ## اصول تفسیر
 

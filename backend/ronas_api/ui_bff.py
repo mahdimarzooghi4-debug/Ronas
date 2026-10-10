@@ -212,7 +212,9 @@ def build_authenticated_ui_router(
     def client_script() -> PlainTextResponse:
         return PlainTextResponse(LOGOUT_SCRIPT, media_type="text/javascript")
 
-    def household_worklist(principal: Principal, after_ref: str | None) -> str:
+    def household_worklist(
+        principal: Principal, after_ref: str | None, technical_state: str,
+    ) -> str:
         if owned_case_ledger is None:
             return ""
         progress_enabled = (
@@ -225,8 +227,11 @@ def build_authenticated_ui_router(
                 # assemble status using separate per-record privileged reads.
                 result = technical_review_ledger.list_owned_domestic_progress(
                     principal, after_ref=after_ref, limit=20,
+                    technical_state=technical_state,
                 )
             else:
+                if technical_state != "ALL":
+                    raise ValueError("technical filtering requires review ledger")
                 result = owned_case_ledger.list_owned_domestic_drafts(
                     principal, after_ref=after_ref, limit=20,
                 )
@@ -254,9 +259,28 @@ def build_authenticated_ui_router(
             for item in result["items"]
         ]
         body = ('<ul>' + ''.join(rows) + '</ul>' if rows else
-                '<p>پرونده ساختگی متعلق به این حساب وجود ندارد.</p>')
+                '<p>در این فیلتر پرونده آزمایشی متعلق به حساب وجود ندارد.</p>')
+        if progress_enabled:
+            state_labels = {
+                "ALL": "همه پرونده‌های من",
+                **labels,
+            }
+            navigation = ' · '.join(
+                ('<strong>' + escape(label) + '</strong>'
+                 if state == technical_state else
+                 '<a href="/?household_technical_state=' + quote(state)
+                 + '">' + escape(label) + '</a>')
+                for state, label in state_labels.items()
+            )
+            body = (
+                '<p>فیلتر صرفاً مرحله فنی ثبت‌شده را نشان می‌دهد؛ '
+                'پاسخ انسانی به معنی تأیید طرح کشت نیست.</p>'
+                '<nav aria-label="فیلتر پیگیری پرونده‌های خانوار">'
+                + navigation + '</nav>' + body
+            )
         if result["next_cursor"]:
-            body += ('<a href="/?household_after_ref='
+            body += ('<a href="/?household_technical_state='
+                     + quote(technical_state) + '&household_after_ref='
                      + quote(result["next_cursor"]) + '">پرونده‌های بعدی</a>')
         return ('<section class="section"><h3>پرونده‌های من'
                 ' (فقط نمونه آزمایشی)</h3>' + body + '</section>')
@@ -455,6 +479,7 @@ def build_authenticated_ui_router(
     def public_ui(
         sid: str | None = Cookie(default=None, alias=cookie_name),
         household_after_ref: str | None = None,
+        household_technical_state: str = "ALL",
     ) -> HTMLResponse:
         try:
             session = flow.session(sid)
@@ -470,7 +495,8 @@ def build_authenticated_ui_router(
         for name, label in active:
             if name == "household" and owned_case_ledger is not None:
                 household = household_worklist(
-                    Principal(session.subject, session.roles), household_after_ref,
+                    Principal(session.subject, session.roles),
+                    household_after_ref, household_technical_state,
                 )
             else:
                 household = (

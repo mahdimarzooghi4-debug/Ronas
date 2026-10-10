@@ -293,13 +293,13 @@ def build_authenticated_ui_router(
                     after_ref=after_ref, limit=20,
                     technical_state=technical_state,
                 )
-            except ValueError as exc:
-                raise HTTPException(
-                    422, detail="INVALID_ASSIGNED_CASE_QUERY",
-                ) from exc
             except LedgerIntegrityError as exc:
                 raise HTTPException(
                     503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(
+                    422, detail="INVALID_ASSIGNED_CASE_QUERY",
                 ) from exc
             labels = {
                 "ALL": "همه مراحل ثبت‌شده",

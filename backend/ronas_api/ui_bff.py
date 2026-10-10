@@ -121,25 +121,40 @@ def build_authenticated_ui_router(
     def household_worklist(principal: Principal, after_ref: str | None) -> str:
         if owned_case_ledger is None:
             return ""
+        progress_enabled = (
+            technical_review_ledger is not None
+            and owned_case_ledger is technical_review_ledger
+        )
         try:
-            result = owned_case_ledger.list_owned_domestic_drafts(
-                principal, after_ref=after_ref, limit=20,
-            )
+            if progress_enabled:
+                # One exact-owner, single-transaction snapshot: do not
+                # assemble status using separate per-record privileged reads.
+                result = technical_review_ledger.list_owned_domestic_progress(
+                    principal, after_ref=after_ref, limit=20,
+                )
+            else:
+                result = owned_case_ledger.list_owned_domestic_drafts(
+                    principal, after_ref=after_ref, limit=20,
+                )
         except LedgerIntegrityError:
             raise  # app-level sanitizer produces 503, never partial HTML
         except ValueError as exc:
             raise HTTPException(422, detail="INVALID_OWNED_CASE_QUERY") from exc
-        own_detail_enabled = (
-            technical_review_ledger is not None
-            and owned_case_ledger is technical_review_ledger
-        )
         link_base = (
-            "/my-drafts/" if own_detail_enabled else
+            "/my-drafts/" if progress_enabled else
             "/api/v1/domestic/household-intake/drafts/"
         )
+        labels = {
+            "UNREQUESTED": "بررسی فنی درخواست نشده",
+            "EVIDENCE_REVIEW_REQUESTED": "درخواست بررسی شواهد ثبت شده",
+            "HUMAN_RESPONSE_RECORDED":
+                "مرجع پاسخ انسانی ثبت شده؛ به معنی تأیید نیست",
+        }
         rows = [
             '<li><a href="' + link_base + escape(item["ref"]) + '">'
-            + escape(item["ref"]) + '</a> — DRAFT_ONLY</li>'
+            + escape(item["ref"]) + '</a> — DRAFT_ONLY'
+            + (' · ' + escape(labels[item["technical_review_state"]])
+               if progress_enabled else '') + '</li>'
             for item in result["items"]
         ]
         body = ('<ul>' + ''.join(rows) + '</ul>' if rows else

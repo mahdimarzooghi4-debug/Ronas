@@ -41,6 +41,25 @@ def build_owned_household_router(
             ) from exc
 
     if isinstance(ledger, SqliteSyntheticHumanReviewLedger):
+        @router.get("/api/v1/domestic/household-intake/my-drafts/technical-progress")
+        def owned_progress(
+            after_ref: str | None = Query(default=None),
+            limit: int = Query(default=20, ge=1, le=50),
+            p: Principal = Depends(verified_principal),
+        ) -> dict:
+            try:
+                return ledger.list_owned_domestic_progress(
+                    p, after_ref=after_ref, limit=limit,
+                )
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    status_code=503, detail="SYNTHETIC_LEDGER_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422, detail="INVALID_PROGRESS_QUERY",
+                ) from exc
+
         @router.get("/api/v1/domestic/household-intake/my-drafts/{ref}/technical-status")
         def own_technical_status(
             ref: str, p: Principal = Depends(verified_principal),

@@ -5,6 +5,11 @@ may be changed only by a separate authoritative owner decision, NOT by these
 code paths or the status of a synthetic ledger or CI checks.
 """
 import json
+import hashlib
+from pathlib import Path
+import shutil
+import tempfile
+from unittest.mock import patch
 import secrets
 import time
 import unittest
@@ -17,7 +22,8 @@ from ronas_api.app import create_app
 from ronas_api.auth import Principal
 from ronas_api.business_gate_evidence import (
     BUSINESS_SOURCE_SHA, DOSSIERS, SNAPSHOT_STATE, dossier_detail,
-    visible_dossiers,
+    visible_dossiers, verify_pinned_business_sources, BusinessSourceSnapshotError,
+    PINNED_BUSINESS_SOURCE_BLOBS, SOURCE_INTEGRITY_STATE,
 )
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
@@ -263,6 +269,138 @@ class GateEvidenceSnapshotTests(unittest.TestCase):
         self.sessions.revoke_session(sid)
         self.assertEqual(self.client.get(HTML + "FINANCE").status_code, 401)
         self.assertEqual(self.client.get(ROOT).status_code, 401)
+
+    def _copy_pinned_sources(self, root: Path) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        for relative in PINNED_BUSINESS_SOURCE_BLOBS:
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(repo_root / relative, destination)
+
+    def test_verifier_matches_exact_git_objects_and_original_status_cards(self):
+        actual = verify_pinned_business_sources()
+        self.assertEqual(actual, PINNED_BUSINESS_SOURCE_BLOBS)
+        response = self.client.get(ROOT + "/FINANCE", headers=self.headers())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["source_integrity_state"],
+                         SOURCE_INTEGRITY_STATE)
+        self.assertEqual(response.json()["source_blob_id"],
+                         PINNED_BUSINESS_SOURCE_BLOBS[DOSSIERS[2].source_path])
+        self.assertEqual(self.client.get(
+            ROOT, headers=self.headers()
+        ).json()["source_integrity_state"], SOURCE_INTEGRITY_STATE)
+
+    def test_independent_copy_of_both_source_files_is_attested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            self._copy_pinned_sources(folder)
+            self.assertEqual(
+                verify_pinned_business_sources(root=folder),
+                PINNED_BUSINESS_SOURCE_BLOBS,
+            )
+
+    def test_any_domestic_or_finance_document_edit_fails_closed(self):
+        for relative in PINNED_BUSINESS_SOURCE_BLOBS:
+            with self.subTest(relative=relative):
+                with tempfile.TemporaryDirectory() as tmp:
+                    folder = Path(tmp)
+                    self._copy_pinned_sources(folder)
+                    source = folder / relative
+                    source.write_bytes(source.read_bytes() + b"CHANGED")
+                    with self.assertRaises(BusinessSourceSnapshotError):
+                        verify_pinned_business_sources(root=folder)
+
+    def test_missing_document_or_incomplete_source_manifest_fails_closed(self):
+        for relative in PINNED_BUSINESS_SOURCE_BLOBS:
+            with self.subTest(relative=relative):
+                with tempfile.TemporaryDirectory() as tmp:
+                    folder = Path(tmp)
+                    self._copy_pinned_sources(folder)
+                    (folder / relative).unlink()
+                    with self.assertRaises(BusinessSourceSnapshotError):
+                        verify_pinned_business_sources(root=folder)
+
+    def test_rehashed_changed_source_status_is_not_trusted(self):
+        relative = DOSSIERS[0].source_path
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            self._copy_pinned_sources(folder)
+            source = folder / relative
+            raw = source.read_bytes()
+            self.assertIn(b"OPEN / NO PILOT SELECTED", raw)
+            changed = raw.replace(
+                b"**OPEN / NO PILOT SELECTED**",
+                b"**ACCEPTED WITHOUT EVIDENCE**",
+                1,
+            )
+            source.write_bytes(changed)
+            new_blob = hashlib.sha1(
+                b"blob " + str(len(changed)).encode() + b"\0" + changed
+            ).hexdigest()
+            with patch.dict(PINNED_BUSINESS_SOURCE_BLOBS,
+                            {relative: new_blob}):
+                with self.assertRaises(BusinessSourceSnapshotError):
+                    verify_pinned_business_sources(root=folder)
+
+    def test_source_file_redirected_outside_checkout_fails_closed(self):
+        relative = DOSSIERS[0].source_path
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "checkout"
+            folder.mkdir()
+            self._copy_pinned_sources(folder)
+            external = Path(tmp) / "outside.md"
+            shutil.copyfile(folder / relative, external)
+            (folder / relative).unlink()
+            (folder / relative).symlink_to(external)
+            with self.assertRaises(BusinessSourceSnapshotError):
+                verify_pinned_business_sources(root=folder)
+
+    def test_source_version_drift_sanitizes_all_authorized_api_details(self):
+        domestic_source = DOSSIERS[0].source_path
+        with patch.dict(PINNED_BUSINESS_SOURCE_BLOBS,
+                        {domestic_source: "f" * 40}):
+            for url in (ROOT, ROOT + "/DOMESTIC",
+                        ROOT + "/EXPORT", ROOT + "/FINANCE"):
+                with self.subTest(url=url):
+                    r = self.client.get(url, headers=self.headers())
+                    self.assertEqual(r.status_code, 503)
+                    self.assertEqual(
+                        r.json(),
+                        {"detail": "PINNED_BUSINESS_SOURCE_UNAVAILABLE"},
+                    )
+                    self.assertNotIn("FIN-001", r.text)
+                    self.assertNotIn("D1-B-01", r.text)
+
+    def test_source_drift_disables_html_gate_detail_not_unrelated_admin(self):
+        self.login(("governance",))
+        self.assertIn(HTML + "DOMESTIC", self.client.get("/admin").text)
+        with patch.dict(PINNED_BUSINESS_SOURCE_BLOBS,
+                        {DOSSIERS[1].source_path: "f" * 40}):
+            detail = self.client.get(HTML + "DOMESTIC")
+            self.assertEqual(detail.status_code, 503)
+            self.assertEqual(
+                detail.json(), {"detail": "PINNED_BUSINESS_SOURCE_UNAVAILABLE"}
+            )
+            self.assertNotIn("D1-B-01", detail.text)
+            admin = self.client.get("/admin")
+            self.assertEqual(admin.status_code, 200)
+            self.assertIn("نسخه محلی اسناد شواهد معتبر نیست", admin.text)
+            self.assertNotIn(HTML + "DOMESTIC", admin.text)
+            self.assertNotIn(HTML + "EXPORT", admin.text)
+            self.assertNotIn(HTML + "FINANCE", admin.text)
+        self.assertIn(HTML + "DOMESTIC", self.client.get("/admin").text)
+
+    def test_unassigned_domain_is_hidden_even_when_source_is_corrupted(self):
+        headers = self.headers(("domestic_ops",))
+        with patch.dict(PINNED_BUSINESS_SOURCE_BLOBS,
+                        {DOSSIERS[0].source_path: "0" * 40}):
+            self.assertEqual(
+                self.client.get(ROOT + "/EXPORT", headers=headers).status_code,
+                404,
+            )
+            self.assertEqual(
+                self.client.get(ROOT, headers=headers).status_code, 503,
+            )
 
     def test_default_app_does_not_mount_gate_evidence_or_html(self):
         default = TestClient(create_app(self.config), base_url=ORIGIN)

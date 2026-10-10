@@ -1,0 +1,24 @@
+name: Core slices prototype checks
+on:
+  push:
+    branches:
+      - feat/core-d1a-e0a-offline-foundation
+  pull_request:
+    branches:
+      - business/ronas-foundation-v0-1
+
+permissions:
+  contents: read
+
+jobs:
+  prototype-contracts:
+    name: Python 3.12 synthetic contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s prototype/tests -v
+      - run: python -m compileall -q prototype/ronas_core

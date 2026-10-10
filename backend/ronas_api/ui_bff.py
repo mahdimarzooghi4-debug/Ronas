@@ -506,6 +506,78 @@ def build_authenticated_ui_router(
                 ' (فقط نمونه آزمایشی)</h3>' + body + '</section>')
 
     if technical_review_ledger is not None:
+        @router.get("/admin/export/research")
+        def export_research_cases_page(
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+            technical_state: str = "ALL",
+            after_ref: str | None = None,
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            try:
+                research = technical_review_ledger.list_export_research_cases(
+                    Principal(session.subject, session.roles),
+                    technical_state=technical_state, after_ref=after_ref,
+                    limit=20,
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    422, detail="INVALID_EXPORT_RESEARCH_QUEUE",
+                ) from exc
+            # A role alone cannot expose any cases. An unrelated admin
+            # role must not gain a portal into Export by guessing the URL.
+            if "export_ops" not in session.roles:
+                raise HTTPException(404, detail="RESEARCH_QUEUE_NOT_FOUND")
+            labels = {
+                "ALL": "همه پرونده‌های تخصیص‌یافته",
+                "UNREQUESTED": "بدون درخواست بررسی",
+                "EVIDENCE_REVIEW_REQUESTED": "درخواست بررسی ثبت‌شده",
+                "HUMAN_RESPONSE_RECORDED": "مرجع پاسخ فنی ثبت‌شده",
+            }
+            filters = ' · '.join(
+                ('<strong>' + escape(label) + '</strong>'
+                 if state == technical_state else
+                 '<a href="/admin/export/research?technical_state='
+                 + quote(state) + '">' + escape(label) + '</a>')
+                for state, label in labels.items()
+            )
+            rows = ''.join(
+                '<li><a href="/admin/export/research/drafts/'
+                + quote(item["ref"]) + '">'
+                + escape(item["ref"]) + '</a>'
+                ' — نسخه ' + str(item["case_version"])
+                + ' — ' + escape(labels[item["technical_review_state"]])
+                + ' — پرسش بازار و حقوق منبع هنوز احراز نشده‌اند.</li>'
+                for item in research["items"]
+            )
+            more = (
+                '<p><a href="/admin/export/research?technical_state='
+                + quote(technical_state) + '&after_ref='
+                + quote(research["next_cursor"])
+                + '">پرونده‌های بعدی</a></p>'
+                if research["next_cursor"] is not None else ''
+            )
+            content = (
+                '<article class="panel"><h2>پرونده‌های پژوهش صادرات '
+                '(فقط DEMO)</h2>'
+                '<p>فقط پرونده‌های دارای تخصیص فعلی نمایش داده می‌شوند. '
+                'این فیلتر وضعیت بررسی فنی است؛ وضعیت گزارش معتبر بازار نیست.</p>'
+                '<nav aria-label="فیلتر وضعیت فنی پژوهش">'
+                + filters + '</nav>'
+                + ('<ol>' + rows + '</ol>' if rows else
+                   '<p>پرونده تخصیص‌یافته‌ای در این وضعیت وجود ندارد.</p>')
+                + more
+                + '<p>محصول، کشور مقصد، قیمت، خریدار و قرارداد '
+                'از این فهرست استنتاج نمی‌شوند.</p>'
+                '<p><a href="/admin">بازگشت به مدیریت روناس</a></p>'
+                '</article>'
+            )
+            return page("روناس — صف پژوهش صادرات آزمایشی",
+                        content, logged_in=True)
+
+    if technical_review_ledger is not None:
         @router.get("/admin/export/research/drafts/{ref}")
         def export_research_detail(
             ref: str,
@@ -550,7 +622,8 @@ def build_authenticated_ui_router(
                 + '</p><ul>' + steps + '</ul>'
                 '<p>یافته معتبر بازار، گزارش تأییدشده، خریدار احرازشده، '
                 'قیمت یا قرارداد وجود ندارد؛ این صفحه توصیه تجاری نیست.</p>'
-                '<p><a href="/admin">بازگشت به مدیریت صادرات</a></p>'
+                '<p><a href="/admin/export/research">'
+                'بازگشت به فهرست پژوهش صادرات</a></p>'
                 '</article>'
             )
             return page("روناس — فضای پژوهش صادرات آزمایشی",
@@ -748,9 +821,13 @@ def build_authenticated_ui_router(
                         domestic_after_ref,
                     )
                 elif role == "export_ops":
-                    worklist = technical_worklist(
-                        "EXPORT", Principal(session.subject, session.roles),
-                        export_after_ref,
+                    worklist = (
+                        '<p><a href="/admin/export/research">'
+                        'مرور و فیلتر پرونده‌های پژوهش صادرات</a></p>'
+                        + technical_worklist(
+                            "EXPORT", Principal(session.subject, session.roles),
+                            export_after_ref,
+                        )
                     )
             domain = {
                 "domestic_ops": "DOMESTIC",

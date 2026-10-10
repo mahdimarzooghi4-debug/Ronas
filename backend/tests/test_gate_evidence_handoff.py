@@ -335,6 +335,34 @@ class SyntheticGateHandoffTests(unittest.TestCase):
                              503)
         self.assertTrue(self.ledger.verify_integrity())
 
+    def test_integrity_returns_false_when_business_source_identity_drifts(self):
+        from unittest.mock import patch
+        from ronas_api.business_gate_evidence import PINNED_BUSINESS_SOURCE_BLOBS
+        with patch.dict(PINNED_BUSINESS_SOURCE_BLOBS, {
+            next(iter(PINNED_BUSINESS_SOURCE_BLOBS)): "f" * 40
+        }):
+            self.assertFalse(self.ledger.verify_integrity())
+            response = self.client.get(NOTE, headers=self.headers())
+            self.assertEqual(response.status_code, 503)
+            self.assertNotIn("DEMO-RECEIPT", response.text)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_corrupt_event_revision_is_controlled_integrity_error(self):
+        self.record()
+        with sqlite3.connect(self.path) as db:
+            original = json.loads(db.execute(
+                "SELECT payload FROM handoff_event WHERE sequence=1"
+            ).fetchone()[0])
+            original["revision"] = "not-a-number"
+            db.execute("DROP TRIGGER handoff_no_update")
+            db.execute("UPDATE handoff_event SET payload=? WHERE sequence=1",
+                       (json.dumps(original),))
+        self.assertFalse(self.ledger.verify_integrity())
+        response = self.client.get(NOTE, headers=self.headers())
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(),
+                         {"detail": "TECHNICAL_HANDOFF_UNAVAILABLE"})
+
     def test_default_app_does_not_mount_handoff_and_requires_browser(self):
         default = TestClient(create_app(self.config), base_url=ORIGIN)
         self.assertEqual(default.get(NOTE, headers=self.headers()).status_code, 404)

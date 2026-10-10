@@ -15,6 +15,8 @@ from .auth import InvalidToken, Principal
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
 from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
 from .oidc_browser import BrowserOIDC
+from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
+                                     visible_dossiers)
 from .shared_workspaces import USER_ROLES, visible_user_workspaces
 ADMIN_ROLES = {
     "domestic_ops": "عملیات داخلی",
@@ -303,6 +305,58 @@ def build_authenticated_ui_router(
         return ('<section class="section"><h3>فهرست فنی بررسی شواهد'
                 ' (فقط نمونه آزمایشی)</h3>' + body + '</section>')
 
+    @router.get("/admin/gate-evidence/{domain}")
+    def gate_evidence_detail(
+        domain: str,
+        sid: str | None = Cookie(default=None, alias=cookie_name),
+    ) -> HTMLResponse:
+        try:
+            session = flow.session(sid)
+        except InvalidToken:
+            raise HTTPException(401, detail="INVALID_SESSION") from None
+        allowed = next((
+            d for d in visible_dossiers(
+                Principal(session.subject, session.roles)
+            ) if d.domain == domain
+        ), None)
+        if allowed is None:
+            raise HTTPException(404, detail="GATE_DOSSIER_NOT_FOUND")
+        current = dossier_detail(allowed)
+        # All URLs are derived exclusively from pinned repository constants,
+        # not from a query or arbitrary user-provided source path.
+        official_source = (
+            "https://github.com/mahdimarzooghi4-debug/Ronas/blob/"
+            + BUSINESS_SOURCE_SHA + "/" + current["source_path"]
+        )
+        issue = (
+            "https://github.com/mahdimarzooghi4-debug/Ronas/issues/"
+            + str(current["gate_issue"])
+        )
+        evidence_rows = ''.join(
+            '<li><strong>' + escape(e["id"]) + '</strong> — '
+            + escape(e["label"]) + ': '
+            + escape(e["source_status"]) + '</li>'
+            for e in current["evidence_items"]
+        )
+        body = (
+            '<article class="panel"><h2>پرونده شواهد ' +
+            escape(current["domain"]) + '</h2>'
+            '<p>این نمای نسخه‌بسته، تصمیم زنده گیت یا مدرک تأییدشده نیست.</p>'
+            '<p>وضعیت در نسخه منبع: OPEN — مسئول بررسی هنوز تعیین نشده.</p>'
+            '<p>شناسه نسخه منبع: <code>' + escape(BUSINESS_SOURCE_SHA)
+            + '</code></p>'
+            '<ul>' + evidence_rows + '</ul>'
+            '<p><a href="' + escape(official_source, quote=True) +
+            '">سند مبدأ نسخه‌بسته</a> — '
+            '<a href="' + escape(issue, quote=True) +
+            '">گیت Business در GitHub</a></p>'
+            '<p>هیچ تأیید، ثبت مدرک، بودجه، معامله یا تصمیمی در این نما انجام نمی‌شود.</p>'
+            '<p><a href="/admin">بازگشت به مدیریت روناس</a></p>'
+            '</article>'
+        )
+        return page("مدیریت روناس — وضعیت نسخه‌بسته شواهد گیت",
+                    body, logged_in=True)
+
     @router.get("/admin")
     def admin_ui(
         sid: str | None = Cookie(default=None, alias=cookie_name),
@@ -342,8 +396,26 @@ def build_authenticated_ui_router(
                         "EXPORT", Principal(session.subject, session.roles),
                         export_after_ref,
                     )
+            domain = {
+                "domestic_ops": "DOMESTIC",
+                "export_ops": "EXPORT",
+                "finance": "FINANCE",
+            }.get(role)
+            # Governance can inspect all public Business gate metadata, but
+            # this does not grant access to case/evidence private records.
+            domains = [domain] if domain else (
+                ["DOMESTIC", "EXPORT", "FINANCE"]
+                if role == "governance" else []
+            )
+            gate_links = ''.join(
+                '<p><a href="/admin/gate-evidence/' + key
+                + '">شواهد باز Business — ' + key + '</a>'
+                ' (صرفاً نسخه‌بسته و غیرعملیاتی)</p>'
+                for key in domains
+            )
             cards.append('<article class="panel"><h2>' + escape(label) + '</h2><p>'
-                         + escape(note) + '</p>' + worklist + '</article>')
+                         + escape(note) + '</p>' + worklist + gate_links
+                         + '</article>')
         return page("مدیریت روناس — پنل واحد با دسترسی مجزا",
                     '<div class="columns">' + ''.join(cards) + '</div>', logged_in=True)
 

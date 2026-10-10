@@ -13,7 +13,8 @@ from .oidc_browser import BrowserOIDC, build_browser_router
 from .ui_bff import build_authenticated_ui_router
 from .scoped_drafts import ScopedSyntheticDraftRegistry, build_scoped_draft_router
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
-from .grant_ledger_sqlite import LedgerIntegrityError
+from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
+from .owner_case_api import build_owned_household_router
 from .technical_review_api import build_technical_review_read_router
 
 DOMESTIC_EXAMPLE = {
@@ -59,8 +60,14 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                 and scoped_registry is technical_review_ledger)
             else None
         )
+        owner_ledger = (
+            scoped_registry
+            if isinstance(scoped_registry, SqliteSyntheticGrantLedger)
+            else None
+        )
         app.include_router(build_authenticated_ui_router(
-            browser_flow, technical_review_ledger=worklist_ledger
+            browser_flow, technical_review_ledger=worklist_ledger,
+            owned_case_ledger=owner_ledger,
         ))
 
     @app.middleware("http")
@@ -97,6 +104,12 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         if not isinstance(config, KeycloakConfig):
             raise ValueError("record-scoped technical fixtures require Keycloak")
         app.include_router(build_scoped_draft_router(scoped_registry, principal))
+        # Extra owner list requires a local transactional audit ledger;
+        # never infer ownership from a signed role or a static display card.
+        if isinstance(scoped_registry, SqliteSyntheticGrantLedger):
+            app.include_router(build_owned_household_router(
+                scoped_registry, principal
+            ))
 
     if technical_review_ledger is not None:
         # Opt-in LOCAL/TEST only: the review store and the case-grant store

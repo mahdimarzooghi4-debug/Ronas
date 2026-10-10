@@ -116,6 +116,73 @@ tests use synthetic immutable records and locally generated signing keys.
 These are not Production privacy, legal access or distributed-storage
 approvals; Business gates #2/#3/#4 remain OPEN.
 
+## Owner-facing technical progress and detail in the existing user shell (2026-10-10)
+
+This additional **LOCAL/TEST-only** capability shows a household only
+minimal observed **technical** progress on its exact immutable Domestic
+DEMO record. It is neither a Business milestone, approval, expert opinion,
+agronomic assessment nor right to operate; it never sets case status or
+consent. It reuses the existing canonical technical state vocabulary:
+`UNREQUESTED`, `EVIDENCE_REVIEW_REQUESTED`,
+`HUMAN_RESPONSE_RECORDED`. Even the last state means *only* that a
+synthetic reference to an independently authorized human response was
+recorded, not that the response accepted the household or cultivation plan.
+
+The opt-in review-aware `SqliteSyntheticHumanReviewLedger` adds
+`read_owned_domestic_status(ref, principal)`. The caller MUST provide a
+Keycloak-verified principal: the method does not verify JWTs itself.
+The same `BEGIN IMMEDIATE` transaction validates all grant/review/audit
+history, checks exact Domestic `owner_subject` against the signed subject
+plus `household` role, derives technical state from durable review steps
+and appends a hash-linked `READ_ALLOWED` or `READ_DENIED` audit event
+(`HOUSEHOLD_TECHNICAL_STATUS`) for existing DEMO cases. Unknown and
+unauthorized cases return the same `None` and HTTP 404. Audit failure
+rejects the entire read without a partial response.
+
+The response is the existing immutable `ScopedDraft.public_view()`
+envelope plus only `review_revision` and
+`technical_review_state`. It does NOT include any request/evidence/
+decision reference, reviewer/actor identity, command digest, internal
+audit sequence or human note text. Every case still has
+`status=DRAFT_ONLY`, `purpose_consent_verified=false`,
+`expert_approved=false`, `plan_accepted=false`, `real_data=false`.
+
+The optional GET-only
+`/api/v1/domestic/household-intake/my-drafts/{ref}/technical-status`
+is mounted with an explicitly injected, review-aware local ledger and
+KeycloakConfig; a plain in-memory or base grant ledger cannot expose
+review details. JWT absence/invalidity returns 401; another household,
+staff-only actor, wrong engine or unknown ID returns indistinguishable
+404; corrupt review/audit or SQLite failure returns sanitized 503.
+There is no POST or approval endpoint. A reviewer/operator grant
+revocation does not modify independent household ownership.
+
+When the already-approved **shared user/partner shell** is explicitly
+created with a valid `BrowserOIDC` and the **same exact** review ledger
+as its scoped registry, household list links lead to
+`GET /my-drafts/{ref}`, a server-rendered owner-only detail page **in
+that same shell**, showing synthetic case ID/version, `DRAFT_ONLY`,
+current observed technical state and a conspicuous non-approval notice.
+Only known safe state labels are rendered; record IDs are HTML-escaped.
+A missing/revoked browser session returns 401 and an unauthorized
+record returns 404 without exposing its details. No third panel or
+unreviewed Business flow was introduced. With a base ledger or absent
+review injection, the existing owner list simply retains its
+already-authorized minimal JSON detail link, and the new HTML route is
+not mounted. The default runtime mounts neither.
+
+13 focused offline regression tests in
+`backend/tests/test_owned_household_technical_status.py` cover all
+three states, exact owner/engine/role partitioning, no private evidence
+or identity leakage, corruption/failed audit, invalid tokens, staff
+grant revocation independence, default-disabled behavior, BFF detail
+and signed-session logout, plus concurrent owner status read and review
+response serialization. This is evidence for a single-host synthetic
+development candidate only. Actual case identity, lawful consent,
+real agronomist qualification, accessible final user wording, retention
+policy and production storage must be approved separately; Domestic
+Gate #2, Export Gate #3, Finance Gate #4 remain OPEN.
+
 ## Subsequent authoritative decisions still required
 
 Source of record ownership and grant/revocation authority, tenant and delegated

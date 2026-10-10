@@ -1,6 +1,7 @@
 """LOCAL/TEST operator review worklist: authorized DEMO cases only."""
 from concurrent.futures import ThreadPoolExecutor
 import json
+import secrets
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -16,6 +17,7 @@ from ronas_api.app import create_app
 from ronas_api.auth import Principal
 from ronas_api.human_review_sqlite import SqliteSyntheticHumanReviewLedger
 from ronas_api.keycloak import KeycloakConfig
+from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
 
 ISS = "https://id.example.test/realms/ronas"
@@ -111,6 +113,146 @@ class TechnicalReviewWorklistTests(unittest.TestCase):
             action_id="DEMO-REQUEST-WORKLIST", request_ref="DEMO-REQUEST-001",
             evidence_ref="DEMO-EVIDENCE-001",
         )
+
+    def browser_client(self, subject="synthetic-domestic-001",
+                       roles=("domestic_ops",), *, inject_review=True):
+        class FakeStore:
+            def __init__(self):
+                self.sessions = {}
+            def get_session(self, sid):
+                return self.sessions.get(sid)
+            def revoke_session(self, sid):
+                self.sessions.pop(sid, None)
+
+        store = FakeStore()
+        async def no_exchange(_code, _verifier):
+            raise AssertionError("no real external Keycloak")
+        flow = BrowserOIDC(
+            BrowserOIDCConfig(
+                self.config, "https://ronas.example.test/api/auth/callback",
+            ), store, no_exchange,
+        )
+        now = int(time.time())
+        raw_token = self.signed(subject, roles)["Authorization"][7:]
+        sid = secrets.token_urlsafe(40)
+        store.sessions[sid] = BrowserSession(
+            subject, frozenset(roles), raw_token, secrets.token_urlsafe(32),
+            now + 300,
+        )
+        app = create_app(
+            self.config, flow, scoped_registry=self.ledger,
+            technical_review_ledger=self.ledger if inject_review else None,
+        )
+        client = TestClient(app, base_url="https://ronas.example.test")
+        client.cookies.set("__Host-ronas_session", sid)
+        return client, store, sid
+
+    def test_unified_admin_renders_only_assigned_technical_cases(self):
+        client, _, _ = self.browser_client()
+        result = client.get("/admin")
+        self.assertEqual(result.status_code, 200)
+        for ref in ("DEMO-D-001", "DEMO-D-002", "DEMO-D-004"):
+            self.assertIn(ref, result.text)
+        self.assertNotIn("DEMO-D-003", result.text)
+        self.assertNotIn("DEMO-E-001", result.text)
+        self.assertIn("فهرست فنی بررسی شواهد", result.text)
+        self.assertIn("/drafts/DEMO-D-001/technical-review", result.text)
+        self.assertEqual(result.headers["cache-control"], "no-store")
+        self.assertIn("frame-ancestors 'none'", result.headers["content-security-policy"])
+        self.assertEqual([e.ref for e in self.audit_worklist()],
+                         ["DEMO-D-001", "DEMO-D-002", "DEMO-D-004"])
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_unified_admin_has_no_review_items_for_finance_or_unassigned_operator(self):
+        finance, _, _ = self.browser_client(
+            "synthetic-finance", ("finance",)
+        )
+        r = finance.get("/admin")
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("DEMO-D-001", r.text)
+        self.assertNotIn("فهرست فنی بررسی شواهد", r.text)
+        unassigned, _, _ = self.browser_client(
+            "synthetic-other-ops", ("domestic_ops",)
+        )
+        r = unassigned.get("/admin")
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("DEMO-D-001", r.text)
+        self.assertIn("تخصیص‌یافته‌ای", r.text)
+        self.assertEqual(self.audit_worklist(), [])
+
+    def test_unified_admin_loses_single_case_immediately_after_grant_revocation(self):
+        client, store, sid = self.browser_client()
+        self.assertIn("DEMO-D-002", client.get("/admin").text)
+        self.ledger.revoke_grant(
+            engine="DOMESTIC", ref="DEMO-D-002",
+            subject="synthetic-domestic-001", role="domestic_ops",
+            actor="synthetic-controller", expected_grant_revision=0,
+            action_id="DEMO-UI-REVOKE", reason_ref="DEMO-UI-REASON",
+        )
+        self.assertIsNotNone(store.get_session(sid))
+        after = client.get("/admin")
+        self.assertEqual(after.status_code, 200)
+        self.assertIn("DEMO-D-001", after.text)
+        self.assertNotIn("DEMO-D-002", after.text)
+        self.assertIn("DEMO-D-004", after.text)
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_unified_admin_shows_live_technical_state_not_business_approval(self):
+        client, _, _ = self.browser_client()
+        self.request()
+        requested = client.get("/admin")
+        self.assertEqual(requested.status_code, 200)
+        self.assertIn("EVIDENCE_REVIEW_REQUESTED", requested.text)
+        reviewer = Principal("synthetic-domestic-reviewer", frozenset({"domestic_ops"}))
+        self.ledger.record_human_response(
+            engine="DOMESTIC", ref="DEMO-D-001", actor=reviewer,
+            expected_case_version=2, expected_review_revision=1,
+            action_id="DEMO-UI-RESPONSE", request_ref="DEMO-REQUEST-001",
+            evidence_ref="DEMO-UI-EVIDENCE", decision_ref="DEMO-UI-NOTE",
+        )
+        result = client.get("/admin")
+        self.assertEqual(result.status_code, 200)
+        self.assertIn("HUMAN_RESPONSE_RECORDED", result.text)
+        self.assertIn("DRAFT_ONLY", result.text)
+        self.assertNotIn("DEMO-UI-NOTE", result.text)
+        self.assertNotIn("DEMO-UI-EVIDENCE", result.text)
+
+    def test_unified_admin_integrity_failure_returns_503_without_partial_cards(self):
+        client, _, _ = self.browser_client()
+        self.request()
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER review_no_update")
+            db.execute("UPDATE technical_review_step SET evidence_ref='DEMO-TAMPER'")
+        response = client.get("/admin")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {"detail": "SYNTHETIC_LEDGER_UNAVAILABLE"})
+        self.assertNotIn("DEMO-D-001", response.text)
+        self.assertNotIn("DEMO-TAMPER", response.text)
+
+    def test_unified_admin_worklist_opt_in_only_and_logout_hides_cases(self):
+        without, _, _ = self.browser_client(inject_review=False)
+        no_list = without.get("/admin")
+        self.assertEqual(no_list.status_code, 200)
+        self.assertNotIn("فهرست فنی بررسی شواهد", no_list.text)
+        self.assertNotIn("DEMO-D-001", no_list.text)
+        client, store, sid = self.browser_client()
+        self.assertEqual(client.get("/admin").status_code, 200)
+        store.revoke_session(sid)
+        after = client.get("/admin")
+        self.assertEqual(after.status_code, 401)
+        self.assertNotIn("DEMO-D-001", after.text)
+
+    def test_export_admin_worklist_shows_only_export_grant(self):
+        client, _, _ = self.browser_client(
+            "synthetic-export-001", ("export_ops",)
+        )
+        r = client.get("/admin")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("DEMO-E-001", r.text)
+        self.assertNotIn("DEMO-D-001", r.text)
+        self.assertIn("DRAFT_ONLY", r.text)
+        self.assertNotIn("DEMO-SOURCE-001", r.text)
+        self.assertTrue(self.reopen().verify_integrity())
 
     def test_keyset_pagination_returns_only_assigned_cases_without_hidden_count(self):
         one = self.get(params={"limit": 2})

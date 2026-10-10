@@ -350,5 +350,219 @@ class HouseholdOwnedDraftTests(unittest.TestCase):
         self.assertTrue(self.reopen().verify_integrity())
 
 
+    def history_api(self, ref="DEMO-D-001", *, subject="synthetic-household-one",
+                    roles=("household",), client=None):
+        return (client or self.client).get(
+            f"/api/v1/domestic/household-intake/my-drafts/{ref}/versions",
+            headers=self.headers(subject, roles),
+        )
+
+    def test_owner_version_history_only_returns_preseeded_immutable_versions(self):
+        result = self.history_api()
+        self.assertEqual(result.status_code, 200, result.text)
+        body = result.json()
+        self.assertEqual(body["ref"], "DEMO-D-001")
+        self.assertEqual(body["engine"], "DOMESTIC")
+        self.assertEqual(body["version_numbers"], [3])
+        self.assertEqual(body["current_version"], 3)
+        self.assertEqual(body["history_source"], "PRESEEDED_IMMUTABLE_FIXTURES")
+        self.assertEqual(body["versions"],
+                         [{"version": 3, "is_current": True, "status": "DRAFT_ONLY"}])
+        self.assertFalse(body["purpose_consent_verified"])
+        self.assertFalse(body["expert_approved"])
+        self.assertFalse(body["plan_accepted"])
+        for key in ("changed_at", "editor", "reason", "owner_subject", "source_ref"):
+            self.assertNotIn(key, body)
+        self.assertEqual(result.headers["cache-control"], "no-store")
+        audit = self.ledger.audit_snapshot()
+        self.assertEqual([x.access_mode for x in audit],
+                         ["HOUSEHOLD_VERSION_HISTORY"])
+        self.assertEqual(audit[0].ref, "DEMO-D-001")
+
+    def test_historical_seed_versions_are_exact_not_inferred_from_gaps(self):
+        old1 = ScopedDraft("DEMO-D-001", "DOMESTIC", "synthetic-household-one",
+                           1, (ScopedGrant("synthetic-staff-001", "domestic_ops"),))
+        previous = (old1,)
+        versioned = SqliteSyntheticGrantLedger(
+            self.path.parent / "versioned.db", cases(),
+            previous_versions=previous,
+            trusted_revoke_authorizer=revoke_authorizer,
+        )
+        http = TestClient(create_app(
+            self.config, scoped_registry=versioned
+        ), base_url=ORIGIN)
+        response = self.history_api(client=http)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["version_numbers"], [1, 3])
+        self.assertEqual([v["is_current"] for v in response.json()["versions"]],
+                         [False, True])
+        self.assertEqual(versioned.case_versions("DOMESTIC", "DEMO-D-001"),
+                         (1, 3))
+        reopened = SqliteSyntheticGrantLedger(
+            self.path.parent / "versioned.db", cases(),
+            previous_versions=previous,
+            trusted_revoke_authorizer=revoke_authorizer,
+        )
+        self.assertTrue(reopened.verify_integrity())
+        self.assertEqual(reopened.read_owned_domestic_version_history(
+            "DEMO-D-001",
+            __import__("ronas_api.auth", fromlist=["Principal"]).Principal(
+                "synthetic-household-one", frozenset({"household"})
+            )
+        )["version_numbers"], [1, 3])
+
+    def test_other_household_cannot_read_version_history(self):
+        denied = self.history_api(subject="synthetic-household-two")
+        self.assertEqual(denied.status_code, 404)
+        self.assertEqual(denied.json(), {"detail": "DRAFT_NOT_FOUND"})
+        self.assertNotIn("DEMO-D-001", denied.text)
+        self.assertEqual(self.history_api(
+            "DEMO-D-003", subject="synthetic-household-two"
+        ).status_code, 200)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_staff_admin_and_wrong_engine_do_not_inherit_owner_versions(self):
+        for ref, subject, roles in (
+            ("DEMO-D-001", "synthetic-staff-001", ("domestic_ops",)),
+            ("DEMO-D-001", "synthetic-household-one", ("domestic_ops",)),
+            ("DEMO-E-001", "synthetic-household-one", ("household",)),
+            ("DEMO-NOT-FOUND", "synthetic-household-one", ("household",)),
+            ("DEMO-D-001", "synthetic-export-staff", ("export_ops",)),
+        ):
+            with self.subTest(ref=ref, subject=subject, roles=roles):
+                response = self.history_api(ref, subject=subject, roles=roles)
+                self.assertEqual(response.status_code, 404)
+                self.assertNotIn("version_numbers", response.text)
+
+    def test_invalid_synthetic_ref_and_bad_token_do_not_enumerate_records(self):
+        self.assertEqual(self.history_api(ref="raw-untrusted").status_code, 404)
+        self.assertEqual(self.client.get(
+            "/api/v1/domestic/household-intake/my-drafts/DEMO-D-001/versions"
+        ).status_code, 401)
+        self.assertEqual(self.client.get(
+            "/api/v1/domestic/household-intake/my-drafts/DEMO-D-001/versions",
+            headers={"Authorization": "Bearer forged"}
+        ).status_code, 401)
+        self.assertEqual(self.ledger.audit_snapshot(), ())
+
+    def test_history_audit_failure_rolls_back_owner_disclosure(self):
+        with sqlite3.connect(self.path) as db:
+            db.execute("""
+                CREATE TRIGGER fail_versions_audit BEFORE INSERT ON audit_event
+                WHEN NEW.payload LIKE '%HOUSEHOLD_VERSION_HISTORY%'
+                BEGIN SELECT RAISE(ABORT, 'no owner history audit'); END;
+            """)
+        failed = self.history_api()
+        self.assertEqual(failed.status_code, 503)
+        self.assertEqual(failed.json(),
+                         {"detail": "SYNTHETIC_LEDGER_UNAVAILABLE"})
+        self.assertNotIn("version_numbers", failed.text)
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER fail_versions_audit")
+        self.assertEqual(self.ledger.audit_snapshot(), ())
+        self.assertEqual(self.history_api().status_code, 200)
+
+    def test_tampered_version_history_does_not_leak_via_api_or_html(self):
+        client, _, _ = self.browser()
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER case_history_no_delete")
+            db.execute("""
+                DELETE FROM case_history WHERE engine='DOMESTIC'
+                AND ref='DEMO-D-001'
+            """)
+        failed = self.history_api()
+        self.assertEqual(failed.status_code, 503)
+        self.assertEqual(failed.json(),
+                         {"detail": "SYNTHETIC_LEDGER_UNAVAILABLE"})
+        page = client.get("/my-drafts/DEMO-D-001/versions")
+        self.assertEqual(page.status_code, 503)
+        self.assertNotIn("تاریخچه نسخه‌های پرونده", page.text)
+
+    def test_shared_household_shell_links_to_owner_versions_only(self):
+        client, _, _ = self.browser()
+        home = client.get("/")
+        self.assertEqual(home.status_code, 200)
+        self.assertIn("/my-drafts/DEMO-D-001/versions", home.text)
+        self.assertNotIn("/my-drafts/DEMO-D-003/versions", home.text)
+        self.assertNotIn("/my-drafts/DEMO-E-001/versions", home.text)
+        result = client.get("/my-drafts/DEMO-D-001/versions")
+        self.assertEqual(result.status_code, 200)
+        self.assertIn("نسخه 3", result.text)
+        self.assertIn("DRAFT_ONLY", result.text)
+        self.assertIn("از پیش ثبت‌شده نمونه DEMO", result.text)
+        self.assertIn("frame-ancestors 'none'",
+                      result.headers["content-security-policy"])
+        self.assertEqual(result.headers["cache-control"], "no-store")
+        self.assertNotIn("synthetic-household-one", result.text)
+        self.assertNotIn("synthetic-staff-001", result.text)
+
+    def test_shared_household_history_denies_other_owner_and_staff(self):
+        other, _, _ = self.browser(subject="synthetic-household-two")
+        self.assertEqual(
+            other.get("/my-drafts/DEMO-D-001/versions").status_code, 404
+        )
+        staff, _, _ = self.browser(subject="synthetic-staff-001",
+                                   roles=("domestic_ops",))
+        self.assertEqual(
+            staff.get("/my-drafts/DEMO-D-001/versions").status_code, 404
+        )
+        self.assertEqual(
+            other.get("/my-drafts/DEMO-D-003/versions").status_code, 200
+        )
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_logout_and_no_session_prevent_owner_history_html(self):
+        client, store, sid = self.browser()
+        self.assertEqual(client.get("/my-drafts/DEMO-D-001/versions").status_code,
+                         200)
+        store.revoke_session(sid)
+        self.assertEqual(client.get(
+            "/my-drafts/DEMO-D-001/versions"
+        ).status_code, 401)
+        self.assertEqual(client.post(
+            "/my-drafts/DEMO-D-001/versions"
+        ).status_code, 405)
+
+    def test_default_app_and_plain_catalogue_mount_no_version_history(self):
+        base = TestClient(create_app(self.config), base_url=ORIGIN)
+        path = "/api/v1/domestic/household-intake/my-drafts/DEMO-D-001/versions"
+        self.assertEqual(base.get(path, headers=self.headers()).status_code, 404)
+        plain = TestClient(create_app(
+            self.config, scoped_registry=ScopedSyntheticDraftRegistry(cases())
+        ), base_url=ORIGIN)
+        self.assertEqual(plain.get(path, headers=self.headers()).status_code, 404)
+        self.assertEqual(self.client.post(
+            path, headers=self.headers(), json={"version": 10}
+        ).status_code, 405)
+
+    def test_concurrent_owner_history_and_operator_revocation_stay_valid(self):
+        barrier = Barrier(2)
+        def read():
+            app = TestClient(create_app(
+                self.config, scoped_registry=self.reopen()
+            ), base_url=ORIGIN)
+            barrier.wait(timeout=12)
+            return app.get(
+                "/api/v1/domestic/household-intake/my-drafts/DEMO-D-001/versions",
+                headers=self.headers()
+            )
+        def revoke():
+            other = self.reopen()
+            barrier.wait(timeout=12)
+            return other.revoke_grant(
+                engine="DOMESTIC", ref="DEMO-D-001",
+                subject="synthetic-staff-001", role="domestic_ops",
+                actor="synthetic-controller", expected_grant_revision=0,
+                action_id="DEMO-REVOKE-VERSIONS", reason_ref="DEMO-REASON-VERSIONS",
+            )
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            a,b=pool.submit(read),pool.submit(revoke)
+            page, event=a.result(),b.result()
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.json()["version_numbers"], [3])
+        self.assertEqual(event.kind, "GRANT_REVOKED")
+        self.assertTrue(self.reopen().verify_integrity())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -201,6 +201,7 @@ def build_authenticated_ui_router(
                 technical_review_ledger is not None
                 and owned_case_ledger is technical_review_ledger
             ),
+            agronomy_cases=agronomy_workspace is not None,
         )
         assigned = next((w for w in active if w["role"] == role), None)
         if assigned is None:

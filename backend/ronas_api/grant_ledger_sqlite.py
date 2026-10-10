@@ -322,6 +322,50 @@ class SqliteSyntheticGrantLedger(ScopedSyntheticDraftRegistry):
             )
             return result
 
+    def list_owned_domestic_drafts(
+        self, principal: Principal, *, after_ref: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        """List the caller's own synthetic household cases, never staff grants.
+
+        Only a preverified household subject can see its exact immutable
+        Domestic fixture ownership. The same BEGIN IMMEDIATE checks ledger
+        integrity and appends an owner audit event for every returned item;
+        a failed append rolls back the entire page. Cross-household and
+        Export identifiers and global counts are never returned.
+        """
+        if (type(limit) is not int or not 1 <= limit <= 50
+                or after_ref is not None and not _synthetic_ref(after_ref)):
+            raise ValueError("invalid synthetic owner list query")
+        with self._transaction() as db:
+            self._verify(db)
+            results: list[dict] = []
+            next_cursor = None
+            if (isinstance(principal, Principal)
+                    and _synthetic_subject(principal.subject)
+                    and "household" in principal.roles):
+                owned = [
+                    ref for (engine, ref), record in sorted(self._catalogue.items())
+                    if engine == "DOMESTIC"
+                    and record.owner_subject == principal.subject
+                    and (after_ref is None or ref > after_ref)
+                ]
+                for ref in owned[:limit]:
+                    record = self._catalogue[("DOMESTIC", ref)]
+                    results.append(record.public_view())
+                    self._append(
+                        db, kind="READ_ALLOWED", engine="DOMESTIC",
+                        ref=ref, actor=principal.subject,
+                        mode="HOUSEHOLD_OWNED_WORKLIST",
+                    )
+                if len(owned) > limit:
+                    next_cursor = results[-1]["ref"]
+            return {
+                "engine": "DOMESTIC",
+                "items": results,
+                "next_cursor": next_cursor,
+            }
+
     def revoke_grant(self, *, engine: str, ref: str, subject: str, role: str,
                      actor: str, expected_grant_revision: int,
                      action_id: str, reason_ref: str) -> AuditEntry:

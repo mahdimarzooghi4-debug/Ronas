@@ -18,6 +18,7 @@ import time
 from typing import Callable, Iterator
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.exceptions import InvalidTag
 
 from .auth import ALL_ROLES
 from .oidc_browser import BrowserSession, PendingLogin
@@ -91,7 +92,7 @@ class SqliteBrowserSessionStore:
                 blob[:12], blob[12:], (area + digest).encode("ascii")
             ))
             return data if isinstance(data, dict) else None
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError, InvalidTag):
             return None
 
     def save_pending(self, item: PendingLogin) -> None:

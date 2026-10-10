@@ -82,6 +82,33 @@ def page(title: str, body: str, *, logged_in: bool, code: int = 200) -> HTMLResp
     return response
 
 
+
+def readonly_domestic_preparation_html(preparation: dict) -> str:
+    """One safe DEMO field display, shared by owner and assigned expert."""
+    slots = (
+        ("محصول", "crop"), ("مساحت", "growing_area"),
+        ("آب", "water"), ("خاک", "soil"), ("موقعیت", "location"),
+    )
+    # Deliberately only accept the pure LOCAL/TEST unknown-input contract;
+    # this renderer must never become a raw-input or advisory renderer.
+    if (preparation["input_state"] != "NOT_RECORDED_IN_DEMO"
+            or any(preparation["cultivation_inputs"][key] is not None
+                   for _, key in slots)
+            or preparation["plan_state"] != "NOT_AUTHORED"
+            or preparation["business_actions_enabled"] is not False):
+        raise ValueError("unapproved cultivation preparation display state")
+    items = ''.join('<li>' + label + ': تعیین نشده</li>'
+                    for label, _ in slots)
+    return (
+        '<section><h3>اطلاعات کشت در پیش‌نمایش آزمایشی</h3>'
+        '<p>این فیلدها صرفاً جایگاه نمایشی هستند؛ '
+        'معیار کفایت اطلاعات برای طرح کشت تعیین نشده است.</p>'
+        '<ul>' + items + '</ul>'
+        '<p>طرح کشت تولید نشده است. رضایت خانوار، صلاحیت حرفه‌ای '
+        'و تأیید علمی هنوز احراز نشده‌اند.</p></section>'
+    )
+
+
 def build_authenticated_ui_router(
     flow: BrowserOIDC,
     technical_review_ledger: SqliteSyntheticHumanReviewLedger | None = None,
@@ -261,14 +288,6 @@ def build_authenticated_ui_router(
             )
             if data is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            fields = (
-                ("محصول", "crop"), ("مساحت", "growing_area"),
-                ("آب", "water"), ("خاک", "soil"), ("موقعیت", "location"),
-            )
-            inputs = ''.join(
-                '<li>' + title + ': تعیین نشده</li>'
-                for title, _key in fields
-            )
             stages = ''.join(
                 '<li>مرحله فنی ' + str(item["revision"]) + ': '
                 + escape(item["stage"]) + '</li>'
@@ -281,10 +300,11 @@ def build_authenticated_ui_router(
                 + escape(data["ref"]) + '</h2>'
                 '<p>نسخه پرونده: ' + str(data["case_version"])
                 + ' · وضعیت: DRAFT_ONLY</p>'
-                '<h3>داده‌های لازم برای بررسی طرح کشت</h3><ul>'
-                + inputs + '</ul>'
-                '<p>این داده‌ها جمع‌آوری نشده‌اند؛ هیچ پیشنهاد محصول، '
-                'برنامه آبیاری یا طرح کشت تولید نشده است.</p>'
+                + readonly_domestic_preparation_html(
+                    data["cultivation_preparation"]
+                )
+                + '<p>هیچ پیشنهاد محصول یا برنامه آبیاری '
+                'تولید نشده است.</p>'
                 '<h3>مراحل ثبت‌شده بررسی فنی</h3><ul>'
                 + stages + '</ul>'
                 '<p>تخصیص فنی کارشناس، صلاحیت حرفه‌ای را احراز نمی‌کند؛ '
@@ -400,8 +420,10 @@ def build_authenticated_ui_router(
                 '<p>نسخه پرونده: ' + str(result["version"]) + '</p>'
                 '<p>وضعیت پرونده: DRAFT_ONLY</p>'
                 '<p>پیگیری فنی: ' + escape(state) + '</p>'
-                '<p>رضایت واقعی احراز نشده و طرح کشت به تأیید متخصص '
-                'نرسیده است. هیچ تصمیم تجاری یا عملیاتی ثبت نشده است.</p>'
+                + readonly_domestic_preparation_html(
+                    result["cultivation_preparation"]
+                )
+                + '<p>هیچ تصمیم تجاری یا عملیاتی ثبت نشده است.</p>'
                 '<p><a href="/my-drafts/' +
                 escape(result["ref"], quote=True) +
                 '/versions">مشاهده تاریخچه نسخه‌ها</a></p>'

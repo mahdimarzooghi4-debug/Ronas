@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from .auth import InvalidToken, Principal
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
+from .grant_ledger_sqlite import LedgerIntegrityError
 from .oidc_browser import BrowserOIDC
 
 USER_ROLES = {
@@ -138,6 +139,9 @@ def build_authenticated_ui_router(
             result = technical_review_ledger.list_technical_review_worklist(
                 engine, principal, after_ref=after_ref, limit=20
             )
+        except LedgerIntegrityError:
+            # The application owns the fail-closed 503 for corrupted audit.
+            raise
         except ValueError as exc:
             raise HTTPException(422, detail="INVALID_WORKLIST_QUERY") from exc
         links = []

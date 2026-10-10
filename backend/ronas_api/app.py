@@ -3,9 +3,10 @@
 These routes are not operating household/market/export endpoints. All records
 are synthetic and fixed: no live personal data ingestion or mutation routes.
 """
-from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Response, status
 from .auth import AuthConfig, InvalidToken, Principal, TokenVerifier, require_role
 from .keycloak import KeycloakConfig, KeycloakTokenVerifier
+from .oidc_browser import BrowserOIDC, build_browser_router
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -19,7 +20,8 @@ EXPORT_EXAMPLE = {
     "buyer_verified": False, "contracted": False, "source": "SYNTHETIC_ONLY",
 }
 
-def create_app(config: AuthConfig | KeycloakConfig | None = None) -> FastAPI:
+def create_app(config: AuthConfig | KeycloakConfig | None = None,
+               browser_flow: BrowserOIDC | None = None) -> FastAPI:
     app = FastAPI(
         title="Ronas bounded read-only API foundation",
         docs_url=None, redoc_url=None, openapi_url=None,
@@ -27,6 +29,10 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None) -> FastAPI:
     verifier = (KeycloakTokenVerifier(config) if isinstance(config, KeycloakConfig)
                 else TokenVerifier(config) if isinstance(config, AuthConfig)
                 else None)
+    if browser_flow is not None:
+        if not isinstance(config, KeycloakConfig) or browser_flow.config.keycloak != config:
+            raise ValueError("browser flow must use the same pinned Keycloak realm")
+        app.include_router(build_browser_router(browser_flow))
 
     @app.middleware("http")
     async def security_response_headers(request, call_next):
@@ -35,9 +41,16 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None) -> FastAPI:
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
-    def principal(authorization: str | None = Header(default=None)) -> Principal:
+    def principal(authorization: str | None = Header(default=None),
+                  session_cookie: str | None = Cookie(default=None, alias="__Host-ronas_session")) -> Principal:
         if verifier is None:
             raise HTTPException(status_code=503, detail="IDENTITY_NOT_CONFIGURED")
+        if authorization is None and browser_flow is not None and session_cookie:
+            try:
+                record = browser_flow.session(session_cookie)
+                return Principal(record.subject, record.roles)
+            except InvalidToken:
+                raise HTTPException(status_code=401, detail="INVALID_SESSION") from None
         if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="AUTHENTICATION_REQUIRED",
                                 headers={"WWW-Authenticate": "Bearer"})

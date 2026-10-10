@@ -13,6 +13,7 @@ import sqlite3
 from typing import Callable, Iterable
 
 from .auth import Principal
+from .domestic_preparation_preview import domestic_preparation_preview
 from .grant_ledger_sqlite import (
     LedgerIntegrityError, SqliteSyntheticGrantLedger, _hash, _json,
 )
@@ -292,6 +293,12 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                 result.update({
                     "review_revision": len(steps),
                     "technical_review_state": STATES[len(steps)],
+                    "cultivation_preparation": domestic_preparation_preview(
+                        case_version=record.version,
+                        review_revision=len(steps),
+                        technical_review_state=STATES[len(steps)],
+                        valid_review_states=STATES,
+                    ),
                 })
             else:
                 result = None

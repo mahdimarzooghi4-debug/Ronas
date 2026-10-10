@@ -104,6 +104,38 @@ role verification alone cannot authorize history reads. The allowed
 technical state `HUMAN_RESPONSE_RECORDED` is explicitly **not** a
 Business approval. These routes do not form a Production API contract.
 
+## Encrypted browser session and immediate-revocation test contract
+
+An opt-in browser client uses the same existing Keycloak Authorization Code +
+PKCE callback and independently verified ID/access-token subject, followed by
+an encrypted, local SQLite session record. The browser owns only an opaque
+`__Host-ronas_session` cookie (Secure, HttpOnly, SameSite=Lax); it never receives
+a JWT in the technical-review response. Every review GET revalidates the
+stored signed access token's current expiration, issuer, API audience and
+client role via `BrowserOIDC.session()`; the session's own expiration and
+revocation are also enforced. A malformed or expired cookie, invalid
+signature/claims, stale stored role/subject, or revoked session produces
+`401` **before** a review-ledger access audit. An explicitly malformed
+Authorization Bearer header cannot silently fall back to a valid cookie.
+
+A still-active, signed browser session is not sufficient to read a
+synthetic case: the review ledger checks current exact-case grant status
+on **every GET** and writes a transactional audit event. Thus an independent
+grant revocation returns `404` on the very next read even if the session is
+otherwise valid. Successful logout with matching Origin and session CSRF
+revokes the opaque SID across separate SQLite connections; failed logout
+with incorrect Origin or CSRF must not revoke it. GET has no approval
+action, while POST is not supported.
+
+Evidence: `backend/tests/test_technical_review_browser_security.py` runs
+11 offline integrated scenarios using ephemeral local RSA and AES keys,
+the real PKCE callback code paths, two independent SQLite session-store
+objects and the same synthetic review ledger. These prove the **local code
+contract**, not a deployed Keycloak identity service, independently
+qualified reviewer, external revocation feed, browser penetration assessment,
+production multi-node store, or any Business case approval. No real data,
+consent, source-rights or financial transactions are activated.
+
 ## Tests and exclusions
 
 Tests: backend/tests/test_human_review_sqlite.py (27 offline tests).

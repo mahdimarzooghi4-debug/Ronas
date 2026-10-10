@@ -16,7 +16,8 @@ from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
 from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
 from .oidc_browser import BrowserOIDC
 from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
-                                     visible_dossiers)
+                                     visible_dossiers, verify_pinned_business_sources,
+                                     BusinessSourceSnapshotError, SOURCE_INTEGRITY_STATE)
 from .shared_workspaces import USER_ROLES, visible_user_workspaces
 ADMIN_ROLES = {
     "domestic_ops": "عملیات داخلی",
@@ -321,6 +322,7 @@ def build_authenticated_ui_router(
         ), None)
         if allowed is None:
             raise HTTPException(404, detail="GATE_DOSSIER_NOT_FOUND")
+        verify_pinned_business_sources()
         current = dossier_detail(allowed)
         # All URLs are derived exclusively from pinned repository constants,
         # not from a query or arbitrary user-provided source path.
@@ -343,6 +345,8 @@ def build_authenticated_ui_router(
             escape(current["domain"]) + '</h2>'
             '<p>این نمای نسخه‌بسته، تصمیم زنده گیت یا مدرک تأییدشده نیست.</p>'
             '<p>وضعیت در نسخه منبع: OPEN — مسئول بررسی هنوز تعیین نشده.</p>'
+            '<p>فایل‌های همین نسخه محلی با شناسه Git مورد انتظار مطابقت دارند؛ '
+            'این تأیید، وضعیت زنده گیت یا نسخه جاری PR نیست.</p>'
             '<p>شناسه نسخه منبع: <code>' + escape(BUSINESS_SOURCE_SHA)
             + '</code></p>'
             '<ul>' + evidence_rows + '</ul>'
@@ -377,6 +381,13 @@ def build_authenticated_ui_router(
                         '<p>مجوز ورود به هیچ‌یک از چهار حوزه مدیریت وجود ندارد.</p>',
                         logged_in=True, code=403)
         cards = []
+        try:
+            verify_pinned_business_sources()
+            gate_source_usable = True
+        except BusinessSourceSnapshotError:
+            # Keep unrelated local admin read models available, while
+            # withholding all obsolete gate links and showing a warning.
+            gate_source_usable = False
         for role, label in active:
             note = {
                 "domestic_ops": "نمونه پرونده خانوار DEMO-H01؛ رضایت و تأیید کارشناس وجود ندارد.",
@@ -407,12 +418,14 @@ def build_authenticated_ui_router(
                 ["DOMESTIC", "EXPORT", "FINANCE"]
                 if role == "governance" else []
             )
-            gate_links = ''.join(
+            gate_links = (''.join(
                 '<p><a href="/admin/gate-evidence/' + key
                 + '">شواهد باز Business — ' + key + '</a>'
                 ' (صرفاً نسخه‌بسته و غیرعملیاتی)</p>'
                 for key in domains
-            )
+            ) if gate_source_usable else
+                '<p>نسخه محلی اسناد شواهد معتبر نیست؛ '
+                'پیوندهای گیت موقتاً غیرفعال‌اند.</p>')
             cards.append('<article class="panel"><h2>' + escape(label) + '</h2><p>'
                          + escape(note) + '</p>' + worklist + gate_links
                          + '</article>')

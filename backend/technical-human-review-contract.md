@@ -37,14 +37,45 @@ content, reviewed facts or access rights. A non-review-aware generic
 grant ledger refuses to open an audit history with review-specific
 events rather than silently ignoring them.
 
+## Currently authorized read facade (internal only)
+
+`read_review_for_operator(engine, ref, principal)` is the opt-in
+technical-history read boundary. The caller must already have validated the
+Keycloak signature, issuer, audience and client role; a bare Python `Principal`
+is **not** proof of signature verification. The ledger checks a current
+exact-case and exact-engine operations assignment in the same
+`BEGIN IMMEDIATE` transaction as the read and audit append. A previously
+valid JWT does not bypass a revoked case grant. Governance, finance,
+unassigned and cross-engine actors cannot read technical evidence references.
+Unknown case and unauthorized case return the same `None` result.
+
+For a known synthetic record and syntactically valid synthetic subject, each
+read attempt appends `READ_ALLOWED` or `READ_DENIED` with the existing
+hash-chained audit vocabulary and `TECHNICAL_REVIEW_HISTORY` access mode.
+A failed audit insert aborts the entire read, without returning its contents.
+Concurrent revocation and read are serialized by SQLite's transaction lock;
+a successful read must precede revocation in the audit sequence. Authorized
+results contain only engine/ref, case version, immutable `DRAFT_ONLY` status,
+technical state/revision and a sequence of DEMO stage, request, evidence,
+note and audit-sequence references. They omit actor and command digests,
+actual note contents, identity and new approval/denial categories.
+
+`review_state` and `review_history` remain **trusted internal diagnostic
+helpers**, without authorization checks. They MUST NOT be exposed through an
+HTTP route, used as a session-facing interface or interpreted as an
+operational review decision. Downstream UI/BFF integrations must use an
+authenticated, exact-case-checked facade and must not trust a client-
+supplied `Principal`. No new review endpoint has been mounted. This is
+not a Production read/authorization policy and no new user role is granted.
+
 ## Tests and exclusions
 
-Tests: backend/tests/test_human_review_sqlite.py (20 offline tests).
+Tests: backend/tests/test_human_review_sqlite.py (27 offline tests).
 Scenarios cover restart/reopen, independent authorization, revoked
 grant, cross-engine isolation, request binding, forced SQL insert
 rollback, audit tampering, SQLite append-only triggers, concurrent
 replay/CAS, missing request and absence of public decision endpoints.
-Existing Keycloak and synthetic domain tests remain in the same CI.
+Additional scenarios exercise exact-case read authorization, denied-role/assignment/engine access, immediate revocation, atomic audit-write failure and concurrent read/revocation ordering. Existing Keycloak and synthetic domain tests remain in the same CI.
 
 This is a local single-host SQLite simulation, NOT a production store,
 distributed consistent authorizer, tamper-proof independent audit or

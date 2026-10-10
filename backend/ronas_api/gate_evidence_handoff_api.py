@@ -36,4 +36,19 @@ def build_gate_handoff_read_router(
                 status_code=503, detail="TECHNICAL_HANDOFF_UNAVAILABLE",
             ) from exc
 
+    @router.get("/api/v1/admin/gate-evidence/{domain}/admission-preflight")
+    def read_admission_preflight(
+        domain: str, p: Principal = Depends(verified_principal),
+    ) -> dict:
+        try:
+            return ledger.preflight_worklist(p, domain)
+        except HandoffNotAuthorized as exc:
+            raise HTTPException(
+                status_code=404, detail="GATE_PREFLIGHT_NOT_FOUND",
+            ) from exc
+        except (HandoffIntegrityError, sqlite3.DatabaseError) as exc:
+            raise HTTPException(
+                status_code=503, detail="TECHNICAL_HANDOFF_UNAVAILABLE",
+            ) from exc
+
     return router

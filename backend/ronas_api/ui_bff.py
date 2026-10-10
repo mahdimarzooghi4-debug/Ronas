@@ -12,7 +12,8 @@ from fastapi import APIRouter, Cookie, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from .auth import InvalidToken, Principal
-from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
+from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES as TECHNICAL_STATES
+from .scoped_drafts import _synthetic_ref
 from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
 from .oidc_browser import BrowserOIDC
 from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
@@ -192,6 +193,16 @@ def build_authenticated_ui_router(
         raise ValueError("explicit synthetic supplier workspace required")
     router = APIRouter()
     cookie_name = "__Host-ronas_session"
+
+    def export_navigation_query(technical_state: str, after_ref: str | None) -> str:
+        # Navigation only; never grant or infer Export case access from URL.
+        if (technical_state not in ("ALL", *TECHNICAL_STATES)
+                or after_ref is not None and not _synthetic_ref(after_ref)):
+            raise HTTPException(422, detail="INVALID_EXPORT_RESEARCH_QUEUE")
+        return (
+            "technical_state=" + quote(technical_state)
+            + ("&after_ref=" + quote(after_ref) if after_ref is not None else "")
+        )
 
     def roles(sid: str | None) -> frozenset[str] | None:
         if sid is None:
@@ -651,6 +662,8 @@ def build_authenticated_ui_router(
                     technical_state=technical_state, after_ref=after_ref,
                     limit=20,
                 )
+            except LedgerIntegrityError:
+                raise  # integrity failures must stay 503, never validation 422
             except ValueError as exc:
                 raise HTTPException(
                     422, detail="INVALID_EXPORT_RESEARCH_QUEUE",
@@ -674,7 +687,8 @@ def build_authenticated_ui_router(
             )
             rows = ''.join(
                 '<li><a href="/admin/export/research/drafts/'
-                + quote(item["ref"]) + '">'
+                + quote(item["ref"]) + '?'
+                + export_navigation_query(technical_state, after_ref) + '">'
                 + escape(item["ref"]) + '</a>'
                 ' — نسخه ' + str(item["case_version"])
                 + ' — ' + escape(labels[item["technical_review_state"]])
@@ -707,15 +721,61 @@ def build_authenticated_ui_router(
                         content, logged_in=True)
 
     if technical_review_ledger is not None:
-        @router.get("/admin/export/research/drafts/{ref}")
-        def export_research_detail(
+        @router.get("/admin/export/research/drafts/{ref}/versions")
+        def export_research_versions_page(
             ref: str,
             sid: str | None = Cookie(default=None, alias=cookie_name),
+            technical_state: str = "ALL",
+            after_ref: str | None = None,
         ) -> HTMLResponse:
             try:
                 session = flow.session(sid)
             except InvalidToken:
                 raise HTTPException(401, detail="INVALID_SESSION") from None
+            navigation = export_navigation_query(technical_state, after_ref)
+            data = technical_review_ledger.read_export_research_version_history(
+                ref, Principal(session.subject, session.roles),
+            )
+            if data is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            versions = ''.join(
+                '<li>نسخه ' + str(item["version"])
+                + (' — نسخه فعلی DEMO' if item["is_current"]
+                   else ' — نسخه پیشین DEMO')
+                + '</li>' for item in data["versions"]
+            )
+            body = (
+                '<article class="panel"><h2>تاریخچه نسخه‌های پژوهش صادرات: '
+                + escape(data["ref"]) + '</h2>'
+                '<p>فقط شماره نسخه‌های از پیش ثبت‌شده و تأیید یکپارچگی‌شده '
+                'نمونه آزمایشی نمایش داده می‌شوند. تاریخ و محتوای تغییرات '
+                'از شماره نسخه‌ها استنتاج نمی‌شود.</p>'
+                '<p>همه نسخه‌ها DRAFT_ONLY؛ هیچ مجوز استفاده از منبع، '
+                'گزارش تأییدشده، خریدار یا قرارداد وجود ندارد.</p>'
+                '<ol>' + versions + '</ol>'
+                '<p><a href="/admin/export/research/drafts/'
+                + quote(data["ref"]) + '?' + navigation
+                + '">بازگشت به جزئیات پرونده</a></p>'
+                '<p><a href="/admin/export/research?'
+                + navigation + '">بازگشت به فهرست فیلترشده</a></p>'
+                '</article>'
+            )
+            return page("روناس — تاریخچه پژوهش صادرات (DEMO)",
+                        body, logged_in=True)
+
+    if technical_review_ledger is not None:
+        @router.get("/admin/export/research/drafts/{ref}")
+        def export_research_detail(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+            technical_state: str = "ALL",
+            after_ref: str | None = None,
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            navigation = export_navigation_query(technical_state, after_ref)
             data = technical_review_ledger.read_export_research_workspace(
                 ref, Principal(session.subject, session.roles),
             )
@@ -727,9 +787,14 @@ def build_authenticated_ui_router(
                 "HUMAN_RESPONSE_RECORDED":
                     "مرجع پاسخ مستقل ثبت شده؛ نتیجه پژوهش تأیید نشده است",
             }
+            stage_events = {
+                "TECH_REVIEW_REQUESTED": "درخواست بررسی فنی ثبت‌شده",
+                "TECH_HUMAN_RESPONSE_RECORDED":
+                    "مرجع پاسخ انسانی ثبت‌شده (نه تأیید گزارش)",
+            }
             steps = ''.join(
                 '<li>مرحله فنی ' + str(item["revision"]) + ': '
-                + escape(item["stage"]) + '</li>'
+                + escape(stage_events[item["stage"]]) + '</li>'
                 for item in data["technical_review_steps"]
             )
             if not steps:
@@ -741,6 +806,9 @@ def build_authenticated_ui_router(
                 '<p>وضعیت پرونده: DRAFT_ONLY · نسخه فعلی '
                 + str(data["case_version"]) + '</p>'
                 '<p>نسخه‌های مستند در نمونه: ' + escape(versions) + '</p>'
+                '<p><a href="/admin/export/research/drafts/'
+                + quote(data["ref"]) + '/versions?' + navigation
+                + '">تاریخچه نسخه‌های این پرونده</a></p>'
                 '<h3>تعریف مسئله پژوهش</h3>'
                 '<p>محصول: تعیین نشده · مقصد: تعیین نشده · HS: تعیین نشده</p>'
                 '<p>مرجع منبع صرفاً آزمایشی: '
@@ -751,8 +819,8 @@ def build_authenticated_ui_router(
                 + '</p><ul>' + steps + '</ul>'
                 '<p>یافته معتبر بازار، گزارش تأییدشده، خریدار احرازشده، '
                 'قیمت یا قرارداد وجود ندارد؛ این صفحه توصیه تجاری نیست.</p>'
-                '<p><a href="/admin/export/research">'
-                'بازگشت به فهرست پژوهش صادرات</a></p>'
+                '<p><a href="/admin/export/research?'
+                + navigation + '">بازگشت به فهرست پژوهش صادرات</a></p>'
                 '</article>'
             )
             return page("روناس — فضای پژوهش صادرات آزمایشی",

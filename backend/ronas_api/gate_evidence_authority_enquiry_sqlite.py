@@ -12,7 +12,10 @@ from typing import Callable
 import sqlite3
 
 from .auth import Principal
-from .business_gate_evidence import BUSINESS_SOURCE_SHA, verify_pinned_business_sources
+from .business_gate_evidence import (
+    BUSINESS_SOURCE_SHA, DOSSIERS, verify_pinned_business_sources,
+)
+from .gate_evidence_preflight import preflight_for_status
 from .gate_evidence_handoff_sqlite import (
     GENESIS, HandoffConflict, HandoffIntegrityError, HandoffNotAuthorized,
     SqliteSyntheticGateEvidenceHandoff, _ref, canonical, digest,
@@ -300,6 +303,66 @@ class SqliteSyntheticAuthorityEnquiryLedger:
                 "snapshot_state": "PINNED_DRAFT_SNAPSHOT_NOT_LIVE",
                 "verification_state": "NO_TRUSTED_EXTERNAL_AUTHORITY",
                 "items": items,
+            }
+
+    def read_readiness_matrix(self, principal: Principal, domain: str) -> dict:
+        """Atomic, no-admission technical matrix for the exact signed domain.
+
+        A single BEGIN IMMEDIATE snapshot verifies the original handoff
+        chain and all three authority-enquiry streams, then derives the
+        19-item source registry's domain subset. There are no independent
+        per-card reads, no authority assumptions, and no hidden case counts.
+        """
+        self.handoff._actor(principal, domain)
+        verify_pinned_business_sources()
+        with self.handoff._transaction() as db:
+            handoffs, enquiries = self._verify(db)
+            last_handoff = {
+                (e.domain, e.evidence_id): e for e in handoffs
+            }
+            last_enquiry = {
+                (e.domain, e.evidence_id, e.check_kind): e for e in enquiries
+            }
+            dossier = next(d for d in DOSSIERS if d.domain == domain)
+            rows = []
+            for requirement in dossier.evidence:
+                handoff = last_handoff.get((domain, requirement.evidence_id))
+                preflight = preflight_for_status({
+                    "domain": domain,
+                    "evidence_id": requirement.evidence_id,
+                    "technical_state": (
+                        handoff.stage if handoff else "NO_REFERENCE"
+                    ),
+                    "review_revision": handoff.revision if handoff else 0,
+                })
+                checks = []
+                for kind in CHECKS:
+                    enquiry = last_enquiry.get(
+                        (domain, requirement.evidence_id, kind)
+                    )
+                    checks.append({
+                        "check_kind": kind,
+                        "technical_state": (
+                            enquiry.stage if enquiry else "NO_REQUEST"
+                        ),
+                        "revision": enquiry.revision if enquiry else 0,
+                        "authority_verified": False,
+                    })
+                rows.append({
+                    "evidence_id": requirement.evidence_id,
+                    "technical_handoff": preflight,
+                    "authority_checks": checks,
+                    "business_approval": False,
+                })
+            return {
+                "domain": domain,
+                "business_source_sha": BUSINESS_SOURCE_SHA,
+                "snapshot_state": "PINNED_DRAFT_SNAPSHOT_NOT_LIVE",
+                "matrix_state": "BLOCKED_EXTERNAL_VERIFICATION",
+                "snapshot_contract": "SAME_LOCAL_SQLITE_TRANSACTION",
+                "business_gate_passed": False,
+                "admission_allowed": False,
+                "items": rows,
             }
 
     def verify_integrity(self) -> bool:

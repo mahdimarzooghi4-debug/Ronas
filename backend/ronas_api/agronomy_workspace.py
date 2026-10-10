@@ -12,6 +12,7 @@ from typing import Callable, Iterable
 
 from .auth import Principal
 from .grant_ledger_sqlite import LedgerIntegrityError
+from .domestic_preparation_preview import domestic_preparation_preview
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES
 from .scoped_drafts import _synthetic_ref, _synthetic_subject
 
@@ -84,6 +85,12 @@ class SyntheticAgronomyWorkspace:
                 or not versions or versions[-1] != record.version):
             raise LedgerIntegrityError("agronomy case history mismatch")
         steps = self.ledger._steps(db, "DOMESTIC", ref)
+        preparation = domestic_preparation_preview(
+            case_version=record.version,
+            review_revision=len(steps),
+            technical_review_state=STATES[len(steps)],
+            valid_review_states=STATES,
+        )
         return {
             "ref": ref,
             "engine": "DOMESTIC",
@@ -97,17 +104,17 @@ class SyntheticAgronomyWorkspace:
                 {"revision": item.revision, "stage": item.stage}
                 for item in steps
             ],
-            "cultivation_inputs": {
-                "crop": None, "growing_area": None, "water": None,
-                "soil": None, "location": None,
-            },
-            "plan_state": "NOT_AUTHORED",
-            "agronomist_qualification_verified": False,
-            "purpose_consent_verified": False,
-            "scientific_review_approved": False,
-            "plan_accepted": False,
-            "real_data": False,
-            "business_actions_enabled": False,
+            "cultivation_preparation": preparation,
+            "cultivation_inputs": preparation["cultivation_inputs"],
+            "plan_state": preparation["plan_state"],
+            "agronomist_qualification_verified": preparation[
+                "agronomist_qualification_verified"
+            ],
+            "purpose_consent_verified": preparation["purpose_consent_verified"],
+            "scientific_review_approved": preparation["scientific_review_approved"],
+            "plan_accepted": preparation["plan_accepted"],
+            "real_data": preparation["real_data"],
+            "business_actions_enabled": preparation["business_actions_enabled"],
         }
 
     def read_assigned_case(self, ref: str, principal: Principal) -> dict | None:

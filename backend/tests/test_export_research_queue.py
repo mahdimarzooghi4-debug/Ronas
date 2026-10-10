@@ -83,6 +83,14 @@ class ExportResearchQueueTests(unittest.TestCase):
     def reopen(self):
         return SqliteSyntheticHumanReviewLedger(
             self.path, self.fixtures(),
+            previous_versions=(
+                ScopedDraft("DEMO-E-001", "EXPORT", "synthetic-export-owner-1",
+                            1, (ScopedGrant("synthetic-export-001", "export_ops"),),
+                            source_ref="DEMO-SOURCE-001"),
+                ScopedDraft("DEMO-E-001", "EXPORT", "synthetic-export-owner-1",
+                            2, (ScopedGrant("synthetic-export-001", "export_ops"),),
+                            source_ref="DEMO-SOURCE-001"),
+            ),
             trusted_revoke_authorizer=lambda actor, engine, ref: (
                 actor == "synthetic-controller" and engine == "EXPORT"
             ),
@@ -388,6 +396,246 @@ class ExportResearchQueueTests(unittest.TestCase):
         self.assertEqual(event.kind, "GRANT_REVOKED")
         self.assertEqual([x["ref"] for x in self.get().json()["items"]],
                          ["DEMO-E-001", "DEMO-E-003"])
+        self.assertTrue(self.reopen().verify_integrity())
+
+
+    def version_api(self, ref="DEMO-E-001", *,
+                    subject="synthetic-export-001", roles=("export_ops",),
+                    client=None):
+        return (client or self.client).get(
+            "/api/v1/admin/export/research/drafts/" + ref + "/versions",
+            headers=self.headers(subject, roles),
+        )
+
+    def versions_audit(self):
+        return [
+            event for event in self.ledger.audit_snapshot()
+            if event.access_mode == "EXPORT_RESEARCH_VERSION_HISTORY"
+        ]
+
+    def test_exact_preseeded_version_history_is_scoped_not_inferred(self):
+        response = self.version_api()
+        self.assertEqual(response.status_code, 200, response.text)
+        d = response.json()
+        self.assertEqual(d["ref"], "DEMO-E-001")
+        self.assertEqual(d["version_numbers"], [1, 2, 3])
+        self.assertEqual(d["history_source"], "PRESEEDED_IMMUTABLE_FIXTURES")
+        self.assertEqual(d["case_version"], 3)
+        self.assertEqual(d["versions"], [
+            {"version": 1, "is_current": False, "case_status": "DRAFT_ONLY"},
+            {"version": 2, "is_current": False, "case_status": "DRAFT_ONLY"},
+            {"version": 3, "is_current": True, "case_status": "DRAFT_ONLY"},
+        ])
+        for field in ("source_rights_verified", "research_report_approved",
+                      "buyer_verified", "contracted", "real_data",
+                      "business_actions_enabled"):
+            self.assertIs(d[field], False)
+        for secret in ("synthetic-export-owner", "synthetic-export-001",
+                       "DEMO-SOURCE", "decision_ref", "evidence_ref",
+                       "request_ref", "audit_sequence", "timestamp", "content"):
+            self.assertNotIn(secret, response.text)
+        self.assertEqual(len(self.versions_audit()), 1)
+        self.assertEqual(self.versions_audit()[0].kind, "READ_ALLOWED")
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_export_versions_independent_role_and_current_case_grant(self):
+        for subject, roles, ref in (
+            ("synthetic-export-001", ("household",), "DEMO-E-001"),
+            ("synthetic-export-owner-1", ("export_ops",), "DEMO-E-001"),
+            ("synthetic-domestic-ops", ("domestic_ops",), "DEMO-E-001"),
+            ("synthetic-export-001", ("export_ops",), "DEMO-E-004"),
+            ("synthetic-export-001", ("export_ops",), "DEMO-D-001"),
+            ("synthetic-export-001", ("export_ops",), "DEMO-NOT-FOUND"),
+            ("synthetic-export-001", ("export_ops",), "not-demo"),
+        ):
+            with self.subTest(subject=subject, ref=ref):
+                response = self.version_api(ref, subject=subject, roles=roles)
+                self.assertEqual(response.status_code, 404)
+                self.assertNotIn("version_numbers", response.text)
+                self.assertNotIn("DEMO-SOURCE", response.text)
+        other = self.version_api("DEMO-E-004", subject="synthetic-export-other")
+        self.assertEqual(other.status_code, 200)
+        self.assertEqual(other.json()["version_numbers"], [1])
+
+    def test_version_history_grant_revocation_is_immediate_with_signed_old_token(self):
+        self.assertEqual(self.version_api().status_code, 200)
+        self.ledger.revoke_grant(
+            engine="EXPORT", ref="DEMO-E-001",
+            subject="synthetic-export-001", role="export_ops",
+            actor="synthetic-controller", expected_grant_revision=0,
+            action_id="DEMO-VERSION-REVOKE", reason_ref="DEMO-VERSION-REASON",
+        )
+        denied = self.version_api()
+        self.assertEqual(denied.status_code, 404)
+        self.assertNotIn("version_numbers", denied.text)
+        self.assertEqual([e.kind for e in self.versions_audit()],
+                         ["READ_ALLOWED", "READ_DENIED"])
+        self.assertEqual(self.version_api("DEMO-E-002").status_code, 200)
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_version_history_fails_closed_when_audit_cannot_append(self):
+        with sqlite3.connect(self.path) as db:
+            db.execute("""
+                CREATE TRIGGER fail_export_versions BEFORE INSERT ON audit_event
+                WHEN NEW.payload LIKE '%EXPORT_RESEARCH_VERSION_HISTORY%'
+                BEGIN SELECT RAISE(ABORT, 'version audit failure'); END;
+            """)
+        denied = self.version_api()
+        self.assertEqual(denied.status_code, 503)
+        self.assertEqual(denied.json(),
+                         {"detail": "TECHNICAL_REVIEW_UNAVAILABLE"})
+        self.assertNotIn("DEMO-E-001", denied.text)
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER fail_export_versions")
+        self.assertEqual(self.versions_audit(), [])
+        self.assertEqual(self.version_api().status_code, 200)
+
+    def test_tampered_version_history_is_not_disclosed_in_api_or_html(self):
+        self.login()
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER case_history_no_delete")
+            db.execute("""
+                DELETE FROM case_history
+                WHERE engine='EXPORT' AND ref='DEMO-E-001' AND version=2
+            """)
+        api = self.version_api()
+        self.assertEqual(api.status_code, 503)
+        self.assertNotIn("version_numbers", api.text)
+        page = self.client.get(
+            "/admin/export/research/drafts/DEMO-E-001/versions"
+        )
+        self.assertEqual(page.status_code, 503)
+        self.assertNotIn("نسخه پیشین DEMO", page.text)
+
+    def test_versions_http_requires_verified_session_and_get_only(self):
+        url = "/api/v1/admin/export/research/drafts/DEMO-E-001/versions"
+        self.assertEqual(self.client.get(url).status_code, 401)
+        self.assertEqual(self.client.get(
+            url, headers={"Authorization": "Bearer forged"}
+        ).status_code, 401)
+        for method in ("post", "put", "patch", "delete"):
+            self.assertEqual(getattr(self.client, method)(
+                url, headers=self.headers(),
+            ).status_code, 405)
+        unmounted = TestClient(create_app(self.config), base_url=ORIGIN)
+        self.assertEqual(unmounted.get(url, headers=self.headers()).status_code,
+                         404)
+        self.assertEqual(self.versions_audit(), [])
+
+    def test_filtered_research_queue_preserves_navigation_context_in_detail(self):
+        self.login()
+        self.set_review_stages()
+        query = {
+            "technical_state": "EVIDENCE_REVIEW_REQUESTED",
+            "after_ref": "DEMO-E-001",
+        }
+        page = self.client.get(UI_ROUTE, params=query)
+        self.assertEqual(page.status_code, 200, page.text)
+        link = ("/admin/export/research/drafts/DEMO-E-002?"
+                "technical_state=EVIDENCE_REVIEW_REQUESTED&after_ref=DEMO-E-001")
+        self.assertIn(link.replace("&", "&amp;") if "&amp;" in page.text else link,
+                      page.text)
+        detail = self.client.get(link)
+        self.assertEqual(detail.status_code, 200)
+        self.assertIn("درخواست بررسی فنی ثبت‌شده", detail.text)
+        self.assertIn(
+            "/admin/export/research/drafts/DEMO-E-002/versions?"
+            "technical_state=EVIDENCE_REVIEW_REQUESTED&after_ref=DEMO-E-001",
+            detail.text,
+        )
+        self.assertIn(
+            "/admin/export/research?technical_state=EVIDENCE_REVIEW_REQUESTED"
+            "&after_ref=DEMO-E-001", detail.text,
+        )
+        self.assertNotIn("DEMO-QUEUE-PRIVATE", detail.text)
+        history = self.client.get(
+            "/admin/export/research/drafts/DEMO-E-002/versions", params=query
+        )
+        self.assertEqual(history.status_code, 200)
+        self.assertIn("نسخه 2", history.text)
+        self.assertIn("بازگشت به جزئیات پرونده", history.text)
+        self.assertIn("بازگشت به فهرست فیلترشده", history.text)
+        self.assertEqual(history.headers["cache-control"], "no-store")
+
+    def test_version_page_uses_only_preseeded_versions_not_source_or_review_data(self):
+        self.login()
+        self.set_review_stages()
+        page = self.client.get(
+            "/admin/export/research/drafts/DEMO-E-001/versions"
+        )
+        self.assertEqual(page.status_code, 200, page.text)
+        for label in ("نسخه 1", "نسخه 2", "نسخه 3", "نسخه پیشین DEMO",
+                      "نسخه فعلی DEMO", "DRAFT_ONLY", "حقوق استفاده"):
+            self.assertIn(label, page.text)
+        for secret in ("DEMO-SOURCE", "synthetic-export",
+                       "DEMO-QUEUE-PRIVATE", "decision_ref", "timestamp"):
+            self.assertNotIn(secret, page.text)
+        self.assertIn("frame-ancestors 'none'",
+                      page.headers["content-security-policy"])
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_version_page_rechecks_session_and_revoked_case(self):
+        sid = self.login()
+        self.assertEqual(self.client.get(
+            "/admin/export/research/drafts/DEMO-E-001/versions"
+        ).status_code, 200)
+        self.ledger.revoke_grant(
+            engine="EXPORT", ref="DEMO-E-001",
+            subject="synthetic-export-001", role="export_ops",
+            actor="synthetic-controller", expected_grant_revision=0,
+            action_id="DEMO-HISTORY-REVOCATION", reason_ref="DEMO-HISTORY-REASON",
+        )
+        self.assertEqual(self.client.get(
+            "/admin/export/research/drafts/DEMO-E-001/versions"
+        ).status_code, 404)
+        self.store.revoke_session(sid)
+        self.assertEqual(self.client.get(
+            "/admin/export/research/drafts/DEMO-E-001/versions"
+        ).status_code, 401)
+
+    def test_invalid_navigation_query_does_not_bypass_export_case_grants(self):
+        self.login()
+        for params in (
+            {"technical_state": "APPROVED"},
+            {"technical_state": "HUMAN_RESPONSE_RECORDED-BUSINESS"},
+            {"after_ref": "not-demo"},
+        ):
+            with self.subTest(params=params):
+                response = self.client.get(
+                    "/admin/export/research/drafts/DEMO-E-001",
+                    params=params,
+                )
+                self.assertEqual(response.status_code, 422)
+                self.assertNotIn("DEMO-SOURCE-001", response.text)
+        wrong = self.client.get(
+            "/admin/export/research/drafts/DEMO-E-004/versions"
+        )
+        self.assertEqual(wrong.status_code, 404)
+        self.assertNotIn("version_numbers", wrong.text)
+
+    def test_version_history_and_grant_revocation_audits_are_serial(self):
+        barrier = Barrier(2)
+        def reader():
+            ledger = self.reopen()
+            client = self.client_for(ledger)
+            barrier.wait(timeout=12)
+            return self.version_api(client=client)
+        def revoke():
+            ledger = self.reopen()
+            barrier.wait(timeout=12)
+            return ledger.revoke_grant(
+                engine="EXPORT", ref="DEMO-E-001",
+                subject="synthetic-export-001", role="export_ops",
+                actor="synthetic-controller", expected_grant_revision=0,
+                action_id="DEMO-HISTORY-CONCURRENT-REVOKE",
+                reason_ref="DEMO-HISTORY-CONCURRENT-REASON",
+            )
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            a, b = pool.submit(reader), pool.submit(revoke)
+            response, event = a.result(), b.result()
+        self.assertIn(response.status_code, (200, 404))
+        self.assertEqual(event.kind, "GRANT_REVOKED")
+        self.assertEqual(self.version_api().status_code, 404)
         self.assertTrue(self.reopen().verify_integrity())
 
 

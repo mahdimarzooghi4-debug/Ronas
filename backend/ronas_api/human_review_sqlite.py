@@ -218,7 +218,7 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
 
     def list_owned_domestic_progress(
         self, principal: Principal, *, after_ref: str | None = None,
-        limit: int = 20,
+        limit: int = 20, technical_state: str = "ALL",
     ) -> dict:
         """One verified, audited snapshot of an owner's observed DEMO progress.
 
@@ -228,7 +228,8 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
         and cannot imply Business acceptance from a technical human response.
         """
         if (type(limit) is not int or not 1 <= limit <= 50
-                or after_ref is not None and not _synthetic_ref(after_ref)):
+                or after_ref is not None and not _synthetic_ref(after_ref)
+                or technical_state not in ("ALL", *STATES)):
             raise ValueError("invalid synthetic progress list query")
         with self._transaction() as db:
             self._verify(db)
@@ -243,9 +244,14 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                     and record.owner_subject == principal.subject
                     and (after_ref is None or ref > after_ref)
                 ]
-                for ref in owned[:limit]:
-                    record = self._catalogue[("DOMESTIC", ref)]
+                matching: list[tuple[str, list[TechnicalReviewStep]]] = []
+                for ref in owned:
                     steps = self._steps(db, "DOMESTIC", ref)
+                    if (technical_state == "ALL"
+                            or STATES[len(steps)] == technical_state):
+                        matching.append((ref, steps))
+                for ref, steps in matching[:limit]:
+                    record = self._catalogue[("DOMESTIC", ref)]
                     item = record.public_view()
                     item.update({
                         "review_revision": len(steps),
@@ -259,10 +265,11 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                         ref=ref, actor=principal.subject,
                         mode="HOUSEHOLD_PROGRESS_WORKLIST",
                     )
-                if len(owned) > limit:
+                if len(matching) > limit:
                     next_cursor = items[-1]["ref"]
             return {
                 "engine": "DOMESTIC",
+                "technical_state_filter": technical_state,
                 "items": items,
                 "next_cursor": next_cursor,
             }

@@ -20,6 +20,9 @@ from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
                                      BusinessSourceSnapshotError, SOURCE_INTEGRITY_STATE)
 from .shared_workspaces import USER_ROLES, visible_user_workspaces
 from .agronomy_workspace import SyntheticAgronomyWorkspace
+from .domestic_preparation_preview import (
+    REVIEW_STATES, domestic_preparation_preview,
+)
 from .gate_evidence_handoff_sqlite import SqliteSyntheticGateEvidenceHandoff
 from .gate_evidence_authority_enquiry_sqlite import SqliteSyntheticAuthorityEnquiryLedger
 ADMIN_ROLES = {
@@ -97,6 +100,45 @@ def readonly_domestic_preparation_html(preparation: dict) -> str:
             or preparation["plan_state"] != "NOT_AUTHORED"
             or preparation["business_actions_enabled"] is not False):
         raise ValueError("unapproved cultivation preparation display state")
+    events = preparation["technical_timeline"]
+    if not isinstance(events, list):
+        raise ValueError("invalid technical timeline")
+    try:
+        recorded = tuple(
+            event["technical_event"] for event in events
+        )
+        expected = domestic_preparation_preview(
+            case_version=preparation["case_version"],
+            review_revision=preparation["review_revision"],
+            technical_review_state=preparation["technical_review_state"],
+            valid_review_states=REVIEW_STATES,
+            observed_review_steps=recorded,
+        )
+        if preparation != expected:
+            raise ValueError("unexpected display snapshot")
+    except (TypeError, KeyError, AttributeError) as exc:
+        raise ValueError("invalid technical timeline") from exc
+    labels = {
+        "TECH_REVIEW_REQUESTED":
+            "درخواست بررسی فنی ثبت شده؛ این مرحله تأیید علمی نیست.",
+        "TECH_HUMAN_RESPONSE_RECORDED":
+            "مرجع پاسخ فنی ثبت شده؛ طرح کشت تأیید نشده است.",
+    }
+    history = (
+        '<ol>' + ''.join(
+            '<li>مرحله ' + str(event["revision"]) + ': '
+            + labels[event["technical_event"]] + '</li>'
+            for event in events
+        ) + '</ol>'
+        if events else '<p>هنوز رویداد بررسی فنی ثبت نشده است.</p>'
+    )
+    timeline_html = (
+        '<section aria-label="سابقه پیگیری فنی"><h3>سابقه پیگیری فنی</h3>'
+        + history
+        + '<p>تنها مراحل فنی ثبت‌شده نمایش داده می‌شوند؛ '
+        'تاریخ، نظر تخصصی یا تصمیم درباره کشت از آن استنتاج نمی‌شود.</p>'
+        '</section>'
+    )
     items = ''.join('<li>' + label + ': تعیین نشده</li>'
                     for label, _ in slots)
     return (
@@ -106,6 +148,7 @@ def readonly_domestic_preparation_html(preparation: dict) -> str:
         '<ul>' + items + '</ul>'
         '<p>طرح کشت تولید نشده است. رضایت واقعی احراز نشده؛ '
         'صلاحیت حرفه‌ای و تأیید علمی نیز احراز نشده‌اند.</p></section>'
+        + timeline_html
     )
 
 
@@ -288,13 +331,6 @@ def build_authenticated_ui_router(
             )
             if data is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            stages = ''.join(
-                '<li>مرحله فنی ' + str(item["revision"]) + ': '
-                + escape(item["stage"]) + '</li>'
-                for item in data["technical_review_steps"]
-            )
-            if not stages:
-                stages = '<li>بررسی فنی ثبت نشده است.</li>'
             body = (
                 '<article class="panel"><h2>پیش‌نمای پرونده خانوار (فقط DEMO): '
                 + escape(data["ref"]) + '</h2>'
@@ -305,8 +341,6 @@ def build_authenticated_ui_router(
                 )
                 + '<p>هیچ پیشنهاد محصول یا برنامه آبیاری '
                 'تولید نشده است.</p>'
-                '<h3>مراحل ثبت‌شده بررسی فنی</h3><ul>'
-                + stages + '</ul>'
                 '<p>تخصیص فنی کارشناس، صلاحیت حرفه‌ای را احراز نمی‌کند؛ '
                 'رضایت واقعی خانوار و تأیید علمی/طرح کشت وجود ندارد.</p>'
                 '<p><a href="/workspace/agronomy_expert">'

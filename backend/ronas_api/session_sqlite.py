@@ -9,6 +9,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -87,6 +88,11 @@ class SqliteBrowserSessionStore:
         return nonce + self._cipher.encrypt(nonce, plaintext, (area + digest).encode("ascii"))
 
     def _decrypt(self, area: str, digest: str, blob: bytes) -> dict | None:
+        # SQLite has dynamic column types: a damaged ciphertext cell can be
+        # TEXT/INTEGER/NULL despite the declared BLOB affinity. Never attempt
+        # to deserialize or expose its contents on a read path.
+        if not isinstance(blob, bytes) or len(blob) < 28:
+            return None
         try:
             data = json.loads(self._cipher.decrypt(
                 blob[:12], blob[12:], (area + digest).encode("ascii")
@@ -96,7 +102,9 @@ class SqliteBrowserSessionStore:
             return None
 
     def save_pending(self, item: PendingLogin) -> None:
-        if not isinstance(item, PendingLogin) or not isinstance(item.created_at, (int, float)):
+        if (not isinstance(item, PendingLogin)
+                or type(item.created_at) not in (int, float)
+                or not math.isfinite(item.created_at)):
             raise ValueError("invalid pending record")
         digest = self._digest(item.state)
         if not all(isinstance(x, str) and 20 <= len(x) <= 180 for x in (item.verifier, item.nonce)):
@@ -130,11 +138,16 @@ class SqliteBrowserSessionStore:
             except Exception:
                 db.execute("ROLLBACK")
                 raise
-        if not row or row[1] <= self._now():
+        if (not row or type(row[1]) not in (int, float)
+                or not math.isfinite(row[1]) or row[1] <= self._now()):
             return None
         data = self._decrypt("pending:", digest, row[0])
         try:
-            if data is None or set(data) != {"state", "verifier", "nonce", "created_at"} or data["state"] != state:
+            if (data is None or set(data) != {"state", "verifier", "nonce", "created_at"}
+                    or data["state"] != state
+                    or type(data["created_at"]) not in (int, float)
+                    or not math.isfinite(data["created_at"])
+                    or row[1] != data["created_at"] + 300):
                 return None
             return PendingLogin(**data)
         except (ValueError, TypeError):
@@ -143,7 +156,7 @@ class SqliteBrowserSessionStore:
     def save_session(self, sid: str, session: BrowserSession) -> None:
         digest = self._digest(sid)
         if (not isinstance(session, BrowserSession)
-                or not isinstance(session.expires_at, int)
+                or type(session.expires_at) is not int
                 or not int(self._now()) < session.expires_at <= int(self._now()) + 900
                 or not isinstance(session.roles, frozenset)
                 or not session.roles or not session.roles.issubset(ALL_ROLES)
@@ -172,7 +185,7 @@ class SqliteBrowserSessionStore:
             row = db.execute(
                 "SELECT ciphertext, expires_at FROM browser_session WHERE sid_hash=?", (digest,)
             ).fetchone()
-        if not row or row[1] <= int(self._now()):
+        if not row or type(row[1]) is not int or row[1] <= int(self._now()):
             return None
         data = self._decrypt("session:", digest, row[0])
         if data is None or set(data) != {"subject", "roles", "access_token", "csrf", "expires_at"}:

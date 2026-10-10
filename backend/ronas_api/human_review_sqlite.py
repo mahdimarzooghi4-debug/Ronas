@@ -264,6 +264,62 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             )
             return result
 
+    def list_technical_review_worklist(
+        self, engine: str, principal: Principal, *,
+        after_ref: str | None = None, limit: int = 20,
+    ) -> dict:
+        """Bounded, exact-grant filtered technical queue for an operator.
+
+        Only current grants on immutable DEMO case seeds are considered.
+        A single SQLite transaction verifies, selects, and audits every
+        disclosed item. Keyset pagination walks *authorized* refs only;
+        unrelated refs, counts, evidence and human-note contents never
+        enter the response. This does not create a Business work queue,
+        assessment or authorization to decide a case.
+        """
+        if (engine not in _OP_ROLE or type(limit) is not int
+                or not 1 <= limit <= 50
+                or after_ref is not None and not _synthetic_ref(after_ref)):
+            raise ValueError("invalid synthetic worklist query")
+        with self._transaction() as db:
+            self._verify(db)
+            items: list[dict] = []
+            if (isinstance(principal, Principal)
+                    and _synthetic_subject(principal.subject)
+                    and _OP_ROLE[engine] in principal.roles):
+                visible = [
+                    ref for candidate_engine, ref in sorted(self._catalogue)
+                    if candidate_engine == engine
+                    and (after_ref is None or ref > after_ref)
+                    and self._active_operator(db, engine, ref, principal)
+                ]
+                page = visible[:limit]
+                for ref in page:
+                    steps = self._steps(db, engine, ref)
+                    items.append({
+                        "ref": ref,
+                        "engine": engine,
+                        "case_version": self._catalogue[(engine, ref)].version,
+                        "case_status": "DRAFT_ONLY",
+                        "review_revision": len(steps),
+                        "technical_review_state": STATES[len(steps)],
+                    })
+                    # Audit only disclosed items, not hidden/other-engine
+                    # cases. If any append fails the entire page fails.
+                    self._append(
+                        db, kind="READ_ALLOWED", engine=engine,
+                        ref=ref, actor=principal.subject,
+                        mode="TECHNICAL_REVIEW_WORKLIST",
+                    )
+                next_cursor = page[-1] if len(visible) > limit else None
+            else:
+                next_cursor = None
+            return {
+                "engine": engine,
+                "items": items,
+                "next_cursor": next_cursor,
+            }
+
     def _apply(self, *, stage: str, engine: str, ref: str, actor: Principal,
                expected_case_version: int, expected_review_revision: int,
                action_id: str, request_ref: str, evidence_ref: str,

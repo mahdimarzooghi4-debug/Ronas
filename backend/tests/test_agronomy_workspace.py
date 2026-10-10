@@ -379,6 +379,35 @@ class AgronomyWorkspaceTests(unittest.TestCase):
             ROOT + "/DEMO-D-001", headers=self.headers()
         ).status_code, 404)
 
+    def test_role_metadata_advertises_only_enabled_synthetic_expert_reads(self):
+        path = "/api/v1/me/user-workspaces/agronomy_expert"
+        allowed = self.client.get(path, headers=self.headers())
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(allowed.json()["local_test_reads"],
+                         ["ASSIGNED_SYNTHETIC_AGRONOMY_DRAFTS"])
+        self.assertFalse(allowed.json()["business_actions_enabled"])
+        disabled = TestClient(create_app(
+            self.config, self.flow, scoped_registry=self.ledger,
+            technical_review_ledger=self.ledger,
+        ), base_url=ORIGIN)
+        result = disabled.get(path, headers=self.headers())
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["local_test_reads"], [])
+        self.assertEqual(self.client.get(
+            path, headers=self.headers(roles=("domestic_ops",))
+        ).status_code, 404)
+
+    def test_assignment_revocation_filters_role_page_as_well_as_api(self):
+        self.session()
+        self.assertIn("DEMO-D-001", self.client.get(ROLE).text)
+        self.active.remove("DEMO-D-001")
+        role = self.client.get(ROLE)
+        self.assertEqual(role.status_code, 200)
+        self.assertNotIn("DEMO-D-001", role.text)
+        self.assertIn("DEMO-D-002", role.text)
+        self.assertEqual(self.client.get(DETAIL).status_code, 404)
+
+
 
 if __name__ == "__main__":
     unittest.main()

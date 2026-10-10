@@ -72,3 +72,8 @@
 
 
 **گام حقوق/متخصص D0 (بدون انتخاب Task):** [سند ۶۸](68-ai-source-rights-expert-review-and-first-task-decision-readiness.md) برای آثار FAO و واژگان AGROVOC بررسی حق ترجمه، آموزش مدل، انتشار و مسئول/بازبین متخصص حقیقی را به‌صورت Evidence Request ثبت کرده است؛ هیچ اثر فارسی Training-eligible یا متخصص تأییدشده موجود نیست و گیت #2 OPEN است.
+
+
+## وضعیت پس از RON-DEC-029 — آماده‌سازی D0 در اولویت، نه Training
+
+طبق [مصوبه RON-DEC-029](04-decisions-and-open-questions.md)، پیگیری D0-EV-01..05، حقوق مشخص منابع، بازبین علمی حقیقی و جداسازی Evaluation **در اولویت آماده‌سازی شواهد** قرار گرفت. [بسته پیگیری ۶۹](69-d0-first-evidence-execution-plan-e0-parallel.md) اقلام مستند را مشخص کرده است. D0 هنوز Scope مصوب برای خدمت یا نخستین Training Task نیست؛ بدون حقوق خاص استفاده/ترجمه/Train و متخصص واقعی هیچ Dataset-READY وجود ندارد. **گیت Domestic #2 OPEN** و E0 مستقل موازی ادامه دارد.

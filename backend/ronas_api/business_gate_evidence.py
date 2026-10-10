@@ -69,7 +69,7 @@ def verify_pinned_business_sources(*, root: Path | None = None) -> dict[str, str
             if len(raw) > 250_000:
                 raise BusinessSourceSnapshotError("source exceeded bounded size")
             git_blob = sha1(
-                b"blob " + str(len(raw)).encode("ascii") + b"\\0" + raw
+                b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
             ).hexdigest()
             if git_blob != expected_blob:
                 raise BusinessSourceSnapshotError("source version changed")
@@ -81,14 +81,14 @@ def verify_pinned_business_sources(*, root: Path | None = None) -> dict[str, str
                     matching = [
                         line for line in body.splitlines()
                         if re.match(
-                            r"^\\|\\s+\\*\\*" + re.escape(evidence.evidence_id)
-                            + r"(?:\\s|\\*\\*)", line
+                            r"^\|\s+\*\*" + re.escape(evidence.evidence_id)
+                            + r"(?:\s|\*\*)", line
                         )
                     ]
                     if (len(matching) != 1
                             or not re.search(
-                                r"\\|\\s+\\*\\*" + re.escape(evidence.source_status)
-                                + r"\\*\\*\\s+\\|$", matching[0]
+                                r"\|\s+\*\*" + re.escape(evidence.source_status)
+                                + r"\*\*\s+\|$", matching[0]
                             )):
                         raise BusinessSourceSnapshotError("source card drift")
             checked[path] = expected_blob

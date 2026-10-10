@@ -140,10 +140,11 @@ class SyntheticAgronomyWorkspace:
 
     def list_assigned_cases(
         self, principal: Principal, *, after_ref: str | None = None,
-        limit: int = 20,
+        limit: int = 20, technical_state: str = "ALL",
     ) -> dict:
         if (type(limit) is not int or not 1 <= limit <= 50
-                or after_ref is not None and not _synthetic_ref(after_ref)):
+                or after_ref is not None and not _synthetic_ref(after_ref)
+                or technical_state not in ("ALL", *STATES)):
             raise ValueError("invalid synthetic agronomy list request")
         with self.ledger._transaction() as db:
             self.ledger._verify(db)
@@ -157,11 +158,16 @@ class SyntheticAgronomyWorkspace:
                     if (record is None
                             or not self._allowed(subject, ref, record.version)):
                         continue
-                    refs.append(ref)
+                    # Filter only AFTER exact role, live assignment and
+                    # immutable case history verification. No hidden-case
+                    # counts, inferred science or unauthorized cursor leaks.
+                    data = self._preview(db, ref)
+                    if (technical_state == "ALL"
+                            or data["technical_review_state"] == technical_state):
+                        refs.append((ref, data))
             selected = refs[:limit]
             items = []
-            for ref in selected:
-                data = self._preview(db, ref)
+            for ref, data in selected:
                 items.append({
                     "ref": ref, "engine": "DOMESTIC",
                     "case_version": data["case_version"],
@@ -178,5 +184,5 @@ class SyntheticAgronomyWorkspace:
             return {
                 "engine": "DOMESTIC",
                 "items": items,
-                "next_cursor": selected[-1] if len(refs) > limit else None,
+                "next_cursor": selected[-1][0] if len(refs) > limit else None,
             }

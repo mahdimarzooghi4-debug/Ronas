@@ -6,6 +6,7 @@ Tests exercise the actual PKCE callback and encrypted SQLite session adapter.
 import json
 from pathlib import Path
 import secrets
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -253,6 +254,35 @@ class BrowserReviewSecurityTests(unittest.TestCase):
         })
         self.assertEqual(bad.status_code, 401)
         self.assertEqual(len(self.ledger.audit_snapshot()), count)
+
+    def test_damaged_sqlite_session_ciphertext_denied_before_review_audit(self):
+        sid = self.login()
+        self.assertEqual(self.client2.get(DOM).status_code, 200)
+        previous = len(self.ledger.audit_snapshot())
+        with sqlite3.connect(self.store1.path) as db:
+            db.execute(
+                "UPDATE browser_session SET ciphertext=? WHERE sid_hash=?",
+                ("damaged-text-instead-of-ciphertext", self.store1._digest(sid)),
+            )
+        self.assertEqual(self.client1.get(DOM).status_code, 401)
+        self.assertEqual(self.client2.get(DOM).status_code, 401)
+        self.assertEqual(len(self.ledger.audit_snapshot()), previous)
+        self.assertIsNone(self.store2.get_session(sid))
+
+    def test_modified_sqlite_expiry_does_not_extend_browser_session(self):
+        sid = self.login()
+        self.assertEqual(self.client1.get(DOM).status_code, 200)
+        previous = len(self.ledger.audit_snapshot())
+        with sqlite3.connect(self.store1.path) as db:
+            db.execute(
+                "UPDATE browser_session SET expires_at=expires_at+120 "
+                "WHERE sid_hash=?",
+                (self.store1._digest(sid),),
+            )
+        self.assertEqual(self.client2.get(DOM).status_code, 401)
+        self.assertEqual(self.client1.get(DOM).status_code, 401)
+        self.assertEqual(len(self.ledger.audit_snapshot()), previous)
+        self.assertIsNone(self.store1.get_session(sid))
 
     def test_browser_get_cannot_accept_posted_approval_decision(self):
         self.login()

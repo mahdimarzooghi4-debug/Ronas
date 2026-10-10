@@ -129,10 +129,17 @@ def build_authenticated_ui_router(
             raise  # app-level sanitizer produces 503, never partial HTML
         except ValueError as exc:
             raise HTTPException(422, detail="INVALID_OWNED_CASE_QUERY") from exc
+        own_detail_enabled = (
+            technical_review_ledger is not None
+            and owned_case_ledger is technical_review_ledger
+        )
+        link_base = (
+            "/my-drafts/" if own_detail_enabled else
+            "/api/v1/domestic/household-intake/drafts/"
+        )
         rows = [
-            '<li><a href="/api/v1/domestic/household-intake/drafts/'
-            + escape(item["ref"]) + '">' + escape(item["ref"])
-            + '</a> — DRAFT_ONLY</li>'
+            '<li><a href="' + link_base + escape(item["ref"]) + '">'
+            + escape(item["ref"]) + '</a> — DRAFT_ONLY</li>'
             for item in result["items"]
         ]
         body = ('<ul>' + ''.join(rows) + '</ul>' if rows else
@@ -175,6 +182,46 @@ def build_authenticated_ui_router(
         if not cards:
             cards = '<p>هیچ نمای کاربری بیرونی برای دسترسی‌های فعلی شما تخصیص نیافته است.</p>'
         return page("روناس — محیط کاربران و همکاران", cards, logged_in=True)
+
+    if (technical_review_ledger is not None
+            and owned_case_ledger is technical_review_ledger):
+        @router.get("/my-drafts/{ref}")
+        def household_detail(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            principal = Principal(session.subject, session.roles)
+            # The owner-specific facade checks exact immutable ownership,
+            # review integrity and records the read atomically.
+            result = technical_review_ledger.read_owned_domestic_status(
+                ref, principal,
+            )
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            states = {
+                "UNREQUESTED": "درخواستی برای بررسی فنی ثبت نشده است.",
+                "EVIDENCE_REVIEW_REQUESTED": "درخواست بررسی شواهد ثبت شده است.",
+                "HUMAN_RESPONSE_RECORDED":
+                    "مرجع پاسخ انسانی ثبت شده؛ این وضعیت تأیید پرونده نیست.",
+            }
+            state = states[result["technical_review_state"]]
+            body = (
+                '<article class="panel"><h2>پرونده ساختگی '
+                + escape(result["ref"]) + '</h2>'
+                '<p>نسخه پرونده: ' + str(result["version"]) + '</p>'
+                '<p>وضعیت پرونده: DRAFT_ONLY</p>'
+                '<p>پیگیری فنی: ' + escape(state) + '</p>'
+                '<p>رضایت واقعی احراز نشده و طرح کشت به تأیید متخصص '
+                'نرسیده است. هیچ تصمیم تجاری یا عملیاتی ثبت نشده است.</p>'
+                '<p><a href="/">بازگشت به پرونده‌های من</a></p>'
+                '</article>'
+            )
+            return page("روناس — وضعیت پرونده من (آزمایشی)",
+                        body, logged_in=True)
 
     def technical_worklist(engine: str, principal: Principal,
                            after_ref: str | None) -> str:

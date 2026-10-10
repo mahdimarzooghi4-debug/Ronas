@@ -17,6 +17,7 @@ from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedge
 from .owner_case_api import build_owned_household_router
 from .technical_review_api import build_technical_review_read_router
 from .shared_workspaces import build_user_workspaces_router
+from .business_gate_evidence import build_business_gate_evidence_router
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -102,6 +103,9 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                                 headers={"WWW-Authenticate": "Bearer"}) from None
 
     if browser_flow is not None:
+        # Version-pinned gate evidence only; this is NOT a live gate
+        # status, approval command, or evidence ingestion path.
+        app.include_router(build_business_gate_evidence_router(principal))
         # A signed role only provides navigation metadata. These flags
         # reflect opt-in local test read models, not operational rights.
         app.include_router(build_user_workspaces_router(

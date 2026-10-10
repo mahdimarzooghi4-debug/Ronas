@@ -7,6 +7,7 @@
 
 **یادداشت جاری پس از RON-DEC-028:** مدل پایه Open-Weight دارای مجوز معتبر با Fine-tuning و استنتاج کاملاً داخلی **APPROVED در سطح Business** است. این تصمیم نه مدل مشخص/مجوز واقعی و نه دیتاست/Training/معماری/Code را تصویب کرده؛ گیت‌های #2/#3/#4 بازند. اسناد پیش از مصوبه که انتخاب الف/ب را OPEN یا پیشنهادی می‌خوانند تاریخی‌اند.
 **تصمیم اولویت جدید RON-DEC-029:** تهیه شواهد AI برای D0 در اولویت؛ E0 مستقل و موازی باقی است. **این تصمیم فقط ترتیب آماده‌سازی Business است؛ نخستین Task واقعی Training و همه گیت‌ها OPEN هستند.** [برنامه ۶۹](69-d0-first-evidence-execution-plan-e0-parallel.md).  
+**تمرکز جاری روی محصول اصلی:** بنا به دستور کارفرما، [سه بسته عملیاتی و گیت](72-core-delivery-critical-path-and-business-gate-readiness.md) برای Domestic/Export/Finance مقدم بر پیگیری جزئیات مدل AI هستند؛ **بدون انتخاب Scope/گیت خودکار**.  
 **منبع پایه:** «طرح نامه جامع روناس»، مرداد ۱۴۰۵، ۳۷ صفحه فایل (۳۶ صفحه شماره‌گذاری داخلی)، سفارش معاونت اشتغال کمیته امداد امام خمینی(ره)، طراح خانه خلاق و نوآوری آینه.
 
 ## ترتیب مطالعه
@@ -81,6 +82,10 @@
 68. [پرونده نخستین وظیفه AI و ارزیابی مستقل](67-first-ai-learning-task-and-independent-evaluation-business-packet.md): **DRAFT BUSINESS EVIDENCE / FIRST TASK NOT SELECTED**؛ دو نامزد D0 آموزش عمومی فارسی و E0 پژوهش محصول–مقصد، پرسش‌های حق Training، بازبین متخصص، واحد جداسازی Train/Eval و نمونه‌های سناریوی خطا؛ هیچ Dataset واقعی، معیار عددی یا گیت مصوب نشده است.
 69. [حقوق داده، صلاحیت متخصص و تصمیم اولویت نخستین Task](68-ai-source-rights-expert-review-and-first-task-decision-readiness.md): **BUSINESS EVIDENCE SCREENING / NO GATE PASS**؛ تفکیک مجوز FAO/AGROVOC، FAOSTAT، Comtrade، WITS و NASA POWER؛ وضعیت مشروط AI internal use در Comtrade، اختلاف مجوز AGROVOC، شواهد کارشناسان مستقل و گزینه‌های اولویت D0/E0؛ هیچ Task/Data/Model انتخاب یا اجرا نشده است.
 70. [برنامه مصوب ترتیب آماده‌سازی شواهد AI: D0 مقدم و E0 موازی](69-d0-first-evidence-execution-plan-e0-parallel.md): **RON-DEC-029 APPROVED FOR PREPARATION ORDER ONLY**؛ ماتریس D0-EV-01..05، پیگیری حقوق/متخصص/ارزیابی، استمرار مستقل E0-EV-01..05 و Finance؛ بدون انتخاب First Training Task، مدل، Dataset یا عبور از گیت.
+
+71. [قرارداد نامزد عملیات اصلی Domestic: خانوار، برنامه، نظارت، برداشت، عرضه و معامله](70-core-domestic-operational-scope-and-business-acceptance.md): **CORE PRODUCT BUSINESS DRAFT / NOT APPROVED**؛ تفکیک CORE-D1 پرونده کشت و نظارت از CORE-D2 بازار مازاد، تأیید متخصص، کیفیت/صلاحیت عرضه، قیمت تولیدکننده و قرارداد واقعی تحویل/پول.
+72. [قرارداد نامزد عملیات اصلی Export: فرصت، تأمین، قرارداد مستقل، QC و وصول](71-core-export-operational-contract-and-readiness.md): **CORE PRODUCT BUSINESS DRAFT / NOT APPROVED**؛ تفکیک CORE-E0 پژوهش بدون تعهد از CORE-E1 تجارت قراردادی با چهار خانواده قرارداد مستقل و مسئولیت حقوقی/مالی.
+73. [برنامه مسیر بحرانی محصول اصلی و سه گیت Business](72-core-delivery-critical-path-and-business-gate-readiness.md): **OWNER REVIEW PREPARATION / NO GATE PASS**؛ بسته‌های CORE-D1/D2، CORE-E0/E1، FIN-001..007، مسئولیت و شواهد واقعی، تصمیم‌های محدود لازم برای پیشروی بدون اختراع داده/نرخ/طرف.
 
 ## اصول تفسیر
 

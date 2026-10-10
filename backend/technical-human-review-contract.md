@@ -136,6 +136,56 @@ qualified reviewer, external revocation feed, browser penetration assessment,
 production multi-node store, or any Business case approval. No real data,
 consent, source-rights or financial transactions are activated.
 
+## Three-boundary interleaving and restart verification (2026-10-10)
+
+The optional browser cookie, synthetic exact-case grant, and technical-review
+history have three distinct trust boundaries. A current signed access-token
+subject/role and valid encrypted local BFF session are necessary, but do NOT
+substitute for a current exact-engine, exact-record operations grant in the
+review-ledger SQLite database. A recorded technical human-response reference
+does not authorize any Business case transition; all cases remain
+`DRAFT_ONLY`.
+
+Regression fixture: `backend/tests/test_session_grant_review_interleavings.py`
+adds seven synthetic local tests using a pinned locally generated Keycloak
+public JWKS, separately reopened encrypted browser-session store connections
+and independently reopened review-ledger connections. The tests verify:
+
+- A successful logout invalidates the SID on either connection, returning
+  401 before further review-ledger read/audit events
+- A valid unrevoked browser session loses exact-case review access with 404
+  after a separately committed grant revocation; cross-engine access does
+  not appear
+- Request-versus-revocation and independently authorized
+  response-versus-revocation are linearly ordered by the **single review
+  ledger's** `BEGIN IMMEDIATE` transaction: a successful review event
+  precedes revocation in the audit, or it never commits
+- A replay of the exact same request after grant revocation cannot
+  re-enable the requester or mutate previously accepted review lineage
+- Corrupt local technical evidence fails closed with 503 through both
+  the still-valid browser session and a correctly signed Bearer token
+- Reopening both stores after logout and exact-case revocation cannot
+  resurrect the old session or the revoked grant; a new synthetic session
+  for the same signed actor remains denied that case
+
+**Important concurrency limitation:** session logout and case-grant
+revocation operate in **different SQLite databases** and are not one atomic
+distributed transaction. Requests already authenticated/in flight can
+complete before a competing logout commits. Likewise an already accepted
+review/read can precede a competing case-grant revoke. The documented
+postcondition is denial for new reads **after** the relevant revocation has
+committed, not retroactive cancellation or a cross-database linearization
+point. The tests assert the causal audit order only *inside* the one
+review-ledger transaction and never pretend the session store and grant
+ledger are transactionally coupled.
+
+These are deterministic local-contract exercises with only synthetic
+subjects, reference IDs and self-generated signing/encryption keys. No
+real Keycloak provider, operational distributed store, cross-host
+consistency, lawful Domestic consent, Export source rights, qualified
+human-review authority, real Business approval, Stage or Production is
+represented by the result.
+
 ## Tests and exclusions
 
 Tests: backend/tests/test_human_review_sqlite.py (27 offline tests).

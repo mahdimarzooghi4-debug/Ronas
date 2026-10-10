@@ -441,6 +441,64 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             )
             return result
 
+    def read_export_research_version_history(
+        self, ref: str, principal: Principal,
+    ) -> dict | None:
+        """Current-grant Export DEMO version lineage, without inferred edits.
+
+        Only immutable preseeded version numbers are returned; no times,
+        source content, historic grant claims, reviewer or market findings.
+        """
+        if not _synthetic_ref(ref):
+            return None
+        with self._transaction() as db:
+            self._verify(db)
+            record = self._catalogue.get(("EXPORT", ref))
+            if (record is None or not isinstance(principal, Principal)
+                    or not _synthetic_subject(principal.subject)):
+                return None
+            allowed = self._active_operator(db, "EXPORT", ref, principal)
+            if allowed:
+                versions = tuple(row[0] for row in db.execute(
+                    "SELECT version FROM case_history "
+                    "WHERE engine='EXPORT' AND ref=? ORDER BY version",
+                    (ref,),
+                ))
+                if (versions != self._histories[("EXPORT", ref)]
+                        or not versions or versions[-1] != record.version):
+                    raise LedgerIntegrityError("Export case history drift")
+                result = {
+                    "ref": ref,
+                    "engine": "EXPORT",
+                    "case_version": record.version,
+                    "case_status": "DRAFT_ONLY",
+                    "source": "SYNTHETIC_ONLY",
+                    "history_source": "PRESEEDED_IMMUTABLE_FIXTURES",
+                    "version_numbers": list(versions),
+                    "versions": [
+                        {
+                            "version": version,
+                            "is_current": version == record.version,
+                            "case_status": "DRAFT_ONLY",
+                        }
+                        for version in versions
+                    ],
+                    "source_rights_verified": False,
+                    "research_report_approved": False,
+                    "buyer_verified": False,
+                    "contracted": False,
+                    "real_data": False,
+                    "business_actions_enabled": False,
+                }
+            else:
+                result = None
+            self._append(
+                db, kind="READ_ALLOWED" if allowed else "READ_DENIED",
+                engine="EXPORT", ref=ref, actor=principal.subject,
+                mode="EXPORT_RESEARCH_VERSION_HISTORY",
+            )
+            return result
+
     def read_review_for_operator(self, engine: str, ref: str,
                                  principal: Principal) -> dict | None:
         """Audit an exact-case, currently authorized technical-history read.

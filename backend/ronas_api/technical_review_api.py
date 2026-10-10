@@ -7,7 +7,7 @@ each exact-case read. No response records a Business approval.
 from collections.abc import Callable
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from .auth import Principal
 from .grant_ledger_sqlite import LedgerIntegrityError
@@ -39,6 +39,35 @@ def build_technical_review_read_router(
             # Identical response for unknown case / revoked or absent grant.
             raise HTTPException(status_code=404, detail="DRAFT_NOT_FOUND")
         return result
+
+    def worklist(engine: str, principal: Principal, after_ref: str | None,
+                 limit: int) -> dict:
+        try:
+            return ledger.list_technical_review_worklist(
+                engine, principal, after_ref=after_ref, limit=limit
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422,
+                                detail="INVALID_WORKLIST_QUERY") from exc
+        except (LedgerIntegrityError, sqlite3.Error) as exc:
+            raise HTTPException(status_code=503,
+                                detail="TECHNICAL_REVIEW_UNAVAILABLE") from exc
+
+    @router.get("/api/v1/admin/domestic/household-intake/technical-review-worklist")
+    def domestic_worklist(
+        after_ref: str | None = Query(default=None),
+        limit: int = Query(default=20, ge=1, le=50),
+        p: Principal = Depends(verified_principal),
+    ) -> dict:
+        return worklist("DOMESTIC", p, after_ref, limit)
+
+    @router.get("/api/v1/admin/export/research/technical-review-worklist")
+    def export_worklist(
+        after_ref: str | None = Query(default=None),
+        limit: int = Query(default=20, ge=1, le=50),
+        p: Principal = Depends(verified_principal),
+    ) -> dict:
+        return worklist("EXPORT", p, after_ref, limit)
 
     @router.get("/api/v1/admin/domestic/household-intake/drafts/{ref}/technical-review")
     def domestic_review(ref: str, p: Principal = Depends(verified_principal)) -> dict:

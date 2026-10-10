@@ -19,6 +19,7 @@ from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
                                      visible_dossiers, verify_pinned_business_sources,
                                      BusinessSourceSnapshotError, SOURCE_INTEGRITY_STATE)
 from .shared_workspaces import USER_ROLES, visible_user_workspaces
+from .agronomy_workspace import SyntheticAgronomyWorkspace
 from .gate_evidence_handoff_sqlite import SqliteSyntheticGateEvidenceHandoff
 from .gate_evidence_authority_enquiry_sqlite import SqliteSyntheticAuthorityEnquiryLedger
 ADMIN_ROLES = {
@@ -87,6 +88,7 @@ def build_authenticated_ui_router(
     owned_case_ledger: SqliteSyntheticGrantLedger | None = None,
     gate_handoff_ledger: SqliteSyntheticGateEvidenceHandoff | None = None,
     authority_enquiry_ledger: SqliteSyntheticAuthorityEnquiryLedger | None = None,
+    agronomy_workspace: SyntheticAgronomyWorkspace | None = None,
 ) -> APIRouter:
     # Only the opt-in same-instance ledger injected by create_app may
     # provide the synthetic worklist. Never trust a client-side role list.
@@ -106,6 +108,11 @@ def build_authenticated_ui_router(
                  or gate_handoff_ledger is None
                  or authority_enquiry_ledger.handoff is not gate_handoff_ledger)):
         raise ValueError("authority enquiry requires same explicit handoff ledger")
+    if (agronomy_workspace is not None
+            and (not isinstance(agronomy_workspace, SyntheticAgronomyWorkspace)
+                 or technical_review_ledger is None
+                 or agronomy_workspace.ledger is not technical_review_ledger)):
+        raise ValueError("agronomy needs the same explicit human-review ledger")
     router = APIRouter()
     cookie_name = "__Host-ronas_session"
 
@@ -198,11 +205,34 @@ def build_authenticated_ui_router(
         if assigned is None:
             # Unknown and unassigned partner roles are indistinguishable.
             raise HTTPException(404, detail="WORKSPACE_NOT_FOUND")
-        local_read = (
-            '<p><a href="/">مشاهده پرونده‌های ساختگی متعلق به من</a></p>'
-            if "OWNED_SYNTHETIC_DOMESTIC_DRAFTS" in assigned["local_test_reads"]
-            else '<p>در این نقش، خواندن پرونده عملیاتی فعال نیست.</p>'
-        )
+        if role == "agronomy_expert" and agronomy_workspace is not None:
+            listing = agronomy_workspace.list_assigned_cases(
+                Principal(session.subject, session.roles), limit=20,
+            )
+            links = ''.join(
+                '<li><a href="/agronomy/assigned-drafts/'
+                + quote(item["ref"]) + '">'
+                + escape(item["ref"]) + '</a> — '
+                + escape(item["technical_review_state"])
+                + ' · طرح کشت تدوین نشده</li>'
+                for item in listing["items"]
+            )
+            local_read = (
+                '<h3>پرونده‌های تخصیص‌یافته آزمایشی</h3>'
+                '<p>تخصیص پرونده، اثبات صلاحیت حرفه‌ای یا مجوز صدور طرح نیست.</p>'
+                + ('<ul>' + links + '</ul>' if links else
+                   '<p>پرونده آزمایشی فعالی به این نقش تخصیص نیافته است.</p>')
+                + ('<p><a href="/workspace/agronomy_expert?after_ref='
+                   + quote(listing["next_cursor"])
+                   + '">ادامه پرونده‌ها</a></p>'
+                   if listing["next_cursor"] else '')
+            )
+        else:
+            local_read = (
+                '<p><a href="/">مشاهده پرونده‌های ساختگی متعلق به من</a></p>'
+                if "OWNED_SYNTHETIC_DOMESTIC_DRAFTS" in assigned["local_test_reads"]
+                else '<p>در این نقش، خواندن پرونده عملیاتی فعال نیست.</p>'
+            )
         body = (
             '<article class="panel"><h2>' + escape(assigned["label"]) + '</h2>'
             '<p>محیط کاربران و همکاران — دسترسی صرفاً به نقش امضاشده.</p>'
@@ -212,6 +242,56 @@ def build_authenticated_ui_router(
             + '<p><a href="/">بازگشت به محیط مشترک</a></p></article>'
         )
         return page("روناس — فضای کار نقش من (آزمایشی)", body, logged_in=True)
+
+    if agronomy_workspace is not None:
+        @router.get("/agronomy/assigned-drafts/{ref}")
+        def agronomy_case_page(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            data = agronomy_workspace.read_assigned_case(
+                ref, Principal(session.subject, session.roles),
+            )
+            if data is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            fields = (
+                ("محصول", "crop"), ("مساحت", "growing_area"),
+                ("آب", "water"), ("خاک", "soil"), ("موقعیت", "location"),
+            )
+            inputs = ''.join(
+                '<li>' + title + ': تعیین نشده</li>'
+                for title, _key in fields
+            )
+            stages = ''.join(
+                '<li>مرحله فنی ' + str(item["revision"]) + ': '
+                + escape(item["stage"]) + '</li>'
+                for item in data["technical_review_steps"]
+            )
+            if not stages:
+                stages = '<li>بررسی فنی ثبت نشده است.</li>'
+            body = (
+                '<article class="panel"><h2>پیش‌نمای پرونده خانوار (فقط DEMO): '
+                + escape(data["ref"]) + '</h2>'
+                '<p>نسخه پرونده: ' + str(data["case_version"])
+                + ' · وضعیت: DRAFT_ONLY</p>'
+                '<h3>داده‌های لازم برای بررسی طرح کشت</h3><ul>'
+                + inputs + '</ul>'
+                '<p>این داده‌ها جمع‌آوری نشده‌اند؛ هیچ پیشنهاد محصول، '
+                'برنامه آبیاری یا طرح کشت تولید نشده است.</p>'
+                '<h3>مراحل ثبت‌شده بررسی فنی</h3><ul>'
+                + stages + '</ul>'
+                '<p>تخصیص فنی کارشناس، صلاحیت حرفه‌ای را احراز نمی‌کند؛ '
+                'رضایت واقعی خانوار و تأیید علمی/طرح کشت وجود ندارد.</p>'
+                '<p><a href="/workspace/agronomy_expert">'
+                'بازگشت به فضای کار کارشناس کشاورزی</a></p>'
+                '</article>'
+            )
+            return page("روناس — فضای کار کارشناس کشاورزی (آزمایشی)",
+                        body, logged_in=True)
 
     @router.get("/")
     def public_ui(

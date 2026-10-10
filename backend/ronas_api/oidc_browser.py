@@ -155,8 +155,19 @@ class BrowserOIDC:
             id_sub = self._id_subject(bundle["id_token"], pending.nonce)
             if not hmac.compare_digest(principal.subject, id_sub):
                 raise InvalidToken
-            access_claims = jwt.decode(bundle["access_token"],
-                                       options={"verify_signature": False})
+            signed_token = bundle["access_token"]
+            key_id = jwt.get_unverified_header(signed_token)["kid"]
+            access_claims = jwt.decode(
+                signed_token,
+                self.access_verifier.keys[key_id],
+                algorithms=["RS256"],
+                issuer=self.config.keycloak.issuer,
+                audience=self.config.keycloak.api_client_id,
+                options={"require": ["iss", "aud", "exp", "iat", "nbf"],
+                         "verify_exp": True, "verify_nbf": True,
+                         "verify_iat": True},
+                leeway=0,
+            )
             expires_at = access_claims["exp"]
             if type(expires_at) is not int or expires_at <= int(self.now()):
                 raise InvalidToken

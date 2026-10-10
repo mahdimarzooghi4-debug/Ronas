@@ -443,6 +443,70 @@ class SqliteSyntheticGrantLedger(ScopedSyntheticDraftRegistry):
             ).fetchone()
             return row[0] if row else None
 
+    def read_owned_domestic_version_history(
+        self, ref: str, principal: Principal,
+    ) -> dict | None:
+        """Audited, owner-only read of exact *preseeded* DEMO case versions.
+
+        This must not expose raw case history, another household's data,
+        evidence refs, or infer mutation times/events from version gaps.
+        Versions were supplied as immutable synthetic seed data, not
+        created by this command or by a real household.
+        """
+        if not _synthetic_ref(ref):
+            return None
+        with self._transaction() as db:
+            self._verify(db)
+            record = self._catalogue.get(("DOMESTIC", ref))
+            if record is None:
+                return None
+            if (not isinstance(principal, Principal)
+                    or not _synthetic_subject(principal.subject)):
+                return None
+            allowed = (
+                "household" in principal.roles
+                and principal.subject == record.owner_subject
+            )
+            if allowed:
+                versions = tuple(row[0] for row in db.execute(
+                    "SELECT version FROM case_history "
+                    "WHERE engine='DOMESTIC' AND ref=? ORDER BY version",
+                    (ref,),
+                ))
+                if (versions != self._histories[("DOMESTIC", ref)]
+                        or not versions or versions[-1] != record.version):
+                    raise LedgerIntegrityError("owner case history drift")
+                result = {
+                    "ref": ref, "engine": "DOMESTIC",
+                    "current_version": record.version,
+                    "status": "DRAFT_ONLY",
+                    "source": "SYNTHETIC_ONLY",
+                    "history_source": "PRESEEDED_IMMUTABLE_FIXTURES",
+                    "version_numbers": list(versions),
+                    "versions": [
+                        {
+                            "version": version,
+                            "is_current": version == record.version,
+                            "status": "DRAFT_ONLY",
+                        }
+                        for version in versions
+                    ],
+                    "purpose_consent_verified": False,
+                    "expert_approved": False,
+                    "plan_accepted": False,
+                    "real_data": False,
+                }
+            else:
+                result = None
+            # Check ownership, read exact version rows and append the audit
+            # inside one transaction; failure to audit rolls back the read.
+            self._append(
+                db, kind="READ_ALLOWED" if allowed else "READ_DENIED",
+                engine="DOMESTIC", ref=ref, actor=principal.subject,
+                mode="HOUSEHOLD_VERSION_HISTORY",
+            )
+            return result
+
     def case_versions(self, engine: str, ref: str) -> tuple[int, ...]:
         with self._transaction() as db:
             self._verify(db)

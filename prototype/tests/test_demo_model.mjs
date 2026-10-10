@@ -62,7 +62,7 @@ test("two flows are independent and preserve immutability", () => {
   assert.equal(e.household.status, "DEMO_EVIDENCE_REQUIRED");
   assert.equal(e.research.status, "DEMO_RIGHTS_UNVERIFIED");
   assert.notEqual(e, start);
-  assert.notEqual(e.household, d.household);
+  assert.equal(e.household, d.household); // untouched domain retains identity
 });
 test("strict browser session boundary rejects extra fields, real data and invalid statuses", () => {
   const base = initialDemoState();

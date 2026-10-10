@@ -2,6 +2,8 @@
 
 **Status: BUSINESS RESEARCH + DECISION READINESS / NOT AN APPROVED FIRST TASK, DATASET, LICENSE OR GATE**  
 **Date:** 2026-10-09  
+**Latest owner decision — RON-DEC-029 APPROVED (2026-10-10):** کارفرما گزینه A در **ترتیب آماده‌سازی شواهد** را انتخاب کرده است: **D0-first evidence preparation** با **ادامه E0 به‌صورت مستقل و موازی**. وضعیت «پیشنهاد/منتظر پاسخ مالک» در بخش ۵، *تاریخچه قبل از تصمیم* است؛ امروز **اولویت آماده‌سازی RESOLVED** و **انتخاب واقعی اولین Training Task همچنان OPEN** است. این تصمیم به معنی Training یا انتخاب مدل/دیتاست/گیت نیست. [مصوبه](04-decisions-and-open-questions.md) / [برنامه اقدام محدود ۶۹](69-d0-first-evidence-execution-plan-e0-parallel.md).  
+
 **Repository:** Ronas / `business/ronas-foundation-v0-1` / Draft PR #1.  
 **Controlling Business decisions:** [RON-DEC-026](04-decisions-and-open-questions.md) (D0/E0 preparation **only**), [RON-DEC-027](64-ronas-internal-ai-progressive-learning-business-direction.md) (fully internal AI, initial rights-cleared dataset, controlled retraining and explicit human promotion), [RON-DEC-028](04-decisions-and-open-questions.md) (licensed Open-Weight base with fully internal Ronas fine-tuning, **without selecting a model**).  
 **Inputs:** [D0 59](59-d0-noncommercial-domestic-education-business-packet.md), [E0 60](60-e0-export-opportunity-research-business-packet.md), [Finance/Legal 61](61-finance-legal-evidence-workstreams-for-d0-e0.md), [Source Screening 62](62-d0-e0-official-source-screening-and-usage-rights.md), [Dataset Evidence 65](65-initial-ai-dataset-and-controlled-learning-evidence-blueprint.md), [Model Shortlist 66](66-open-weight-base-model-candidate-screening.md), [Task/Evaluation 67](67-first-ai-learning-task-and-independent-evaluation-business-packet.md).  
@@ -62,7 +64,7 @@
 
 چارچوب مرجع داوری: [NIST AI RMF Measure (Measure 1.3, 2.1–2.3)](https://airc.nist.gov/airmf-resources/airmf/5-sec-core/) روی مشارکت متخصص مستقل، مستندسازی Test Sets/معیارها و ارزیابی در شرایط مشابه کاربرد تأکید می‌کند؛ NIST **متخصص واقعی، معیار قبولی روناس یا دیتاست** را تعیین نمی‌کند.
 
-## ۵. تصمیم آماده برای مالک — AI-BL-02 (هنوز OPEN)
+## ۵. گزینه‌های تاریخی تصمیم مالک — اکنون با RON-DEC-029 ترتیب آماده‌سازی D0-first تصویب شده
 
 **پرسش واحد:** «در گام بعد، برای *آماده‌سازی پرونده حقوق/متخصص/نمونه‌های ارزیابی* نخست کدام مسیر در اولویت باشد؟» این سؤال **تصویب Task برای Training یا Business Gate نیست**.
 
@@ -89,3 +91,6 @@
 **تقدم واقعی:** Scope محدود و حقوق محتوای خاص باید پیش از تخصیص «Training-eligible» احراز شوند. Dataset نسخه‌دار → آموزش تکمیلی داخلی مدل پایه مجاز → ارزیابی مستقل → Candidate → Human Approval → Production، **فقط طرح Business مصوب است**. مدل مشخص Gemma/Qwen، Trainer، GPU، معماری، فرمت Dataset، معیار، بودجه، API و کدنویسی **انتخاب/مجوز ندارند**.
 
 **Final:** SOURCE POLICIES REVIEWED (WITH CONDITIONAL COMTRADE AI USE AND AGROVOC LICENSE-VERSION AMBIGUITY) / EXPERT CREDENTIAL REQUESTS PREPARED / AI-BL-02 OWNER ORDER CHOICE OPEN / NO PERMISSION OR DATASET CLEARED / BUSINESS GATES #2, #3, #4 OPEN / PR #1 DRAFT, PR #6 HOLD, PR #8 DISCOVERY / NO TECHNICAL OR CODE.
+
+
+**CURRENT AS OF 2026-10-10 / RON-DEC-029:** اولویت D0 برای آماده‌سازی شواهد مصوب، E0 مستقل/موازی ادامه‌دار؛ **Task واقعی Training، Dataset، حقوق و متخصص OPEN؛ گیت‌های #2/#3/#4 OPEN**. متن «AI-BL-02 OWNER ORDER CHOICE OPEN» در FINAL تاریخیِ پیش از مصوبه است.

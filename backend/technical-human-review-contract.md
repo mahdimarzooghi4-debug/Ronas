@@ -65,7 +65,7 @@ helpers**, without authorization checks. They MUST NOT be exposed through an
 HTTP route, used as a session-facing interface or interpreted as an
 operational review decision. Downstream UI/BFF integrations must use an
 authenticated, exact-case-checked facade and must not trust a client-
-supplied `Principal`. No new review endpoint has been mounted. This is
+supplied `Principal`. Only the explicitly opted-in read-only technical API and the assigned worklist described below may be mounted. This is
 not a Production read/authorization policy and no new user role is granted.
 
 ## Opt-in signed-Keycloak HTTP read boundary (LOCAL/TEST ONLY)
@@ -185,6 +185,77 @@ real Keycloak provider, operational distributed store, cross-host
 consistency, lawful Domestic consent, Export source rights, qualified
 human-review authority, real Business approval, Stage or Production is
 represented by the result.
+
+## Assigned operator technical-review worklist (LOCAL/TEST only)
+
+This is a new read-only **technical** capability for the existing unified
+admin environment, **not** a Domain Business work assignment, cultivation
+approval queue, export source-rights adjudication, or separate staff panel.
+
+The opt-in `SqliteSyntheticHumanReviewLedger.list_technical_review_worklist()`
+lists only currently assigned, unrevoked DEMO cases for a previously
+Keycloak-verified operator. Its exact signed API client role and active
+per-case/per-engine grant must both be present. Cases are sorted by their
+immutable synthetic `ref`, and keyset pagination uses an optional
+`after_ref` and a technical resource safety bound of 1–50 records
+(default 20). These numbers limit response size only; they are **not**
+eligibility, Business or model thresholds. `next_cursor` is set only
+when there are more *authorized* cases after the page. No global counts,
+other users' case names, ownership identifiers, request/evidence/note
+references or even the number of excluded cases are returned.
+
+Only immutable `ref`, engine, version, `case_status=DRAFT_ONLY`,
+`review_revision` and the observed **technical** review state are
+returned. `HUMAN_RESPONSE_RECORDED` is not approval. One
+`BEGIN IMMEDIATE` transaction verifies the entire ledger, checks the
+current grants and appends a `READ_ALLOWED` audit event with
+`TECHNICAL_REVIEW_WORKLIST` access mode for each item included in that
+page. A failed append aborts the whole page. Invalid, unassigned or
+revoked grants are never disclosed and do not generate item-level audit
+events. Empty lists do not imply absence of other cases.
+
+Two GET-only endpoints are added to the existing explicitly opted-in
+technical-review router:
+
+- `GET /api/v1/admin/domestic/household-intake/technical-review-worklist`
+- `GET /api/v1/admin/export/research/technical-review-worklist`
+
+`limit` and `after_ref` are read-only query controls. Unauthenticated
+or invalidly signed requests fail 401; malformed cursor or limit returns
+422; unassigned operators with verified role receive an empty list
+(no existence oracle), and ledger-integrity failure returns sanitized
+503 without partial results. Both engines have separate URLs and
+per-case grants; a dual-role user cannot inherit case permission from
+the other engine.
+
+**Existing admin HTML integration:** when `create_app` is supplied a
+Keycloak-validated `BrowserOIDC` and the **same explicit** synthetic
+human-review ledger as its scoped-case registry, the server-side
+`/admin` view shows only that signed session holder's granted
+technical-review worklist in their existing Domestic and/or Export
+management domain. Rows link to the already-existing authorized
+technical-history GET. Next-page links use a synthetic keyset cursor.
+HTML is escaped, and headers remain `Cache-Control: no-store` and
+CSP `frame-ancestors 'none'`. Finance and governance roles do not
+inherit case listings; session logout or a grant revoke stops subsequent
+disclosure. An invalid audit produces a sanitized 503 without partially
+rendered cards. No new panel, user login path, public registration,
+write/approve endpoint, personal data or automatic decision is created.
+
+The default `app = create_app(KeycloakConfig.from_environment())`
+mounts neither the BFF nor any technical-review worklist. A
+`scoped_registry` alone still does not activate it. These are only
+explicit LOCAL/TEST development candidates; real Keycloak roles and
+Business/Technical approval, consent, export rights, session authority,
+retention and Production storage are not established.
+
+Validation: `backend/tests/test_technical_review_worklist.py` contains
+18 offline HTTP and HTML security/function tests for pagination,
+seed/grant filtering, Domestic/Export isolation, live status,
+revocation, concurrent reads, corrupted history, transactional audit,
+invalid query, default-disabled routes, unified admin rendering,
+expired/revoked sessions and role-specific display. No real IdP or
+business execution was used.
 
 ## Tests and exclusions
 

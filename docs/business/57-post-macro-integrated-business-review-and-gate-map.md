@@ -115,3 +115,8 @@
 - گیت‌های **#2، #3 و #4 OPEN**؛ Technical Admission **NO**؛ PR #6 HOLD؛ PR #1 و #8 Draft/Open.
 
 **This is a linked post-review owner decision, not a revised evidence finding or an operational approval.**
+
+
+## الحاقیه تمرکز عملیاتی محصول اصلی — 2026-10-10
+
+طبق دستور کارفرما برای پیشبرد سریع‌تر جریان‌های اصلی به‌جای توقف بر جزئیات آموزش AI، [پرونده اصلی Domestic 70](70-core-domestic-operational-scope-and-business-acceptance.md)، [پرونده اصلی Export 71](71-core-export-operational-contract-and-readiness.md) و [برنامه مسیر بحرانی / مالی 72](72-core-delivery-critical-path-and-business-gate-readiness.md) به‌عنوان **بسته تصمیم برای Business** ثبت شدند. CORE-D1/CORE-E0 نامزد محدوده قابل بررسی برای گیت مستقل‌اند و CORE-D2/CORE-E1 از نظر معامله و قرارداد واقعی **BLOCKED** تا شواهد QC/صلاحیت/پرداخت/حقوق/وصول. هیچ دامنه‌ای برای Technical انتخاب یا تصویب نشده؛ گیت‌ها #2/#3/#4 **OPEN** و مصوبات قبلی AI بدون تغییرند.

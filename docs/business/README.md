@@ -88,7 +88,7 @@
 73. [برنامه مسیر بحرانی محصول اصلی و سه گیت Business](72-core-delivery-critical-path-and-business-gate-readiness.md): **OWNER REVIEW PREPARATION / NO GATE PASS**؛ بسته‌های CORE-D1/D2، CORE-E0/E1، FIN-001..007، مسئولیت و شواهد واقعی، تصمیم‌های محدود لازم برای پیشروی بدون اختراع داده/نرخ/طرف.
 74. [برگه تصمیم مشترک برای پذیرش محدود دامنه‌های CORE-D1 و CORE-E0](73-core-d1-e0-limited-scope-gate-decision-sheet.md): **OWNER SCOPE-REVIEW CHOICE PENDING / GATES NOT PASSED**؛ مرز دقیق خدمت، سناریوهای پذیرش/رد Domestic و Export، حقوق/متخصص و تعهدات مالی، گیت‌های #2/#3/#4؛ Core-D2/E1 و معامله/پرداخت واقعی خارج تا گیت مستقل.
 75. [ممیزی آمادگی ساخت واقعی و کوچک‌ترین دامنه‌های محصول اصلی](74-operational-build-readiness-audit-and-first-thin-slices.md): **PR #6 فقط DESIGN-ONLY، PR #8 فقط TECHNICAL DISCOVERY**؛ نامزدهای قابل‌بررسی CORE-D1-A ثبت رضایت/اطلاعات خانوار (نه طرح AI)، CORE-E0-A پژوهش مستند انسانی (نه قرارداد/تجارت)، الزامات واقعی حقوق/متخصص/Scope و سناریوهای خطا؛ **هیچ Scope/Technical/Code مصوب نیست**.
-76. [معماری تجربه هدف: ۴ خانواده اپلیکیشن و ۱۴ پنل نقش‌محور روناس](75-target-digital-apps-and-role-panel-topology.md): **BUSINESS UX TARGET PROPOSED / OWNER COUNT CONFIRMATION PENDING**؛ روناس همراه، همکاران، تجارت و ستاد، انطباق ۸ گروه Workspace قبلی با ۱۴ پنل نقش‌محور، ترتیب UI برای CORE-D1-A/E0-A و مرز مستقل Domestic/Export، بدون انتخاب پلتفرم، گیت، دسترسی اجرایی یا Production.
+76. [تصمیم مصوب کاهش نقش‌ها و پنل‌ها: ۵ نمای بیرونی + یک پنل مدیریت واحد](75-target-digital-apps-and-role-panel-topology.md): **RON-DEC-030 APPROVED FOR ROLE/PANEL GROUPING**؛ هاب/پیک فقط API؛ ۶/۸/۹/۱۳ بدون پنل؛ ادغام ۱۰/۱۱/۱۲/۱۴ با چهار حوزه دسترسی در یک پنل؛ **دو پوسته UI فقط پیشنهاد و هنوز تصویب‌نشده**، گیت‌های Business باز.
 
 ## اصول تفسیر
 

@@ -16,6 +16,7 @@ from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
 from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
 from .owner_case_api import build_owned_household_router
 from .technical_review_api import build_technical_review_read_router
+from .shared_workspaces import build_user_workspaces_router
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -99,6 +100,18 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         except InvalidToken:
             raise HTTPException(status_code=401, detail="INVALID_TOKEN",
                                 headers={"WWW-Authenticate": "Bearer"}) from None
+
+    if browser_flow is not None:
+        # A signed role only provides navigation metadata. These flags
+        # reflect opt-in local test read models, not operational rights.
+        app.include_router(build_user_workspaces_router(
+            principal,
+            owned_cases=isinstance(scoped_registry, SqliteSyntheticGrantLedger),
+            technical_progress=(
+                isinstance(technical_review_ledger, SqliteSyntheticHumanReviewLedger)
+                and scoped_registry is technical_review_ledger
+            ),
+        ))
 
     if scoped_registry is not None:
         if not isinstance(config, KeycloakConfig):

@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from .auth import InvalidToken, Principal
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
-from .grant_ledger_sqlite import LedgerIntegrityError
+from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
 from .oidc_browser import BrowserOIDC
 
 USER_ROLES = {
@@ -86,12 +86,16 @@ def page(title: str, body: str, *, logged_in: bool, code: int = 200) -> HTMLResp
 def build_authenticated_ui_router(
     flow: BrowserOIDC,
     technical_review_ledger: SqliteSyntheticHumanReviewLedger | None = None,
+    owned_case_ledger: SqliteSyntheticGrantLedger | None = None,
 ) -> APIRouter:
     # Only the opt-in same-instance ledger injected by create_app may
     # provide the synthetic worklist. Never trust a client-side role list.
     if (technical_review_ledger is not None
             and not isinstance(technical_review_ledger, SqliteSyntheticHumanReviewLedger)):
         raise ValueError("technical review worklist requires explicit ledger")
+    if (owned_case_ledger is not None
+            and not isinstance(owned_case_ledger, SqliteSyntheticGrantLedger)):
+        raise ValueError("owned household list requires explicit grant ledger")
     router = APIRouter()
     cookie_name = "__Host-ronas_session"
 
@@ -114,19 +118,60 @@ def build_authenticated_ui_router(
     def client_script() -> PlainTextResponse:
         return PlainTextResponse(LOGOUT_SCRIPT, media_type="text/javascript")
 
+    def household_worklist(principal: Principal, after_ref: str | None) -> str:
+        if owned_case_ledger is None:
+            return ""
+        try:
+            result = owned_case_ledger.list_owned_domestic_drafts(
+                principal, after_ref=after_ref, limit=20,
+            )
+        except LedgerIntegrityError:
+            raise  # app-level sanitizer produces 503, never partial HTML
+        except ValueError as exc:
+            raise HTTPException(422, detail="INVALID_OWNED_CASE_QUERY") from exc
+        rows = [
+            '<li><a href="/api/v1/domestic/household-intake/drafts/'
+            + escape(item["ref"]) + '">' + escape(item["ref"])
+            + '</a> — DRAFT_ONLY</li>'
+            for item in result["items"]
+        ]
+        body = ('<ul>' + ''.join(rows) + '</ul>' if rows else
+                '<p>پرونده ساختگی متعلق به این حساب وجود ندارد.</p>')
+        if result["next_cursor"]:
+            body += ('<a href="/?household_after_ref='
+                     + quote(result["next_cursor"]) + '">پرونده‌های بعدی</a>')
+        return ('<section class="section"><h3>پرونده‌های من'
+                ' (فقط نمونه آزمایشی)</h3>' + body + '</section>')
+
     @router.get("/")
-    def public_ui(sid: str | None = Cookie(default=None, alias=cookie_name)) -> HTMLResponse:
-        grants = roles(sid)
+    def public_ui(
+        sid: str | None = Cookie(default=None, alias=cookie_name),
+        household_after_ref: str | None = None,
+    ) -> HTMLResponse:
+        try:
+            session = flow.session(sid)
+        except InvalidToken:
+            session = None
+        grants = session.roles if session is not None else None
         if grants is None:
             return page("روناس — محیط کاربران و همکاران",
                         '<p>برای مشاهده بخش مربوط به نقش خود، با Keycloak وارد شوید. '
                         'این نسخه فقط داده ساختگی نمایش می‌دهد.</p>', logged_in=False)
         active = [(name, label) for name, label in USER_ROLES.items() if name in grants]
-        cards = ''.join('<article class="panel"><h2>' + escape(label) + '</h2>'
-                        '<p>وضعیت خدمت: نیازمند شواهد و مجوز عملیاتی.</p>'
-                        + ('<p>پرونده ساختگی DEMO-H01؛ رضایت واقعی و تأیید متخصص وجود ندارد.</p>'
-                           if name == "household" else '') + '</article>'
-                        for name, label in active)
+        cards = ''
+        for name, label in active:
+            if name == "household" and owned_case_ledger is not None:
+                household = household_worklist(
+                    Principal(session.subject, session.roles), household_after_ref,
+                )
+            else:
+                household = (
+                    '<p>پرونده ساختگی DEMO-H01؛ رضایت واقعی و تأیید متخصص وجود ندارد.</p>'
+                    if name == "household" else ''
+                )
+            cards += ('<article class="panel"><h2>' + escape(label) + '</h2>'
+                      '<p>وضعیت خدمت: نیازمند شواهد و مجوز عملیاتی.</p>'
+                      + household + '</article>')
         if not cards:
             cards = '<p>هیچ نمای کاربری بیرونی برای دسترسی‌های فعلی شما تخصیص نیافته است.</p>'
         return page("روناس — محیط کاربران و همکاران", cards, logged_in=True)

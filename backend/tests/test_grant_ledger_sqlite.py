@@ -144,7 +144,9 @@ class PersistentGrantLedgerTests(unittest.TestCase):
         self.assertEqual(len(self.open().audit_snapshot()), 1)
         with self.assertRaises(GrantConflict):
             self.revoke(self.open(), reason_ref="DEMO-REASON-CHANGED")
-        with self.assertRaises(GrantConflict):
+        # Independent authorization is checked before replay identity,
+        # so an untrusted actor receives NOT AUTHORIZED, not replay details.
+        with self.assertRaises(GrantNotAuthorized):
             self.revoke(self.open(), actor="synthetic-unauthorized-person")
 
     def test_two_independent_db_connections_serialize_distinct_revocations(self):

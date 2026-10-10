@@ -60,11 +60,13 @@ def build_owned_household_router(
         def owned_progress(
             after_ref: str | None = Query(default=None),
             limit: int = Query(default=20, ge=1, le=50),
+            technical_state: str = Query(default="ALL"),
             p: Principal = Depends(verified_principal),
         ) -> dict:
             try:
                 return ledger.list_owned_domestic_progress(
                     p, after_ref=after_ref, limit=limit,
+                    technical_state=technical_state,
                 )
             except (LedgerIntegrityError, sqlite3.Error) as exc:
                 raise HTTPException(

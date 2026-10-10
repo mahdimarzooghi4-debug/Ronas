@@ -22,6 +22,7 @@ def visible_user_workspaces(
     principal: Principal, *, owned_cases: bool = False,
     technical_progress: bool = False,
     agronomy_cases: bool = False,
+    export_supplier_preview: bool = False,
 ) -> list[dict]:
     """No role is inferred from another; no case is read on this endpoint."""
     if not isinstance(principal, Principal):
@@ -37,6 +38,8 @@ def visible_user_workspaces(
                 reads.append("OWNED_SYNTHETIC_TECHNICAL_PROGRESS")
         if role == "agronomy_expert" and agronomy_cases:
             reads.append("ASSIGNED_SYNTHETIC_AGRONOMY_DRAFTS")
+        if role == "export_supplier" and export_supplier_preview:
+            reads.append("OWN_SYNTHETIC_EXPORT_SUPPLIER_PREVIEW")
         workspaces.append({
             "role": role,
             "label": label,
@@ -52,6 +55,7 @@ def build_user_workspaces_router(
     verified_principal: Callable[..., Principal], *,
     owned_cases: bool = False, technical_progress: bool = False,
     agronomy_cases: bool = False,
+    export_supplier_preview: bool = False,
 ) -> APIRouter:
     """Opt-in read-only API; caller principal MUST be Keycloak-verified."""
     router = APIRouter()
@@ -63,6 +67,7 @@ def build_user_workspaces_router(
             "items": visible_user_workspaces(
                 p, owned_cases=owned_cases, technical_progress=technical_progress,
                 agronomy_cases=agronomy_cases,
+                export_supplier_preview=export_supplier_preview,
             ),
         }
 
@@ -74,6 +79,7 @@ def build_user_workspaces_router(
             w for w in visible_user_workspaces(
                 p, owned_cases=owned_cases, technical_progress=technical_progress,
                 agronomy_cases=agronomy_cases,
+                export_supplier_preview=export_supplier_preview,
             ) if w["role"] == role
         ), None)
         if found is None:

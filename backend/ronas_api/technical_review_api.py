@@ -79,4 +79,18 @@ def build_technical_review_read_router(
     def export_review(ref: str, p: Principal = Depends(verified_principal)) -> dict:
         return lookup("EXPORT", ref, p)
 
+    @router.get("/api/v1/admin/export/research/drafts/{ref}/workspace")
+    def export_research_workspace(
+        ref: str, p: Principal = Depends(verified_principal),
+    ) -> dict:
+        try:
+            result = ledger.read_export_research_workspace(ref, p)
+        except (LedgerIntegrityError, sqlite3.Error) as exc:
+            raise HTTPException(
+                status_code=503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+            ) from exc
+        if result is None:
+            raise HTTPException(status_code=404, detail="DRAFT_NOT_FOUND")
+        return result
+
     return router

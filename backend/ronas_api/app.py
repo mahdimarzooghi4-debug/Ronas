@@ -51,7 +51,17 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         if not isinstance(config, KeycloakConfig) or browser_flow.config.keycloak != config:
             raise ValueError("browser flow must use the same pinned Keycloak realm")
         app.include_router(build_browser_router(browser_flow))
-        app.include_router(build_authenticated_ui_router(browser_flow))
+        # The review worklist can appear only in the existing opt-in admin
+        # shell and only when this is the same exact scoped grant ledger.
+        worklist_ledger = (
+            technical_review_ledger
+            if (isinstance(technical_review_ledger, SqliteSyntheticHumanReviewLedger)
+                and scoped_registry is technical_review_ledger)
+            else None
+        )
+        app.include_router(build_authenticated_ui_router(
+            browser_flow, technical_review_ledger=worklist_ledger
+        ))
 
     @app.middleware("http")
     async def security_response_headers(request, call_next):

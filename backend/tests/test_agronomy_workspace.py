@@ -742,5 +742,160 @@ class AgronomyWorkspaceTests(unittest.TestCase):
 
 
 
+    def _record_filter_request(self):
+        self.ledger.request_evidence_review(
+            engine="DOMESTIC", ref="DEMO-D-001",
+            actor=Principal("synthetic-ops-001", frozenset({"domestic_ops"})),
+            expected_case_version=2, expected_review_revision=0,
+            action_id="DEMO-AGRONOMY-FILTER-REQUEST",
+            request_ref="DEMO-AGRONOMY-FILTER-PRIVATE-REF",
+            evidence_ref="DEMO-AGRONOMY-FILTER-PRIVATE-EVIDENCE",
+        )
+
+    def _record_filter_response(self):
+        self.ledger.record_human_response(
+            engine="DOMESTIC", ref="DEMO-D-001",
+            actor=Principal("synthetic-ops-reviewer",
+                            frozenset({"domestic_ops"})),
+            expected_case_version=2, expected_review_revision=1,
+            action_id="DEMO-AGRONOMY-FILTER-RESPONSE",
+            request_ref="DEMO-AGRONOMY-FILTER-PRIVATE-REF",
+            evidence_ref="DEMO-AGRONOMY-FILTER-PRIVATE-RESPONSE-EVIDENCE",
+            decision_ref="DEMO-AGRONOMY-FILTER-PRIVATE-DECISION",
+        )
+
+    def test_observed_filter_follows_actual_review_lifecycle(self):
+        def refs(state):
+            response = self.client.get(
+                ROOT, params={"technical_state": state},
+                headers=self.headers(),
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertNotIn("DEMO-AGRONOMY-FILTER-PRIVATE", response.text)
+            return [x["ref"] for x in response.json()["items"]]
+
+        self.assertEqual(refs("UNREQUESTED"), ["DEMO-D-001", "DEMO-D-002"])
+        self.assertEqual(refs("EVIDENCE_REVIEW_REQUESTED"), [])
+        self.assertEqual(refs("HUMAN_RESPONSE_RECORDED"), [])
+        self._record_filter_request()
+        self.assertEqual(refs("UNREQUESTED"), ["DEMO-D-002"])
+        self.assertEqual(refs("EVIDENCE_REVIEW_REQUESTED"), ["DEMO-D-001"])
+        self.assertEqual(refs("HUMAN_RESPONSE_RECORDED"), [])
+        self._record_filter_response()
+        self.assertEqual(refs("UNREQUESTED"), ["DEMO-D-002"])
+        self.assertEqual(refs("EVIDENCE_REVIEW_REQUESTED"), [])
+        self.assertEqual(refs("HUMAN_RESPONSE_RECORDED"), ["DEMO-D-001"])
+        self.assertEqual(refs("ALL"), ["DEMO-D-001", "DEMO-D-002"])
+        detail = self.client.get(
+            ROOT + "/DEMO-D-001", headers=self.headers()
+        ).json()
+        self.assertFalse(detail["plan_accepted"])
+        self.assertFalse(detail["scientific_review_approved"])
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_filtered_keyset_pagination_has_no_hidden_total(self):
+        first = self.client.get(
+            ROOT, params={"technical_state": "UNREQUESTED", "limit": 1},
+            headers=self.headers(),
+        )
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual([x["ref"] for x in first.json()["items"]],
+                         ["DEMO-D-001"])
+        self.assertEqual(first.json()["next_cursor"], "DEMO-D-001")
+        self.assertNotIn("total", first.json())
+        second = self.client.get(
+            ROOT, params={"technical_state": "UNREQUESTED", "limit": 1,
+                          "after_ref": first.json()["next_cursor"]},
+            headers=self.headers(),
+        )
+        self.assertEqual([x["ref"] for x in second.json()["items"]],
+                         ["DEMO-D-002"])
+        self.assertIsNone(second.json()["next_cursor"])
+        self._record_filter_request()
+        later = self.client.get(
+            ROOT, params={"technical_state": "UNREQUESTED", "limit": 1},
+            headers=self.headers(),
+        )
+        self.assertEqual([x["ref"] for x in later.json()["items"]],
+                         ["DEMO-D-002"])
+        self.assertIsNone(later.json()["next_cursor"])
+
+    def test_filtered_queue_enforces_live_revocation_and_signed_role(self):
+        self._record_filter_request()
+        requested = {"technical_state": "EVIDENCE_REVIEW_REQUESTED"}
+        r = self.client.get(ROOT, params=requested, headers=self.headers())
+        self.assertIn("DEMO-D-001", r.text)
+        self.active.remove("DEMO-D-001")
+        r = self.client.get(ROOT, params=requested, headers=self.headers())
+        self.assertEqual(r.json()["items"], [])
+        self.assertIsNone(r.json()["next_cursor"])
+        self.assertNotIn("DEMO-D-001", r.text)
+        other = self.client.get(
+            ROOT, params={"technical_state": "ALL"},
+            headers=self.headers("synthetic-agronomist-other"),
+        )
+        self.assertEqual(other.json()["items"], [])
+        wrong_role = self.client.get(
+            ROOT, params=requested,
+            headers=self.headers(roles=("household",)),
+        )
+        self.assertEqual(wrong_role.json()["items"], [])
+        self.assertNotIn("DEMO-D-001", wrong_role.text)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_invalid_filter_rejected_without_read_disclosure(self):
+        prior = len(self.ledger.audit_snapshot())
+        for state in ("APPROVED", "human_response_recorded", "", "ALL,UNREQUESTED"):
+            with self.subTest(state=state):
+                result = self.client.get(
+                    ROOT, params={"technical_state": state},
+                    headers=self.headers(),
+                )
+                self.assertEqual(result.status_code, 422)
+                self.assertNotIn("DEMO-D-001", result.text)
+        self.assertEqual(prior, len(self.ledger.audit_snapshot()))
+
+    def test_persian_agronomy_queue_filter_navigation_and_no_synthetic_approval(self):
+        self.session()
+        role = self.client.get(ROLE + "?technical_state=UNREQUESTED")
+        self.assertEqual(role.status_code, 200)
+        self.assertIn('aria-label="فیلتر مراحل فنی کارشناس"', role.text)
+        self.assertIn("DEMO-D-001", role.text)
+        self.assertIn("DEMO-D-002", role.text)
+        self.assertIn("بدون درخواست بررسی فنی", role.text)
+        self.assertIn("نه تأیید علمی", role.text)
+        self._record_filter_request()
+        requested = self.client.get(
+            ROLE + "?technical_state=EVIDENCE_REVIEW_REQUESTED"
+        )
+        self.assertEqual(requested.status_code, 200)
+        self.assertIn("DEMO-D-001", requested.text)
+        self.assertNotIn("DEMO-D-002", requested.text)
+        self.assertNotIn("DEMO-AGRONOMY-FILTER-PRIVATE", requested.text)
+        self.assertEqual(self.client.get(
+            ROLE + "?technical_state=INVALID",
+        ).status_code, 422)
+        self.active.remove("DEMO-D-001")
+        hidden = self.client.get(
+            ROLE + "?technical_state=EVIDENCE_REVIEW_REQUESTED"
+        )
+        self.assertEqual(hidden.status_code, 200)
+        self.assertNotIn("DEMO-D-001", hidden.text)
+        self.assertIn("یافت نشد", hidden.text)
+
+    def test_filter_failure_is_503_not_partial_list(self):
+        def unavailable(*_):
+            raise RuntimeError("private authority failure")
+        self.workspace._live_authority = unavailable
+        query = {"technical_state": "UNREQUESTED"}
+        result = self.client.get(ROOT, params=query, headers=self.headers())
+        self.assertEqual(result.status_code, 503)
+        self.assertNotIn("DEMO-D-001", result.text)
+        self.session()
+        ui = self.client.get(ROLE + "?technical_state=UNREQUESTED")
+        self.assertEqual(ui.status_code, 503)
+        self.assertNotIn("DEMO-D-001", ui.text)
+
+
 if __name__ == "__main__":
     unittest.main()

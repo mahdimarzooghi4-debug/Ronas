@@ -329,7 +329,11 @@ class HouseholdProgressTests(unittest.TestCase):
     def test_html_detail_is_unmounted_for_base_ledger_or_missing_review_wiring(self):
         client, _, _ = self.browser(review_enabled=False)
         self.assertEqual(client.get(DETAIL).status_code, 404)
-        self.assertNotIn("/my-drafts/DEMO-D-001", client.get("/").text)
+        html = client.get("/").text
+        # A simple owner ledger may expose its own version history,
+        # but may not claim to mount the review-only detail page.
+        self.assertNotIn('href="/my-drafts/DEMO-D-001"', html)
+        self.assertIn('href="/my-drafts/DEMO-D-001/versions"', html)
 
     def test_concurrent_status_read_and_human_response_preserves_linearized_progress(self):
         self.request()

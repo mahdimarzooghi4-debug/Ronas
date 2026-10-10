@@ -19,6 +19,9 @@ from .technical_review_api import build_technical_review_read_router
 from .shared_workspaces import build_user_workspaces_router
 from .business_gate_evidence import (build_business_gate_evidence_router,
                                      BusinessSourceSnapshotError)
+from .gate_evidence_handoff_sqlite import (SqliteSyntheticGateEvidenceHandoff,
+                                          HandoffIntegrityError)
+from .gate_evidence_handoff_api import build_gate_handoff_read_router
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -35,7 +38,8 @@ EXPORT_EXAMPLE = {
 def create_app(config: AuthConfig | KeycloakConfig | None = None,
                browser_flow: BrowserOIDC | None = None,
                scoped_registry: ScopedSyntheticDraftRegistry | None = None,
-               technical_review_ledger: SqliteSyntheticHumanReviewLedger | None = None) -> FastAPI:
+               technical_review_ledger: SqliteSyntheticHumanReviewLedger | None = None,
+               gate_handoff_ledger: SqliteSyntheticGateEvidenceHandoff | None = None) -> FastAPI:
     app = FastAPI(
         title="Ronas bounded read-only API foundation",
         docs_url=None, redoc_url=None, openapi_url=None,
@@ -47,6 +51,12 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         # masquerade as a successfully authorized case read.
         return JSONResponse(status_code=503,
                             content={"detail": "SYNTHETIC_LEDGER_UNAVAILABLE"})
+
+    @app.exception_handler(HandoffIntegrityError)
+    async def technical_handoff_unavailable(_request, _exc) -> JSONResponse:
+        return JSONResponse(
+            status_code=503, content={"detail": "TECHNICAL_HANDOFF_UNAVAILABLE"},
+        )
 
     @app.exception_handler(BusinessSourceSnapshotError)
     async def pinned_business_source_unavailable(_request, _exc) -> JSONResponse:
@@ -79,6 +89,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         app.include_router(build_authenticated_ui_router(
             browser_flow, technical_review_ledger=worklist_ledger,
             owned_case_ledger=owner_ledger,
+            gate_handoff_ledger=gate_handoff_ledger,
         ))
 
     @app.middleware("http")
@@ -124,6 +135,18 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                 isinstance(technical_review_ledger, SqliteSyntheticHumanReviewLedger)
                 and scoped_registry is technical_review_ledger
             ),
+        ))
+
+    if gate_handoff_ledger is not None:
+        if (not isinstance(config, KeycloakConfig)
+                or browser_flow is None
+                or not isinstance(gate_handoff_ledger,
+                                  SqliteSyntheticGateEvidenceHandoff)):
+            raise ValueError(
+                "technical gate handoff requires explicit Keycloak browser and ledger"
+            )
+        app.include_router(build_gate_handoff_read_router(
+            gate_handoff_ledger, principal,
         ))
 
     if scoped_registry is not None:

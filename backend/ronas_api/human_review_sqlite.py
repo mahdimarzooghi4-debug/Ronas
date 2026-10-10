@@ -303,6 +303,72 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             )
             return result
 
+    def read_export_research_workspace(
+        self, ref: str, principal: Principal,
+    ) -> dict | None:
+        """One audited, grant-scoped EXPORT research DEMO snapshot.
+
+        This is not a real market study or a report decision. An immutable
+        synthetic source *reference* is not evidence of permission to use it.
+        Product, destination, HS, findings and an actual buyer are UNKNOWN,
+        never inferred from the reference or a technical human response.
+        """
+        if not _synthetic_ref(ref):
+            return None
+        with self._transaction() as db:
+            self._verify(db)
+            record = self._catalogue.get(("EXPORT", ref))
+            if (record is None or not isinstance(principal, Principal)
+                    or not _synthetic_subject(principal.subject)):
+                return None
+            allowed = self._active_operator(db, "EXPORT", ref, principal)
+            if allowed:
+                steps = self._steps(db, "EXPORT", ref)
+                versions = tuple(row[0] for row in db.execute(
+                    "SELECT version FROM case_history "
+                    "WHERE engine='EXPORT' AND ref=? ORDER BY version", (ref,),
+                ))
+                if (versions != self._histories[("EXPORT", ref)]
+                        or not versions or versions[-1] != record.version):
+                    raise LedgerIntegrityError("synthetic Export version drift")
+                result = {
+                    "ref": ref,
+                    "engine": "EXPORT",
+                    "case_version": record.version,
+                    "known_versions": list(versions),
+                    "case_status": "DRAFT_ONLY",
+                    "source": "SYNTHETIC_ONLY",
+                    "source_ref": record.source_ref,
+                    "research_question": {
+                        "product": None,
+                        "destination": None,
+                        "hs_code": None,
+                    },
+                    "study_findings": None,
+                    "review_revision": len(steps),
+                    "technical_review_state": STATES[len(steps)],
+                    "technical_review_steps": [
+                        {"revision": step.revision, "stage": step.stage}
+                        for step in steps
+                    ],
+                    "source_rights_verified": False,
+                    "research_report_approved": False,
+                    "buyer_verified": False,
+                    "contracted": False,
+                    "real_data": False,
+                    "business_actions_enabled": False,
+                }
+            else:
+                result = None
+            # The active grant, full-historical verification, redacted view
+            # and append-only read audit are one serialized transaction.
+            self._append(
+                db, kind="READ_ALLOWED" if allowed else "READ_DENIED",
+                engine="EXPORT", ref=ref, actor=principal.subject,
+                mode="EXPORT_RESEARCH_WORKSPACE",
+            )
+            return result
+
     def read_review_for_operator(self, engine: str, ref: str,
                                  principal: Principal) -> dict | None:
         """Audit an exact-case, currently authorized technical-history read.

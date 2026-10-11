@@ -16,6 +16,7 @@ from .expert_review_questions_sqlite import (
     SqliteSyntheticExpertQuestionLedger, ReviewQuestionConflict,
 )
 from .internal_expert_evidence_comparison import EvidenceRevisionConflict
+from .internal_specialist_scope_change_impact import SpecialistEvidenceRevisionConflict
 
 
 class SyntheticQuestionCommand(BaseModel):
@@ -171,6 +172,30 @@ def build_agronomy_workspace_router(
         ) -> dict:
             try:
                 result = workspace.read_assigned_specialist_scope_evidence(ref, p)
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return result
+
+
+        @router.get(
+            "/api/v1/agronomy/assigned-drafts/{ref}/specialist-scope-change-impact",
+        )
+        def assigned_specialist_scope_change_impact(
+            ref: str, observed_revision: int = Query(ge=0),
+            p: Principal = Depends(verified_principal),
+        ) -> dict:
+            try:
+                result = workspace.compare_assigned_specialist_scope_evidence(
+                    ref, p, observed_revision=observed_revision,
+                )
+            except SpecialistEvidenceRevisionConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_SPECIALIST_EVIDENCE_REVISION_CONFLICT",
+                ) from exc
             except (LedgerIntegrityError, sqlite3.Error) as exc:
                 raise HTTPException(
                     503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",

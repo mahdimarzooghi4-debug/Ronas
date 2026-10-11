@@ -38,6 +38,10 @@ from .internal_scientific_basis_contract import (
     inspect_scientific_basis_structure,
 )
 from .internal_specialist_scope_contract import SyntheticSpecialistEvidenceRegistry
+from .internal_specialist_scope_change_impact import (
+    project_assigned_specialist_scope_change_impact,
+    SpecialistEvidenceRevisionConflict,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -963,6 +967,53 @@ class SyntheticAgronomyWorkspace:
             self.ledger._append(
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                 actor=actor, mode="AGRONOMY_SYNTHETIC_SPECIALIST_SCOPE_EVIDENCE",
+            )
+            return result
+
+
+    def compare_assigned_specialist_scope_evidence(
+        self, ref: str, principal: Principal, *, observed_revision: int,
+    ) -> dict | None:
+        """One current signed/assigned read; historical evidence isn't a grant."""
+        if not isinstance(self.ledger, SqliteSyntheticExpertQuestionLedger):
+            raise ValueError("synthetic specialist ledger unavailable")
+        if not _synthetic_ref(ref):
+            return None
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            record = self.ledger._catalogue.get(("DOMESTIC", ref))
+            actor = self._actor(principal)
+            if record is None or actor is None:
+                return None
+            if not self._allowed(actor, ref, record.version):
+                return None
+            if self._trusted_specialist_governance_snapshot is None:
+                registry = SyntheticSpecialistEvidenceRegistry()
+            else:
+                try:
+                    registry = self._trusted_specialist_governance_snapshot()
+                except Exception as exc:
+                    raise LedgerIntegrityError(
+                        "synthetic specialist scope source unavailable"
+                    ) from exc
+            if not isinstance(registry, SyntheticSpecialistEvidenceRegistry):
+                raise LedgerIntegrityError("invalid specialist scope authority")
+            try:
+                result = project_assigned_specialist_scope_change_impact(
+                    registry=registry, subject=actor,
+                    case_ref=ref, case_version=record.version,
+                    observed_revision=observed_revision,
+                )
+            except SpecialistEvidenceRevisionConflict:
+                raise
+            except (ValueError, KeyError, TypeError) as exc:
+                raise LedgerIntegrityError(
+                    "untrusted specialist candidate case/scope history"
+                ) from exc
+            self.ledger._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=actor,
+                mode="AGRONOMY_SYNTHETIC_SPECIALIST_SCOPE_CHANGE_IMPACT",
             )
             return result
 

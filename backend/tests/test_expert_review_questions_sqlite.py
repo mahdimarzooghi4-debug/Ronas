@@ -976,6 +976,151 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertEqual(r.status_code,503)
         self.assertNotIn("DEMO-FORGED",r.text)
 
+
+    def specialist_scope_change_impact_url(self, revision=0):
+        return (
+            "/api/v1/agronomy/assigned-drafts/DEMO-D-1/"
+            f"specialist-scope-change-impact?observed_revision={revision}"
+        )
+
+    def test_specialist_evidence_change_impact_tracks_revision_and_unresolved_conflict(self):
+        from ronas_api.internal_specialist_scope_contract import (
+            SpecialistScopeEvidenceCandidate, SpecialistScopeEvidenceEvent,
+            RECORDED,
+        )
+        first=self.specialist_governance_fixture()
+        current={"snapshot":first}
+        self.workspace._trusted_specialist_governance_snapshot=(
+            lambda:current["snapshot"]
+        )
+        self.assertEqual(self.client.get(
+            self.specialist_scope_change_impact_url(1),
+            headers=self.headers(),
+        ).status_code,200)
+        updated=SpecialistScopeEvidenceCandidate(
+            subject=EXPERT,case_ref="DEMO-D-1",case_version=3,
+            evidence_revision=2,
+            declared_review_tracks=(TRACKS[1],),
+            qualification_evidence_ref="DEMO-QUAL-FIXTURE",
+            qualification_evidence_sha256="a"*64,
+            appointment_evidence_ref="DEMO-APPT-NEW",
+            appointment_evidence_sha256="d"*64,
+            conflict_disclosure_ref="DEMO-CONFLICT-FIXTURE",
+            conflict_disclosure_sha256="c"*64,
+            conflict_declaration_state="CONFLICT_NOT_ASSESSED",
+        )
+        current["snapshot"]=first.with_event(SpecialistScopeEvidenceEvent(
+            action_ref="DEMO-SCOPE-UPDATE",subject=EXPERT,
+            case_ref="DEMO-D-1",case_version=3,
+            evidence_revision=2,operation=RECORDED,candidate=updated,
+        ))
+        r=self.client.get(
+            self.specialist_scope_change_impact_url(1),
+            headers=self.headers(),
+        )
+        self.assertEqual(r.status_code,200,r.text)
+        data=r.json()
+        self.assertTrue(data["version_changed"])
+        self.assertTrue(data["appointment_evidence_pointer_changed"])
+        self.assertTrue(data["conflict_declaration_changed"])
+        self.assertEqual(data["observed_conflict_diagnostic"],
+                         "POTENTIAL_CONFLICT_DISCLOSED_UNRESOLVED")
+        self.assertEqual(data["current_conflict_diagnostic"],
+                         "CONFLICT_NOT_INDEPENDENTLY_ASSESSED")
+        self.assertFalse(data["scope_authorized_for_real_review"])
+        self.assertEqual([x["current_candidate_scope_declared"] for x in
+                          data["declared_track_scope_changes"]],
+                         [False,True,False])
+        for hidden in ("DEMO-QUAL-FIXTURE","DEMO-APPT-NEW",
+                       "DEMO-CONFLICT-FIXTURE","a"*64,"c"*64,EXPERT):
+            self.assertNotIn(hidden,r.text)
+        self.assertEqual(r.headers["cache-control"],"no-store")
+        self.assertEqual(sum(
+            e.access_mode=="AGRONOMY_SYNTHETIC_SPECIALIST_SCOPE_CHANGE_IMPACT"
+            for e in self.ledger.audit_snapshot()),2)
+
+    def test_specialist_scope_change_impact_withheld_history_never_reused(self):
+        from ronas_api.internal_specialist_scope_contract import (
+            SpecialistScopeEvidenceEvent, WITHHELD,
+        )
+        first=self.specialist_governance_fixture()
+        state={"snapshot":first}
+        self.workspace._trusted_specialist_governance_snapshot=(
+            lambda:state["snapshot"]
+        )
+        state["snapshot"]=first.with_event(SpecialistScopeEvidenceEvent(
+            action_ref="DEMO-WITHDRAW-CURRENT",subject=EXPERT,
+            case_ref="DEMO-D-1",case_version=3,
+            evidence_revision=2,operation=WITHHELD,
+            reason_ref="DEMO-WITHDRAW-REASON",
+        ))
+        r=self.client.get(self.specialist_scope_change_impact_url(1),
+                          headers=self.headers())
+        self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(r.json()["structural_relationship"],
+                         "CURRENT_CANDIDATE_WITHHELD_NO_REUSE")
+        self.assertEqual(r.json()["current_conflict_diagnostic"],
+                         "NO_CURRENT_CANDIDATE_CONFLICT_UNKNOWN")
+        self.assertEqual(r.json()["candidate_withheld_since_observed_count"],1)
+        self.assertFalse(r.json()["plan_accepted"])
+        self.assertEqual(self.client.get(
+            self.specialist_scope_evidence_url(),headers=self.headers()
+        ).json()["evidence_state"],"CANDIDATE_WITHHELD_NOT_AUTHORIZED")
+
+    def test_specialist_scope_change_impact_auth_scope_conflict_and_failclosed(self):
+        url=self.specialist_scope_change_impact_url(0)
+        self.assertEqual(self.client.get(url).status_code,401)
+        self.assertEqual(self.client.get(
+            url,headers=self.headers(OWNER,("household",))
+        ).status_code,404)
+        self.assertEqual(self.client.get(
+            url.replace("DEMO-D-1","DEMO-E-1"),headers=self.headers()
+        ).status_code,404)
+        self.assertEqual(self.client.post(
+            url,headers=self.headers(),json={}
+        ).status_code,405)
+        self.active=False
+        self.assertEqual(self.client.get(
+            url,headers=self.headers()
+        ).status_code,404)
+        self.active=True
+        self.assertEqual(TestClient(create_app(self.config)).get(
+            url,headers=self.headers()
+        ).status_code,404)
+        self.assertEqual(self.client.get(
+            self.specialist_scope_change_impact_url(0),
+            headers=self.headers(),
+        ).status_code,200)
+        self.workspace._trusted_specialist_governance_snapshot=(
+            self.specialist_governance_fixture
+        )
+        for revision,status in ((-1,422),(2,409),("oops",422)):
+            with self.subTest(revision=revision):
+                self.assertEqual(self.client.get(
+                    self.specialist_scope_change_impact_url(revision),
+                    headers=self.headers(),
+                ).status_code,status)
+        self.workspace._trusted_specialist_governance_snapshot=(
+            lambda:(_ for _ in ()).throw(RuntimeError("offline"))
+        )
+        self.assertEqual(self.client.get(
+            url,headers=self.headers()
+        ).status_code,503)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_specialist_scope_change_impact_ledger_corruption_fails_503(self):
+        self.seed_input()
+        self.post()
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER expert_question_no_update")
+            db.execute("UPDATE expert_review_question SET reason_ref='DEMO-FORGED'")
+        result=self.client.get(
+            self.specialist_scope_change_impact_url(0),
+            headers=self.headers(),
+        )
+        self.assertEqual(result.status_code,503)
+        self.assertNotIn("DEMO-FORGED",result.text)
+
     def evidence_index_url(self):
         return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-index"
 

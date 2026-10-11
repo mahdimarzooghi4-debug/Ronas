@@ -620,6 +620,116 @@ class LocalExpertQuestionTests(unittest.TestCase):
             endpoint, headers=self.headers()
         ).status_code, 404)
 
+
+    def comparison_timeline_url(self):
+        return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-timeline"
+
+    def comparison_url(self, first, last):
+        return ("/api/v1/agronomy/assigned-drafts/DEMO-D-1/"
+                f"review-evidence-compare?from_revision={first}&to_revision={last}")
+
+    def test_case_local_comparison_historical_input_question_reply_sighting(self):
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        self.inspect()
+        self.seed_input(revision=1, digest="7"*64, action="DEMO-INPUT-B")
+        timeline = self.client.get(
+            self.comparison_timeline_url(), headers=self.headers())
+        self.assertEqual(timeline.status_code, 200, timeline.text)
+        self.assertEqual(timeline.json()["latest_evidence_revision"], 5)
+        self.assertEqual([e["event_kind"] for e in timeline.json()["revisions"]], [
+            "HOUSEHOLD_INPUT_REVISION", "EXPERT_QUESTION",
+            "OWNER_RESPONSE_RECEIPT", "EXPERT_RECEIPT_SIGHTING",
+            "HOUSEHOLD_INPUT_REVISION",
+        ])
+        compare = self.client.get(self.comparison_url(2, 4), headers=self.headers())
+        self.assertEqual(compare.status_code, 200, compare.text)
+        data = compare.json()
+        self.assertEqual([x["track"] for x in data["track_deltas"]], list(TRACKS))
+        self.assertEqual(data["track_deltas"][0]["added_owner_response_count"], 1)
+        self.assertEqual(data["track_deltas"][0]["added_receipt_sighting_count"], 1)
+        self.assertFalse(data["input_revision_changed"])
+        self.assertFalse(data["historical_ai_proposal_reconstructible"])
+        self.assertFalse(data["historical_science_catalogue_reconstructible"])
+        after = self.client.get(self.comparison_url(4, 5), headers=self.headers())
+        self.assertEqual(after.status_code, 200, after.text)
+        self.assertTrue(after.json()["input_revision_changed"])
+        self.assertEqual(after.json()["to"]["latest_input_revision"], 2)
+        again = self.client.get(self.comparison_url(2, 4), headers=self.headers())
+        self.assertEqual(again.status_code, 200)
+        self.assertEqual(again.json()["to"]["evidence_fingerprint_sha256"],
+                         data["to"]["evidence_fingerprint_sha256"])
+        for forbidden in ("DEMO-ANSWER-A", "DEMO-OWNER-EVIDENCE",
+                          "DEMO-REASON-A", "DEMO-EVIDENCE-A", "1"*64,
+                          "2"*64, "4"*64, "DEMO-RUN-1"):
+            self.assertNotIn(forbidden, compare.text)
+        self.assertEqual(compare.headers["cache-control"], "no-store")
+        self.assertEqual(len([
+            e for e in self.ledger.audit_snapshot()
+            if e.access_mode == "AGRONOMY_SYNTHETIC_EVIDENCE_COMPARISON"
+        ]), 3)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_case_local_comparison_tracks_are_independent(self):
+        self.seed_input()
+        for i, track in enumerate(TRACKS):
+            self.assertEqual(self.post(
+                track=track, action=f"DEMO-TRACK-{i}",
+            ).status_code, 201)
+        comparison = self.client.get(
+            self.comparison_url(1, 4), headers=self.headers())
+        self.assertEqual(comparison.status_code, 200, comparison.text)
+        self.assertEqual([x["added_question_count"]
+                          for x in comparison.json()["track_deltas"]],
+                         [1, 1, 1])
+        self.assertTrue(all(
+            x["review_outcome"] == "NOT_REVIEWED"
+            and x["eligible_for_operational_reuse"] is False
+            for x in comparison.json()["track_deltas"]
+        ))
+
+    def test_case_local_comparison_rejects_unauthorized_invalid_and_tampered(self):
+        self.seed_input()
+        self.post()
+        endpoint = self.comparison_url(1, 2)
+        self.assertEqual(self.client.get(endpoint).status_code, 401)
+        self.assertEqual(self.client.get(
+            endpoint, headers=self.headers(OWNER, ("household",))
+        ).status_code, 404)
+        self.assertEqual(self.client.get(
+            endpoint.replace("DEMO-D-1", "DEMO-E-1"),
+            headers=self.headers()
+        ).status_code, 404)
+        self.active = False
+        self.assertEqual(self.client.get(
+            endpoint, headers=self.headers()).status_code, 404)
+        self.active = True
+        for a, b, expected in [(1,1,409),(2,1,409),(1,999,409),(0,2,422)]:
+            with self.subTest(a=a,b=b):
+                self.assertEqual(self.client.get(
+                    self.comparison_url(a,b), headers=self.headers()
+                ).status_code, expected)
+        self.assertEqual(self.client.post(
+            endpoint, json={}, headers=self.headers()
+        ).status_code, 405)
+        app = TestClient(create_app(self.config))
+        self.assertEqual(app.get(
+            endpoint, headers=self.headers()
+        ).status_code, 404)
+        self.assertEqual(app.get(
+            self.comparison_timeline_url(),
+            headers=self.headers(),
+        ).status_code, 404)
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER expert_question_no_update")
+            db.execute(
+                "UPDATE expert_review_question SET evidence_ref='DEMO-FORGED'"
+            )
+        bad = self.client.get(endpoint, headers=self.headers())
+        self.assertEqual(bad.status_code, 503)
+        self.assertNotIn("DEMO-FORGED", bad.text)
+
     def evidence_index_url(self):
         return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-index"
 

@@ -25,6 +25,10 @@ from .internal_expert_binding_drift import project_synthetic_review_binding_drif
 from .internal_expert_review_handoff import (
     prepare_synthetic_review_handoff, SOURCE_NONE, SOURCE_PINNED,
 )
+from .internal_expert_evidence_comparison import (
+    verified_synthetic_evidence_events, synthetic_evidence_timeline,
+    compare_synthetic_evidence_revisions, EvidenceRevisionConflict,
+)
 from .expert_review_questions_sqlite import (
     SqliteSyntheticExpertQuestionLedger, ReviewQuestionConflict, TRACKS,
 )
@@ -820,6 +824,88 @@ class SyntheticAgronomyWorkspace:
                 actor=actor, mode="AGRONOMY_SYNTHETIC_REVIEW_HANDOFF_FINGERPRINT",
             )
             return result
+
+
+    def _read_assigned_synthetic_evidence_comparison(
+        self, ref: str, principal: Principal, *,
+        from_revision: int | None, to_revision: int | None,
+    ) -> dict | None:
+        """One authorized read; no reconstructing historical AI fixtures."""
+        if not isinstance(self.ledger, SqliteSyntheticExpertQuestionLedger):
+            raise ValueError("synthetic review ledger not mounted")
+        if not _synthetic_ref(ref):
+            return None
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            record = self.ledger._catalogue.get(("DOMESTIC", ref))
+            actor = self._actor(principal)
+            if record is None or actor is None:
+                return None
+            if not self._allowed(actor, ref, record.version):
+                return None
+            inputs = list(db.execute(
+                "SELECT revision,manifest_digest,receipt_digest,audit_sequence "
+                "FROM household_input_revision WHERE ref=? ORDER BY audit_sequence",
+                (ref,),
+            ))
+            questions = list(db.execute(
+                "SELECT track,revision,input_revision,input_digest,"
+                "science_digest,proposal_digest,receipt,audit_sequence "
+                "FROM expert_review_question WHERE ref=? ORDER BY audit_sequence",
+                (ref,),
+            ))
+            responses = list(db.execute(
+                "SELECT track,question_revision,response_receipt,audit_sequence "
+                "FROM household_question_response WHERE ref=? ORDER BY audit_sequence",
+                (ref,),
+            ))
+            sightings = list(db.execute(
+                "SELECT track,question_revision,inspection_receipt,audit_sequence "
+                "FROM expert_response_receipt_inspection "
+                "WHERE ref=? ORDER BY audit_sequence", (ref,),
+            ))
+            try:
+                events = verified_synthetic_evidence_events(
+                    input_rows=inputs, question_rows=questions,
+                    response_rows=responses, sighting_rows=sightings,
+                )
+                if from_revision is None and to_revision is None:
+                    result = synthetic_evidence_timeline(
+                        case_ref=ref, case_version=record.version, events=events)
+                    mode = "AGRONOMY_SYNTHETIC_EVIDENCE_TIMELINE"
+                else:
+                    result = compare_synthetic_evidence_revisions(
+                        case_ref=ref, case_version=record.version, events=events,
+                        from_revision=from_revision, to_revision=to_revision,
+                    )
+                    mode = "AGRONOMY_SYNTHETIC_EVIDENCE_COMPARISON"
+            except EvidenceRevisionConflict:
+                raise
+            except (ValueError, KeyError, TypeError) as exc:
+                raise LedgerIntegrityError(
+                    "untrusted synthetic historical comparison input"
+                ) from exc
+            self.ledger._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=actor, mode=mode,
+            )
+            return result
+
+    def read_assigned_synthetic_evidence_timeline(
+        self, ref: str, principal: Principal,
+    ) -> dict | None:
+        return self._read_assigned_synthetic_evidence_comparison(
+            ref, principal, from_revision=None, to_revision=None,
+        )
+
+    def compare_assigned_synthetic_evidence_revisions(
+        self, ref: str, principal: Principal, *,
+        from_revision: int, to_revision: int,
+    ) -> dict | None:
+        return self._read_assigned_synthetic_evidence_comparison(
+            ref, principal,
+            from_revision=from_revision, to_revision=to_revision,
+        )
 
     def read_assigned_synthetic_evidence_index(
         self, ref: str, principal: Principal,

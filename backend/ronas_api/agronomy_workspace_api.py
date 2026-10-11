@@ -15,6 +15,7 @@ from .grant_ledger_sqlite import LedgerIntegrityError
 from .expert_review_questions_sqlite import (
     SqliteSyntheticExpertQuestionLedger, ReviewQuestionConflict,
 )
+from .internal_expert_evidence_comparison import EvidenceRevisionConflict
 
 
 class SyntheticQuestionCommand(BaseModel):
@@ -111,6 +112,48 @@ def build_agronomy_workspace_router(
                 result = workspace.read_assigned_synthetic_review_handoff_fingerprint(
                     ref, p,
                 )
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return result
+
+
+        @router.get(
+            "/api/v1/agronomy/assigned-drafts/{ref}/review-evidence-timeline",
+        )
+        def assigned_evidence_timeline(
+            ref: str, p: Principal = Depends(verified_principal),
+        ) -> dict:
+            try:
+                result = workspace.read_assigned_synthetic_evidence_timeline(ref, p)
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return result
+
+        @router.get(
+            "/api/v1/agronomy/assigned-drafts/{ref}/review-evidence-compare",
+        )
+        def assigned_evidence_comparison(
+            ref: str,
+            from_revision: int = Query(ge=1),
+            to_revision: int = Query(ge=1),
+            p: Principal = Depends(verified_principal),
+        ) -> dict:
+            try:
+                result = workspace.compare_assigned_synthetic_evidence_revisions(
+                    ref, p, from_revision=from_revision, to_revision=to_revision,
+                )
+            except EvidenceRevisionConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_EVIDENCE_REVISION_CONFLICT",
+                ) from exc
             except (LedgerIntegrityError, sqlite3.Error) as exc:
                 raise HTTPException(
                     503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",

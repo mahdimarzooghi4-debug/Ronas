@@ -190,6 +190,16 @@ def build_business_gate_evidence_router(
             "items": [dossier_summary(d) for d in available],
         }
 
+    @router.get("/api/v1/admin/finance/source-arithmetic")
+    def finance_source_review(p: Principal = Depends(verified_principal)) -> dict:
+        if not isinstance(p, Principal) or "finance" not in p.roles:
+            raise HTTPException(404, detail="SOURCE_REVIEW_NOT_FOUND")
+        # Import here: share the existing fail-closed Business-source error
+        # type without a module-import cycle.
+        from .financial_source_arithmetic import source_arithmetic
+        verify_pinned_business_sources()
+        return source_arithmetic()
+
     @router.get("/api/v1/admin/gate-evidence/{domain}")
     def gate_detail(domain: str, p: Principal = Depends(verified_principal)) -> dict:
         allowed = next(

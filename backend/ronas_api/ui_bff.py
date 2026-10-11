@@ -25,6 +25,7 @@ from .export_research_question import (
     ExportResearchQuestionConflict, valid_question_refs,
 )
 from .oidc_browser import BrowserOIDC
+from .financial_source_arithmetic import source_arithmetic
 from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
                                      visible_dossiers, verify_pinned_business_sources,
                                      BusinessSourceSnapshotError, SOURCE_INTEGRITY_STATE)
@@ -2002,6 +2003,46 @@ def build_authenticated_ui_router(
         return page("مدیریت روناس — وضعیت نسخه‌بسته شواهد گیت",
                     body, logged_in=True)
 
+    @router.get("/admin/finance/source-arithmetic")
+    def finance_source_review_page(
+        sid: str | None = Cookie(default=None, alias=cookie_name),
+    ) -> HTMLResponse:
+        try:
+            session = flow.session(sid)
+        except InvalidToken:
+            raise HTTPException(401, detail="INVALID_SESSION") from None
+        if "finance" not in session.roles:
+            raise HTTPException(404, detail="SOURCE_REVIEW_NOT_FOUND")
+        verify_pinned_business_sources()
+        report = source_arithmetic()
+        body = (
+            '<article class="panel"><h2>بررسی عددی منبع FIN-002 '
+            '(صرفاً سند تاریخی)</h2>'
+            '<p>همه مقادیر برحسب میلیون تومان و نقلِ طرح‌نامه‌اند؛ '
+            'بودجه، هزینه واقعی، وجه نقد یا سرمایه مورد تأیید نیستند.</p>'
+            '<ul><li>سرمایه اولیه نقل‌شده: '
+            + str(report["reported_initial_capital"]) + '</li>'
+            '<li>تجهیزات: ' + str(report["reported_equipment"]) + '</li>'
+            '<li>پیش از بهره‌برداری: '
+            + str(report["reported_pre_operating"]) + '</li>'
+            '<li>جمع دو مؤلفه: '
+            + str(report["arithmetic_component_sum"]) + '</li>'
+            '<li>اختلاف با رقم اولیه: '
+            + str(report["arithmetic_unexplained_difference"]) + '</li>'
+            '<li>هزینه عملیاتی سال نخست در منبع: '
+            + str(report["reported_year_one_operating_cost"]) + '</li></ul>'
+            '<p>برابری اختلاف و هزینه سال نخست یک مشاهده عددی است؛ '
+            'نوع سرمایه/هزینه، خطا یا دوباره‌شماری را اثبات نمی‌کند.</p>'
+            '<p>FIN-001 تا FIN-007 و گیت مالی #4 باز هستند. '
+            'هیچ نرخ، بودجه اصلاحی، پرداخت یا تسویه فعال نیست.</p>'
+            '<p>هش نسخه فایل مالی: <code>'
+            + escape(report["source_blob_sha"]) + '</code></p>'
+            '<p><a href="/admin/gate-evidence/FINANCE">'
+            'شواهد تصمیم مالی</a> · <a href="/admin">'
+            'بازگشت به مدیریت روناس</a></p></article>'
+        )
+        return page("روناس — تطبیق ارقام منبع مالی", body, logged_in=True)
+
     @router.get("/admin")
     def admin_ui(
         sid: str | None = Cookie(default=None, alias=cookie_name),
@@ -2071,6 +2112,12 @@ def build_authenticated_ui_router(
             ) if gate_source_usable else
                 '<p>نسخه محلی اسناد شواهد معتبر نیست؛ '
                 'پیوندهای گیت موقتاً غیرفعال‌اند.</p>')
+            if role == "finance" and gate_source_usable:
+                gate_links += (
+                    '<p><a href="/admin/finance/source-arithmetic">'
+                    'ممیزی عددی نسخه‌بسته FIN-002 (بدون تصویب بودجه)'
+                    '</a></p>'
+                )
             cards.append('<article class="panel"><h2>' + escape(label) + '</h2><p>'
                          + escape(note) + '</p>' + worklist + gate_links
                          + '</article>')

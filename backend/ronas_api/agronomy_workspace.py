@@ -46,6 +46,10 @@ from .internal_specialist_review_context import (
     project_synthetic_specialist_review_context,
     enforce_synthetic_context_precondition,
 )
+from .internal_authority_revision_witness import (
+    SyntheticAuthorityWitness, validate_witness_vector,
+    compare_authority_vectors, versioned_context_fingerprint,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +80,15 @@ class SyntheticAgronomyWorkspace:
         ] | None = None,
         trusted_specialist_governance_snapshot: Callable[
             [], SyntheticSpecialistEvidenceRegistry
+        ] | None = None,
+        trusted_science_authority_version: Callable[
+            [str, str, int], SyntheticAuthorityWitness
+        ] | None = None,
+        trusted_specialist_authority_version: Callable[
+            [str, str, int], SyntheticAuthorityWitness
+        ] | None = None,
+        trusted_assignment_authority_version: Callable[
+            [str, str, int], SyntheticAuthorityWitness
         ] | None = None,
     ) -> None:
         if (not isinstance(ledger, SqliteSyntheticHumanReviewLedger)
@@ -143,6 +156,14 @@ class SyntheticAgronomyWorkspace:
         self._trusted_specialist_governance_snapshot = (
             trusted_specialist_governance_snapshot
         )
+        authority_versions = (
+            trusted_science_authority_version,
+            trusted_specialist_authority_version,
+            trusted_assignment_authority_version,
+        )
+        if any(x is not None and not callable(x) for x in authority_versions):
+            raise ValueError("independent authority revision callback invalid")
+        self._authority_version_callbacks = authority_versions
         self._scientific_basis_fixtures = bases
         self._trusted_scientific_sources = trusted_scientific_source_snapshot
         self._proposal_fixtures = catalog
@@ -150,6 +171,19 @@ class SyntheticAgronomyWorkspace:
         self.ledger = ledger
         self._assignments = bound
         self._live_authority = trusted_assignment_active
+
+    def _read_independent_authority_revisions(self,actor,ref,version):
+        callbacks=self._authority_version_callbacks
+        if not all(callable(c) for c in callbacks):
+            raise LedgerIntegrityError("versioned authority callbacks not configured")
+        try:
+            vector=tuple(c(actor,ref,version) for c in callbacks)
+            return validate_witness_vector(
+                vector,subject=actor,case_ref=ref,case_version=version)
+        except Exception as exc:
+            raise LedgerIntegrityError(
+                "untrusted independent authority generations"
+            ) from exc
 
     @staticmethod
     def _actor(principal: Principal) -> str | None:
@@ -1026,6 +1060,7 @@ class SyntheticAgronomyWorkspace:
         self, ref: str, principal: Principal, *,
         observed_specialist_revision: int,
         expected_context_fingerprint: str | None = None,
+        require_versioned_authorities: bool = False,
     ) -> dict | None:
         """One verified/audited current context across independent domains.
 
@@ -1045,6 +1080,10 @@ class SyntheticAgronomyWorkspace:
                 return None
             if not self._allowed(actor, ref, record.version):
                 return None
+            revisions_before = (
+                self._read_independent_authority_revisions(actor,ref,record.version)
+                if require_versioned_authorities else None
+            )
             current_input = self.ledger._input_snapshot_from_verified_transaction(
                 db, ref, record.version,
             )
@@ -1209,10 +1248,36 @@ class SyntheticAgronomyWorkspace:
                 raise LedgerIntegrityError(
                     "live specialist case assignment changed during read"
                 )
-            enforce_synthetic_context_precondition(
-                current_fingerprint=result["synthetic_context_fingerprint_sha256"],
-                expected_fingerprint=expected_context_fingerprint,
-            )
+            if require_versioned_authorities:
+                revisions_after=self._read_independent_authority_revisions(
+                    actor,ref,record.version)
+                try:
+                    compare_authority_vectors(
+                        revisions_before,revisions_after,
+                        subject=actor,case_ref=ref,case_version=record.version)
+                    protected_fingerprint=versioned_context_fingerprint(
+                        context_fingerprint=result[
+                            "synthetic_context_fingerprint_sha256"],
+                        vector=revisions_after,subject=actor,
+                        case_ref=ref,case_version=record.version)
+                except ValueError as exc:
+                    raise LedgerIntegrityError(
+                        "in-flight authority ABA or revision drift"
+                    ) from exc
+                enforce_synthetic_context_precondition(
+                    current_fingerprint=protected_fingerprint,
+                    expected_fingerprint=expected_context_fingerprint)
+                result["synthetic_versioned_context_fingerprint_sha256"]=(
+                    protected_fingerprint)
+                result["authority_witness_semantics"]=(
+                    "EXPLICIT_UNATTESTED_MONOTONIC_PROVIDER_GENERATIONS")
+                result["authority_generation_values_exposed"]=False
+                result["cross_provider_atomicity_verified"]=False
+            else:
+                enforce_synthetic_context_precondition(
+                    current_fingerprint=result[
+                        "synthetic_context_fingerprint_sha256"],
+                    expected_fingerprint=expected_context_fingerprint)
             self.ledger._append(
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                 actor=actor, mode="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT",

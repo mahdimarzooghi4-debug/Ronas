@@ -27,6 +27,10 @@ from .export_research_question import (
 from .oidc_browser import BrowserOIDC
 from .financial_source_arithmetic import source_arithmetic
 from .operational_readiness import readiness, verify_decision_sources
+from .case_journey_guidance import (
+    JourneyEvidenceMismatch, owner_next_action, expert_next_action,
+    export_next_action,
+)
 from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
                                      visible_dossiers, verify_pinned_business_sources,
                                      BusinessSourceSnapshotError, SOURCE_INTEGRITY_STATE)
@@ -538,6 +542,51 @@ def build_authenticated_ui_router(
             )
             if data is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            expert_journey_html = ""
+            if isinstance(agronomy_workspace.ledger,
+                          SqliteSyntheticExpertQuestionLedger):
+                who = Principal(session.subject, session.roles)
+                history = agronomy_workspace.read_assigned_synthetic_review_questions(
+                    ref, who,
+                )
+                if history is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                try:
+                    proposal = agronomy_workspace.read_assigned_proposal_structure(
+                        ref, who,
+                    )
+                except LedgerIntegrityError:
+                    # A stale proposal is not usable for current questions.
+                    # The action route still independently checks it.
+                    proposal = None
+                try:
+                    next_step = expert_next_action(history, proposal)
+                except JourneyEvidenceMismatch as exc:
+                    raise HTTPException(
+                        503, detail="SYNTHETIC_JOURNEY_UNAVAILABLE",
+                    ) from exc
+                guidance = {
+                    "SOURCE_OR_INPUT_CHANGED_HISTORY_ONLY":
+                        "منبع یا پیشنهاد معتبر جاری موجود نیست؛ فقط تاریخچه قابل مشاهده است",
+                    "REQUEST_MISSING_EVIDENCE_DEMO":
+                        "پرسش ساختاری آزمایشی درباره داده قابل ثبت است",
+                    "WAIT_FOR_HOUSEHOLD_RESPONSE_DEMO":
+                        "پرسش ثبت شده؛ دریافت پاسخ مرجعی خانوار در انتظار است",
+                    "INSPECT_RESPONSE_RECEIPT_DEMO":
+                        "رسید پاسخ خانوار قابل مشاهده است؛ نه محتوای خصوصی آن",
+                    "RECEIPT_OBSERVED_NOT_REVIEWED":
+                        "رسید مشاهده شد؛ هیچ بررسی علمی یا برنامه‌ای تصویب نشده است",
+                }[next_step]
+                expert_journey_html = (
+                    '<nav aria-label="اقدام بعدی کارشناس">'
+                    '<h3>مرحله بعدی در همین پرونده</h3><p>'
+                    + escape(guidance) + '</p>'
+                    '<p><a href="/agronomy/assigned-drafts/'
+                    + quote(ref) + '/review-questions#expert-demo-actions">'
+                    'مشاهده پرسش‌ها و اقدامات مجاز</a></p>'
+                    '<p>تخصیص پرونده مجوز تخصصی یا تأیید برنامه کشت نیست.</p>'
+                    '</nav>'
+                )
             body = (
                 '<article class="panel"><h2>پیش‌نمای پرونده خانوار (فقط DEMO): '
                 + escape(data["ref"]) + '</h2>'
@@ -546,6 +595,7 @@ def build_authenticated_ui_router(
                 + readonly_domestic_preparation_html(
                     data["cultivation_preparation"]
                 )
+                + expert_journey_html
                 + '<p>هیچ پیشنهاد محصول یا برنامه آبیاری '
                 'تولید نشده است.</p>'
                 '<p>تخصیص فنی کارشناس، صلاحیت حرفه‌ای را احراز نمی‌کند؛ '
@@ -812,7 +862,7 @@ def build_authenticated_ui_router(
                             '(نه بررسی علمی)</button></form>'
                         )
             form_section = (
-                '<section aria-label="گردش آزمایشی پرسش متخصص">'
+                '<section id="expert-demo-actions" aria-label="گردش آزمایشی پرسش متخصص">'
                 '<h3>ثبت پرسش ساختاری آزمایشی</h3>'
                 '<p>فقط شناسه‌های ثابت نمونه ثبت می‌شوند؛ '
                 'هیچ پرسش واقعی، سند تخصصی یا نتیجه ارزیابی دریافت نمی‌شود.</p>'
@@ -1234,7 +1284,7 @@ def build_authenticated_ui_router(
             if result is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
             demo_form = (
-                '<section aria-label="ثبت اصلاح صرفاً نمایشی">'
+                '<section id="domestic-demo-correction" aria-label="ثبت اصلاح صرفاً نمایشی">'
                 '<h3>ثبت اصلاح نسخه DEMO</h3>'
                 '<p>فقط یک سناریوی از پیش تعریف‌شده ثبت می‌شود. '
                 'هیچ اطلاعات کشت، هویت یا رضایت واقعی دریافت نمی‌شود.</p>'
@@ -1370,7 +1420,7 @@ def build_authenticated_ui_router(
                     and active_question["response_state"] == "MISSING_RESPONSE"
                     and active_question["bound_input_revision"] > 0):
                 reply_form = (
-                    '<section aria-label="پاسخ ساختاری آزمایشی خانوار">'
+                    '<section id="owner-demo-reply" aria-label="پاسخ ساختاری آزمایشی خانوار">'
                     '<h3>ثبت مرجع پاسخ DEMO</h3>'
                     '<p>پاسخ واقعی یا اطلاعات شخصی دریافت نمی‌شود. '
                     'این عمل تأیید متخصص نیست.</p>'
@@ -1498,12 +1548,63 @@ def build_authenticated_ui_router(
                     "مرجع پاسخ انسانی ثبت شده؛ این وضعیت تأیید پرونده نیست.",
             }
             state = states[result["technical_review_state"]]
+            journey_html = ""
+            if isinstance(household_input_ledger,
+                          SqliteSyntheticHouseholdInputLedger):
+                input_info = household_input_ledger.read_owned_input_revisions(
+                    ref, principal,
+                )
+                question_info = (
+                    household_input_ledger.read_owned_question_responses(
+                        ref, principal,
+                    )
+                    if isinstance(household_input_ledger,
+                                  SqliteSyntheticExpertQuestionLedger)
+                    else None
+                )
+                if (input_info is None or
+                        (isinstance(household_input_ledger,
+                                    SqliteSyntheticExpertQuestionLedger)
+                         and question_info is None)):
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                try:
+                    next_step = owner_next_action(input_info, question_info)
+                except JourneyEvidenceMismatch as exc:
+                    raise HTTPException(
+                        503, detail="SYNTHETIC_JOURNEY_UNAVAILABLE",
+                    ) from exc
+                next_page = (
+                    "/my-drafts/" + quote(ref) +
+                    ("/question-responses#owner-demo-reply"
+                     if next_step == "RESPOND_TO_EXPERT_QUESTION_DEMO" else
+                     "/question-responses"
+                     if next_step == "RESPONSE_RECORDED_WAIT_FOR_EXPERT_DEMO" else
+                     "/input-revisions#domestic-demo-correction")
+                )
+                guidance = {
+                    "RESPOND_TO_EXPERT_QUESTION_DEMO":
+                        "پرسش ساختاری جاری منتظر پاسخ مرجعی نمونه است",
+                    "RESPONSE_RECORDED_WAIT_FOR_EXPERT_DEMO":
+                        "پاسخ ثبت شده؛ بررسی و تأیید تخصصی هنوز انجام نشده است",
+                    "PREPARE_OR_REVISE_INPUT_DEMO":
+                        "نسخه اطلاعات آزمایشی را بررسی یا اصلاح کنید",
+                }[next_step]
+                journey_html = (
+                    '<nav aria-label="اقدام بعدی پرونده خانوار">'
+                    '<h3>اقدام بعدی در پرونده</h3><p>'
+                    + escape(guidance) + '</p><p><a href="'
+                    + escape(next_page, quote=True) +
+                    '">رفتن به مرحله مرتبط</a></p>'
+                    '<p>این راهنما پیشنهاد ناوبری است؛ '
+                    'رضایت، طرح کشت یا تأیید علمی نیست.</p></nav>'
+                )
             body = (
                 '<article class="panel"><h2>پرونده ساختگی '
                 + escape(result["ref"]) + '</h2>'
                 '<p>نسخه پرونده: ' + str(result["version"]) + '</p>'
                 '<p>وضعیت پرونده: DRAFT_ONLY</p>'
                 '<p>پیگیری فنی: ' + escape(state) + '</p>'
+                + journey_html
                 + readonly_domestic_preparation_html(
                     result["cultivation_preparation"]
                 )
@@ -1701,6 +1802,26 @@ def build_authenticated_ui_router(
             if data is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
             question = data["local_test_draft_question"]
+            try:
+                export_step = export_next_action(data)
+            except JourneyEvidenceMismatch as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_JOURNEY_UNAVAILABLE",
+                ) from exc
+            next_action = (
+                "پرسش محصول–مقصد صرفاً آزمایشی هنوز تعریف نشده است"
+                if export_step == "DEFINE_INITIAL_RESEARCH_QUESTION_DEMO"
+                else "پرسش نسخه‌دار موجود است؛ حقوق منبع و گزارش هنوز معتبر نیستند"
+            )
+            export_journey_html = (
+                '<nav aria-label="اقدام بعدی پژوهش صادرات">'
+                '<h3>اقدام بعدی پرونده پژوهش</h3><p>'
+                + escape(next_action) + '</p>'
+                '<p><a href="#export-demo-question-form">'
+                'رفتن به تعریف یا اصلاح پرسش نمونه</a></p>'
+                '<p>ثبت پرسش، مجوز منبع، قرارداد یا گزارش صادرات نیست.</p>'
+                '</nav>'
+            )
             demo_question = (
                 '<h3>پرسش آزمایشی ثبت‌شده در همین پرونده</h3>'
                 '<p>نسخه پرسش ' + str(question["question_revision"])
@@ -1730,7 +1851,7 @@ def build_authenticated_ui_router(
                 question["question_revision"] if question is not None else 0
             )
             demo_form = (
-                '<section aria-label="ویرایش پرسش آزمایشی صادرات">'
+                '<section id="export-demo-question-form" aria-label="ویرایش پرسش آزمایشی صادرات">'
                 '<h3>تعریف یا اصلاح پرسش DEMO</h3>'
                 '<p>صرفاً شناسه‌های نمونه؛ هیچ محصول، کشور یا مأخذ واقعی '
                 'در این صفحه ثبت یا تأیید نمی‌شود.</p>'
@@ -1784,6 +1905,7 @@ def build_authenticated_ui_router(
                 '<p>محصول: تعیین نشده · مقصد: تعیین نشده '
                 '· HS: تعیین نشده</p>'
                 '<p>محصول و مقصد واقعی همچنان تعیین و اعتبارسنجی نشده‌اند.</p>'
+                + export_journey_html
                 + demo_question
                 + history_section
                 + demo_form

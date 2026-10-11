@@ -87,6 +87,15 @@ def validate_business_review(root: Path | None = None) -> dict:
     domestic = sources[BUSINESS_SOURCES[2]][0]
     exporting = sources[BUSINESS_SOURCES[3]][0]
     financing = sources[BUSINESS_SOURCES[0]][0]
+    # All source bytes, not just one FIN-002 paragraph, must be the exact
+    # already-reviewed Git blob. Future changes require explicit re-review.
+    finance_raw = financing.encode("utf-8")
+    finance_git_sha = hashlib.sha1(
+        b"blob " + str(len(finance_raw)).encode("ascii") + b"\0"
+        + finance_raw
+    ).hexdigest()
+    if finance_git_sha != "93b1c5073917fc095ae341394a90b09d7c02fd1f":
+        raise ReviewContractError("finance source file version changed")
     packet = sources[BUSINESS_SOURCES[5]][0]
     finance_packet = sources[BUSINESS_SOURCES[6]][0]
     if not ("DRAFT" in domestic[:500] and "NOT APPROVED" in domestic[:500]
@@ -136,6 +145,11 @@ def validate_business_review(root: Path | None = None) -> dict:
         raise ReviewContractError("FIN-002 source figures were altered")
     if not all(x in finance_packet for x in source_numbers):
         raise ReviewContractError("FIN-002 review figures diverged from source")
+    if not re.search(
+        r"^\|\s*تفاوت سرمایه اعلامی و جمع ردیف‌ها\s*\|\s*\*\*۱۱٬۴۰۵\*\*\s*\|",
+        finance_packet, re.MULTILINE,
+    ):
+        raise ReviewContractError("FIN-002 review difference row changed")
     if (6760 + 750 != 7510
             or 18915 - 7510 != 11405):
         raise ReviewContractError("source arithmetic not reproducible")

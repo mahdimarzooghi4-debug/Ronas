@@ -19,6 +19,8 @@ def build_domestic_partner_router(
 
     @router.get("/api/v1/domestic-partners/my-preparation")
     def my_preparation(p: Principal = Depends(verified_principal)) -> dict:
+        if not any(role in p.roles for role in ROLES):
+            raise HTTPException(status_code=404, detail="PREVIEW_NOT_FOUND")
         try:
             return workspace.own_preparation_overview(p)
         except SyntheticDomesticPartnerUnavailable as exc:

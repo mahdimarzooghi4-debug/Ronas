@@ -6,7 +6,8 @@ import tempfile
 import unittest
 
 from scripts.check_core_business_review import (
-    BUSINESS_SOURCES, MANIFEST, ReviewContractError,
+    BUSINESS_SOURCES, MANIFEST, SOURCE_SCREEN_REGISTRY, SOURCE_SCREEN_DOC,
+    ReviewContractError,
     validate_business_review,
 )
 
@@ -18,7 +19,8 @@ class CoreBusinessReviewTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        for name in (*BUSINESS_SOURCES, MANIFEST):
+        for name in (*BUSINESS_SOURCES, MANIFEST,
+                     SOURCE_SCREEN_REGISTRY, SOURCE_SCREEN_DOC):
             p = self.root / name
             p.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(BASE / name, p)

@@ -82,7 +82,8 @@ class SyntheticBindingDriftProjectionTests(unittest.TestCase):
 
     def test_proposal_or_science_pointer_drift_never_approve(self):
         for args, expected in [
-            ({"current_proposal": None}, "NO_CURRENT_SYNTHETIC_PROPOSAL_FIXTURE"),
+            ({"current_proposal": None, "source_pointer_state": NONE},
+             "NO_CURRENT_SYNTHETIC_PROPOSAL_FIXTURE"),
             ({"current_proposal": proposal(input_rev=2)},
              "CURRENT_PROPOSAL_BOUND_TO_DIFFERENT_INPUT"),
             ({"current_proposal": proposal(plan="7" * 64)},

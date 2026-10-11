@@ -12,6 +12,8 @@
 
 **پرونده تصمیم‌های اجرایی برای رفع گیت:** [75 — Domestic / Export / Finance، شواهد و اختیار لازم](75-operational-three-gate-decision-docket.md)؛ [76 — ممیزی عددی FIN-002 و مدارک واقعی Finance](76-finance-source-arithmetic-and-evidence.md). هر دو DRAFT هستند، نه مصوبه یا اجازه ورود به داده واقعی.
 
+**کنترل خودکار پیش‌نویس Business:** [مانيفست سه گیت](core-three-gate-review-controls.json) و `python scripts/check_core_business_review.py --json` همراه با تست‌های سناریوی منفی در `scripts/tests`. این CI فقط سازگاری اسناد و شواهد نقل‌شده را بررسی می‌کند؛ حتی سبز بودن آن هیچ گیتی را تصویب نمی‌کند.
+
 ## ترتیب مطالعه
 
 1. [Business Foundation](00-business-foundation.md): چشم‌انداز، دامنه، نقش‌ها، قابلیت‌های مشترک و مرز دو موتور.

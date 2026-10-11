@@ -118,7 +118,7 @@ def validate_business_review(root: Path | None = None) -> dict:
         raise ReviewContractError("contract boundaries must remain independent")
     for assertion in (
         "RON-DEC-009", "RON-DEC-010", "RON-DEC-011",
-        "RON-DEC-015", "RON-DEC-021", "NOT ADMITTED",
+        "RON-DEC-015", "RON-DEC-015..021", "NOT ADMITTED",
     ):
         if assertion not in domestic:
             raise ReviewContractError("approved Domestic invariant/source missing")
@@ -141,7 +141,7 @@ def validate_business_review(root: Path | None = None) -> dict:
         raise ReviewContractError("source arithmetic not reproducible")
     return {
         "status": "DRAFT_REVIEW_CONTRACT_CHECKED_NOT_GATE_PASSED",
-        "gate_states_at_source": GATES | {},
+        "gate_states_at_source": {name: "OPEN" for name in GATES},
         "all_gates_open_at_source": True,
         "business_admission_authorized": False,
         "real_data_processing_authorized": False,

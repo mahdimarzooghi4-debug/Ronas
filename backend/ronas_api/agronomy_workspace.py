@@ -19,6 +19,7 @@ from .internal_cultivation_plan_contract import (
 )
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES
 from .internal_expert_review_preparation import project_expert_review_preparation
+from .internal_expert_evidence_index import project_synthetic_review_evidence_index
 from .expert_review_questions_sqlite import (
     SqliteSyntheticExpertQuestionLedger, ReviewQuestionConflict, TRACKS,
 )
@@ -538,6 +539,57 @@ class SyntheticAgronomyWorkspace:
                 science_digest=proposal.scientific_basis_manifest_digest,
                 proposal_digest=proposal.proposal_content_digest,
             )
+
+
+    def read_assigned_synthetic_evidence_index(
+        self, ref: str, principal: Principal,
+    ) -> dict | None:
+        """Summarize audited synthetic evidence within one verified SQL read.
+
+        No proposal/science currentness or professional readiness is inferred.
+        Historical sightings stay historical when inputs change.
+        """
+        if not isinstance(self.ledger, SqliteSyntheticExpertQuestionLedger):
+            raise ValueError("synthetic question journal not installed")
+        if not _synthetic_ref(ref):
+            return None
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            record = self.ledger._catalogue.get(("DOMESTIC", ref))
+            actor = self._actor(principal)
+            if record is None or actor is None:
+                return None
+            if not self._allowed(actor, ref, record.version):
+                return None
+            snapshot = self.ledger._input_snapshot_from_verified_transaction(
+                db, ref, record.version,
+            )
+            questions = self.ledger._history(db, ref)
+            responses = set(db.execute(
+                "SELECT track,question_revision FROM household_question_response "
+                "WHERE ref=?", (ref,),
+            ))
+            inspections = set(db.execute(
+                "SELECT track,question_revision "
+                "FROM expert_response_receipt_inspection WHERE ref=?",
+                (ref,),
+            ))
+            try:
+                result = project_synthetic_review_evidence_index(
+                    case_ref=ref, case_version=record.version,
+                    input_revision=snapshot[0] if snapshot else None,
+                    questions=questions, responses=responses,
+                    inspections=inspections,
+                )
+            except (ValueError, KeyError, TypeError) as exc:
+                raise LedgerIntegrityError(
+                    "untrusted synthetic evidence index input"
+                ) from exc
+            self.ledger._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=actor, mode="AGRONOMY_SYNTHETIC_EVIDENCE_INDEX",
+            )
+            return result
 
     def read_assigned_synthetic_review_questions(
         self, ref: str, principal: Principal,

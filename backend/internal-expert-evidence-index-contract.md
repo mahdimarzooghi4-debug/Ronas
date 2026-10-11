@@ -1,0 +1,17 @@
+# Ronas — assigned expert synthetic evidence index (LOCAL/TEST)
+
+**Status:** Draft PR #9, explicitly opt-in, read-only and synthetic. This is a history summary, **not** scientific, legal, professional or business approval. Domestic Gate #2, Export #3 and Finance #4 are OPEN. Draft Business candidate D1-REV-01..04 is not admitted.
+
+## Contract
+
+`GET /api/v1/agronomy/assigned-drafts/{ref}/review-evidence-index` is exposed only when the **same** `SqliteSyntheticExpertQuestionLedger` is mounted. A signed `agronomy_expert` role **and current exact-case assignment** are required. The verified case/input/question/response/inspection ledger is read in **one SQL transaction** and one `READ_ALLOWED` event is appended with mode `AGRONOMY_SYNTHETIC_EVIDENCE_INDEX`. Invalid or revoked scope returns 404, invalid JWT 401, integrity failure sanitized 503. No mutation endpoint, real source retrieval, decision or real owner data.
+
+Each of the exactly three independent tracks, in fixed canonical order, exposes counts of historical questions, owner replies and specialist *receipt sightings*, and the latest question revision, bound input revision, whether its **number** matches the current owner input revision, and a strict non-authorizing evidence marker. Only `HOUSEHOLD_INPUT_ADEQUACY` can have a household response and receipt sighting. The other two tracks continue to be independently tracked questions, never inferred responses/approvals. No name, actor, owner response/evidence reference, question reason/evidence reference, source-rights pointer, model/proposal digest or note content is returned.
+
+Markers are `NO_SYNTHETIC_QUESTION`, `QUESTION_RECORDED_NOT_REVIEWED`, `SYNTHETIC_OWNER_RESPONSE_NOT_REVIEWED`, and `SYNTHETIC_RECEIPT_SEEN_NOT_REVIEWED`. They are **not** recommendations, tasks automatically ready to process, findings or final expert decisions. A later input correction makes a previous latest question input-version mismatch visible without altering its history. An input revision match **does not** establish current science/proposal source lineage, lawful use or input adequacy; `source_lineage_current_verified` and every consequential eligibility/approval flag remain **false**. Records from a past science/rights fixture remain historical even if external science authority changes.
+
+Fail-closed checks reject unexpected question tuple shapes, non-consecutive per-track revisions, unknown tracks, missing referenced question, non-input owner response, orphan inspection or inspection without prior owner response. The storage layer independently verifies linked append-only rows, receipts and matching audit events at every read/reopen; this index consumes that checked projection rather than creating a parallel ledger or new authorizations. Audit appending is transactional with the read; no duplicate write is introduced.
+
+## Non-authorization and future work
+
+Business candidate D1-REV-01..04, informed purpose-specific consent, actual source rights, scientific suitability, qualified Ronas specialists, AI runtime and independently reasoned case-specific decisions remain unapproved/missing. This index cannot promote the expert role into professional competence or issue acceptance/modification/rejection of a cultivation programme. SQLite remains LOCAL/TEST only, PR #1 and #9 stay Draft/Open/Unmerged; no Ready for Review, Merge, Stage/QA Gate/Release/Production.

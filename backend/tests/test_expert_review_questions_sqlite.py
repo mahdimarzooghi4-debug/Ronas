@@ -168,6 +168,96 @@ class LocalExpertQuestionTests(unittest.TestCase):
             ROOT, headers=self.headers(), json=self.command(**kwargs),
         )
 
+
+    def evidence_index_url(self):
+        return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-index"
+
+    def test_evidence_index_is_three_track_redacted_and_audited(self):
+        self.seed_input()
+        endpoint = self.evidence_index_url()
+        empty = self.client.get(endpoint, headers=self.headers())
+        self.assertEqual(empty.status_code, 200, empty.text)
+        self.assertEqual(len(empty.json()["tracks"]), 3)
+        self.assertEqual(empty.json()["tracks"][0]["latest_evidence_marker"],
+                         "NO_SYNTHETIC_QUESTION")
+        self.assertEqual(self.post().status_code, 201)
+        self.assertEqual(self.post(
+            track=TRACKS[1], action="DEMO-Q-SCI",
+        ).status_code, 201)
+        self.assertEqual(self.owner_reply().status_code, 201)
+        self.assertEqual(self.inspect().status_code, 201)
+        result = self.client.get(endpoint, headers=self.headers())
+        self.assertEqual(result.status_code, 200, result.text)
+        tracks = result.json()["tracks"]
+        self.assertEqual([x["track"] for x in tracks], list(TRACKS))
+        self.assertEqual([x["latest_evidence_marker"] for x in tracks], [
+            "SYNTHETIC_RECEIPT_SEEN_NOT_REVIEWED",
+            "QUESTION_RECORDED_NOT_REVIEWED", "NO_SYNTHETIC_QUESTION",
+        ])
+        self.assertTrue(tracks[0]["latest_question_matches_current_input_revision"])
+        self.assertTrue(all(x["review_decision_recorded"] is False for x in tracks))
+        self.assertTrue(all(x["source_lineage_current_verified"] is False
+                            for x in tracks))
+        for secret in (
+            "DEMO-ANSWER-A", "DEMO-OWNER-EVIDENCE",
+            "DEMO-REASON-A", "DEMO-EVIDENCE-A", "1" * 64,
+        ):
+            self.assertNotIn(secret, result.text)
+        self.assertFalse(result.json()["professional_qualification_verified"])
+        self.assertFalse(result.json()["plan_accepted"])
+        events = [x for x in self.ledger.audit_snapshot()
+                  if x.access_mode == "AGRONOMY_SYNTHETIC_EVIDENCE_INDEX"]
+        self.assertEqual(len(events), 2)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_evidence_index_preserves_history_after_input_correction(self):
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        self.inspect()
+        self.seed_input(revision=1, digest="7" * 64, action="DEMO-INPUT-B")
+        result = self.client.get(
+            self.evidence_index_url(), headers=self.headers())
+        self.assertEqual(result.status_code, 200, result.text)
+        lane = result.json()["tracks"][0]
+        self.assertEqual(lane["latest_evidence_marker"],
+                         "SYNTHETIC_RECEIPT_SEEN_NOT_REVIEWED")
+        self.assertEqual(lane["historical_receipt_sighting_count"], 1)
+        self.assertFalse(lane["latest_question_matches_current_input_revision"])
+        self.assertFalse(result.json()["scientific_basis_and_rights_verified"])
+
+    def test_evidence_index_requires_live_signed_assignment_and_no_post(self):
+        endpoint = self.evidence_index_url()
+        self.assertEqual(self.client.get(endpoint).status_code, 401)
+        self.assertEqual(self.client.get(
+            endpoint, headers=self.headers(OWNER, ("household",))
+        ).status_code, 404)
+        self.assertEqual(self.client.get(
+            endpoint.replace("DEMO-D-1", "DEMO-E-1"),
+            headers=self.headers(),
+        ).status_code, 404)
+        self.assertEqual(self.client.post(
+            endpoint, headers=self.headers(), json={},
+        ).status_code, 405)
+        self.active = False
+        self.assertEqual(self.client.get(
+            endpoint, headers=self.headers()).status_code, 404)
+        self.active = True
+        self.assertEqual(TestClient(create_app(self.config)).get(
+            endpoint, headers=self.headers()).status_code, 404)
+
+    def test_evidence_index_integrity_failure_never_leaks_history(self):
+        self.seed_input()
+        self.post()
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER expert_question_no_update")
+            db.execute(
+                "UPDATE expert_review_question SET reason_ref='DEMO-FORGED'")
+        response = self.client.get(
+            self.evidence_index_url(), headers=self.headers())
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn("DEMO-FORGED", response.text)
+
     def test_empty_history_has_no_approval_and_note_api_is_opt_in(self):
         empty = self.client.get(ROOT, headers=self.headers())
         self.assertEqual(empty.status_code, 200, empty.text)

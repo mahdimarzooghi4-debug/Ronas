@@ -47,6 +47,23 @@ def build_agronomy_workspace_router(
 
     # Explicit opt-in ONLY. No POST route on the existing/default workspace.
     if isinstance(workspace.ledger, SqliteSyntheticExpertQuestionLedger):
+
+        @router.get(
+            "/api/v1/agronomy/assigned-drafts/{ref}/review-evidence-index",
+        )
+        def assigned_evidence_index(
+            ref: str, p: Principal = Depends(verified_principal),
+        ) -> dict:
+            try:
+                result = workspace.read_assigned_synthetic_evidence_index(ref, p)
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return result
+
         @router.get("/api/v1/agronomy/assigned-drafts/{ref}/review-questions")
         def assigned_review_questions(
             ref: str, p: Principal = Depends(verified_principal),

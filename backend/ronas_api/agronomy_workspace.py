@@ -470,6 +470,75 @@ class SyntheticAgronomyWorkspace:
                 reason_ref=reason_ref, evidence_ref=evidence_ref,
             )
 
+    def inspect_assigned_synthetic_response_receipt(
+        self, ref: str, principal: Principal, *, action_id: str,
+        expected_case_version: int, expected_input_revision: int,
+        expected_question_revision: int,
+    ) -> dict | None:
+        """Presence-only inspection, NOT judging reply, input or plan.
+
+        Bind to exactly current owner input, question, structural model and
+        current scientific source snapshot within the SAME audited transaction.
+        """
+        if not isinstance(self.ledger, SqliteSyntheticExpertQuestionLedger):
+            raise ValueError("synthetic response receipt ledger not mounted")
+        if not _synthetic_ref(ref):
+            return None
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            record = self.ledger._catalogue.get(("DOMESTIC", ref))
+            actor = self._actor(principal)
+            if record is None or actor is None:
+                return None
+            if not self._allowed(actor, ref, record.version):
+                return None
+            if (type(expected_case_version) is not int
+                    or expected_case_version != record.version):
+                raise ReviewQuestionConflict("case version changed")
+            proposal = self._proposal_fixtures.get(ref)
+            if proposal is None:
+                raise ReviewQuestionConflict("no current synthetic proposal")
+            snapshot = self.ledger._input_snapshot_from_verified_transaction(
+                db, ref, record.version,
+            )
+            if (snapshot is None or type(expected_input_revision) is not int
+                    or snapshot[0] != expected_input_revision):
+                raise ReviewQuestionConflict("household input changed")
+            try:
+                inspect_proposal_structure(
+                    proposal, expected_case_engine="DOMESTIC",
+                    expected_case_ref=ref,
+                    expected_case_version=record.version,
+                    expected_input_revision=snapshot[0],
+                    expected_input_snapshot_digest=snapshot[1],
+                )
+            except ValueError as exc:
+                raise ReviewQuestionConflict("stale synthetic proposal") from exc
+            if self._scientific_basis_fixtures:
+                basis = self._scientific_basis_fixtures.get(
+                    proposal.scientific_basis_manifest_digest,
+                )
+                try:
+                    inspect_scientific_basis_structure(
+                        basis,
+                        expected_manifest_digest=(
+                            proposal.scientific_basis_manifest_digest
+                        ),
+                        current_sources=self._trusted_scientific_sources(),
+                    )
+                except Exception as exc:
+                    raise ReviewQuestionConflict(
+                        "stale/unavailable scientific lineage"
+                    ) from exc
+            return self.ledger._append_verified_response_receipt_inspection(
+                db, ref=ref, case_version=record.version, actor=actor,
+                action_id=action_id,
+                question_revision=expected_question_revision,
+                input_revision=snapshot[0], input_digest=snapshot[1],
+                science_digest=proposal.scientific_basis_manifest_digest,
+                proposal_digest=proposal.proposal_content_digest,
+            )
+
     def read_assigned_synthetic_review_questions(
         self, ref: str, principal: Principal,
     ) -> dict | None:
@@ -497,6 +566,11 @@ class SyntheticAgronomyWorkspace:
                 "SELECT track,question_revision FROM household_question_response "
                 "WHERE ref=?", (ref,),
             ))
+            inspected = set(db.execute(
+                "SELECT track,question_revision "
+                "FROM expert_response_receipt_inspection WHERE ref=?",
+                (ref,),
+            ))
             self.ledger._append(
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                 actor=actor, mode="AGRONOMY_SYNTHETIC_QUESTION_HISTORY",
@@ -514,7 +588,11 @@ class SyntheticAgronomyWorkspace:
                      "synthetic_household_response_received": (
                          track, rev
                      ) in answered,
-                     "response_is_expert_approval": False}
+                     "response_is_expert_approval": False,
+                     "synthetic_receipt_inspected_not_reviewed": (
+                         track, rev
+                     ) in inspected,
+                     "inspection_is_expert_decision": False}
                     for track, rev, bound_input_revision, reason, evidence in rows
                 ],
                 "qualification_verified": False,

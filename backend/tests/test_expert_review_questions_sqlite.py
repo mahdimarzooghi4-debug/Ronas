@@ -169,6 +169,156 @@ class LocalExpertQuestionTests(unittest.TestCase):
         )
 
 
+
+    def provenance_dossier_url(self):
+        return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/provenance-dossier"
+
+    def test_provenance_dossier_full_chain_and_three_track_redaction(self):
+        src = ScientificSourceCandidate(
+            ref="DEMO-SCI-A", version=1, content_sha256="a" * 64,
+            rights_document_ref="DEMO-RIGHTS-A",
+            rights_document_sha256="b" * 64,
+            science_review_request_ref="DEMO-SCI-REVIEW-A",
+            science_review_material_sha256="c" * 64,
+        )
+        basis = ScientificBasisCandidate(
+            ref="DEMO-BASIS-A", version=2, sources=(src,),
+        )
+        self.science_current[:] = [src]
+        self.workspace = self.specialist(
+            proposal=self.proposal(science=basis.manifest_digest),
+            science_basis=basis,
+        )
+        self.client = self.make_client()
+        self.seed_input()
+        self.assertEqual(self.post().status_code, 201)
+        self.assertEqual(self.post(
+            action="DEMO-Q-SCI", track=TRACKS[1],
+        ).status_code, 201)
+        self.assertEqual(self.post(
+            action="DEMO-Q-PLAN", track=TRACKS[2],
+        ).status_code, 201)
+        self.assertEqual(self.owner_reply().status_code, 201)
+        self.assertEqual(self.inspect().status_code, 201)
+        result = self.client.get(
+            self.provenance_dossier_url(), headers=self.headers(),
+        )
+        self.assertEqual(result.status_code, 200, result.text)
+        data = result.json()
+        self.assertEqual(data["input"]["current_synthetic_revision"], 1)
+        self.assertEqual(data["science"]["basis_candidate_revision"], 2)
+        self.assertEqual(data["science"]["source_candidate_count"], 1)
+        self.assertEqual(data["proposal"]["synthetic_stage_count"], 1)
+        self.assertEqual([x["track"] for x in data["tracks"]], list(TRACKS))
+        self.assertEqual([x["latest_question_fixture_binding_matches"]
+                          for x in data["tracks"]], [True, True, True])
+        self.assertTrue(data["tracks"][0]["expert_receipt_sighted_not_reviewed"])
+        self.assertTrue(all(x["review_outcome"] == "NOT_REVIEWED"
+                            for x in data["tracks"]))
+        self.assertFalse(data["qualified_specialist_verified"])
+        self.assertFalse(data["proposal"]["individual_plan_accepted"])
+        self.assertFalse(data["science"]["service_use_rights_verified"])
+        for forbidden in (
+            "DEMO-ANSWER-A", "DEMO-OWNER-EVIDENCE",
+            "DEMO-RIGHTS-A", "DEMO-SCI-A", "DEMO-Q-PLAN",
+            "DEMO-STAGE-A", "DEMO-RUN-1", "1" * 64,
+            basis.manifest_digest,
+        ):
+            self.assertNotIn(forbidden, result.text)
+        self.assertEqual(result.headers["cache-control"], "no-store")
+        self.assertEqual(len([
+            e for e in self.ledger.audit_snapshot()
+            if e.access_mode == "AGRONOMY_SYNTHETIC_PROVENANCE_DOSSIER"
+        ]), 1)
+
+    def test_provenance_dossier_stale_input_fails_without_partial_result(self):
+        self.seed_input()
+        self.post()
+        self.seed_input(revision=1, digest="7" * 64, action="DEMO-INPUT-B")
+        failed = self.client.get(
+            self.provenance_dossier_url(), headers=self.headers(),
+        )
+        self.assertEqual(failed.status_code, 503)
+        self.assertNotIn("DEMO-REASON-A", failed.text)
+        self.assertFalse(any(
+            x.access_mode == "AGRONOMY_SYNTHETIC_PROVENANCE_DOSSIER"
+            for x in self.ledger.audit_snapshot()
+        ))
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_provenance_dossier_no_catalogue_is_not_science_approval(self):
+        self.seed_input()
+        self.post()
+        ok = self.client.get(
+            self.provenance_dossier_url(), headers=self.headers(),
+        )
+        self.assertEqual(ok.status_code, 200, ok.text)
+        lane = ok.json()["tracks"][0]
+        self.assertFalse(lane["latest_question_fixture_binding_matches"])
+        self.assertEqual(ok.json()["science"]["catalogue_fixture_state"],
+                         "NO_CURRENT_CATALOGUE_CHECK")
+        self.assertFalse(ok.json()["real_review_decision_recorded"])
+
+    def test_provenance_dossier_source_rights_drift_fails_closed(self):
+        src = ScientificSourceCandidate(
+            ref="DEMO-SCI-A", version=1, content_sha256="a" * 64,
+            rights_document_ref="DEMO-RIGHTS-A",
+            rights_document_sha256="b" * 64,
+            science_review_request_ref="DEMO-SCI-REVIEW-A",
+            science_review_material_sha256="c" * 64,
+        )
+        basis = ScientificBasisCandidate(
+            ref="DEMO-BASIS-A", version=1, sources=(src,),
+        )
+        self.science_current[:] = [src]
+        self.workspace = self.specialist(
+            proposal=self.proposal(science=basis.manifest_digest),
+            science_basis=basis,
+        )
+        self.client = self.make_client()
+        self.seed_input()
+        self.assertEqual(self.client.get(
+            self.provenance_dossier_url(), headers=self.headers()
+        ).status_code, 200)
+        self.science_current[:] = [
+            replace(src, rights_document_sha256="d" * 64)
+        ]
+        self.assertEqual(self.client.get(
+            self.provenance_dossier_url(), headers=self.headers()
+        ).status_code, 503)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_provenance_dossier_role_scope_default_and_integrity_failure(self):
+        endpoint = self.provenance_dossier_url()
+        self.assertEqual(self.client.get(endpoint).status_code, 401)
+        self.assertEqual(self.client.get(
+            endpoint, headers=self.headers(OWNER, ("household",)),
+        ).status_code, 404)
+        self.assertEqual(self.client.get(
+            endpoint.replace("DEMO-D-1", "DEMO-E-1"),
+            headers=self.headers(),
+        ).status_code, 404)
+        self.assertEqual(self.client.post(
+            endpoint, json={}, headers=self.headers(),
+        ).status_code, 405)
+        self.active = False
+        self.assertEqual(self.client.get(
+            endpoint, headers=self.headers(),
+        ).status_code, 404)
+        self.active = True
+        self.assertEqual(TestClient(create_app(self.config)).get(
+            endpoint, headers=self.headers(),
+        ).status_code, 404)
+        self.seed_input()
+        self.post()
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER expert_question_no_update")
+            db.execute(
+                "UPDATE expert_review_question SET reason_ref='DEMO-FORGED'")
+        result = self.client.get(endpoint, headers=self.headers())
+        self.assertEqual(result.status_code, 503)
+        self.assertNotIn("DEMO-FORGED", result.text)
+
     def evidence_index_url(self):
         return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-index"
 

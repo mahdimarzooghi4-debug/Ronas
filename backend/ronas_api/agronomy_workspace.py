@@ -20,6 +20,7 @@ from .internal_cultivation_plan_contract import (
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES
 from .internal_expert_review_preparation import project_expert_review_preparation
 from .internal_expert_evidence_index import project_synthetic_review_evidence_index
+from .internal_expert_provenance_dossier import project_expert_provenance_dossier
 from .expert_review_questions_sqlite import (
     SqliteSyntheticExpertQuestionLedger, ReviewQuestionConflict, TRACKS,
 )
@@ -540,6 +541,100 @@ class SyntheticAgronomyWorkspace:
                 proposal_digest=proposal.proposal_content_digest,
             )
 
+
+
+    def read_assigned_synthetic_provenance_dossier(
+        self, ref: str, principal: Principal,
+    ) -> dict | None:
+        """Join current synthetic fixtures and verified historical evidence.
+
+        One authorized audited transaction. A source/input drift is an
+        integrity/service failure, not a scientifically 'unready' decision.
+        """
+        if not isinstance(self.ledger, SqliteSyntheticExpertQuestionLedger):
+            raise ValueError("synthetic expert question ledger not mounted")
+        if not _synthetic_ref(ref):
+            return None
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            record = self.ledger._catalogue.get(("DOMESTIC", ref))
+            actor = self._actor(principal)
+            if record is None or actor is None:
+                return None
+            if not self._allowed(actor, ref, record.version):
+                return None
+            input_snapshot = self.ledger._input_snapshot_from_verified_transaction(
+                db, ref, record.version,
+            )
+            proposal = self._proposal_fixtures.get(ref)
+            science_trace = None
+            if proposal is not None:
+                if input_snapshot is None:
+                    raise LedgerIntegrityError("no verified current synthetic input")
+                try:
+                    inspect_proposal_structure(
+                        proposal, expected_case_engine="DOMESTIC",
+                        expected_case_ref=ref,
+                        expected_case_version=record.version,
+                        expected_input_revision=input_snapshot[0],
+                        expected_input_snapshot_digest=input_snapshot[1],
+                    )
+                except ValueError as exc:
+                    raise LedgerIntegrityError(
+                        "stale synthetic proposal fixture"
+                    ) from exc
+                if self._scientific_basis_fixtures:
+                    basis = self._scientific_basis_fixtures.get(
+                        proposal.scientific_basis_manifest_digest,
+                    )
+                    try:
+                        science_trace = inspect_scientific_basis_structure(
+                            basis, expected_manifest_digest=(
+                                proposal.scientific_basis_manifest_digest
+                            ),
+                            current_sources=self._trusted_scientific_sources(),
+                        )
+                    except Exception as exc:
+                        raise LedgerIntegrityError(
+                            "current scientific catalogue invalid/unavailable"
+                        ) from exc
+            questions = self.ledger._history(db, ref)
+            responses = set(db.execute(
+                "SELECT track,question_revision FROM household_question_response "
+                "WHERE ref=?", (ref,),
+            ))
+            inspections = set(db.execute(
+                "SELECT track,question_revision "
+                "FROM expert_response_receipt_inspection WHERE ref=?",
+                (ref,),
+            ))
+            bindings = list(db.execute(
+                "SELECT track,revision,input_revision,input_digest,"
+                "science_digest,proposal_digest FROM expert_review_question "
+                "WHERE ref=? ORDER BY audit_sequence", (ref,),
+            ))
+            try:
+                index = project_synthetic_review_evidence_index(
+                    case_ref=ref, case_version=record.version,
+                    input_revision=input_snapshot[0] if input_snapshot else None,
+                    questions=questions, responses=responses,
+                    inspections=inspections,
+                )
+                result = project_expert_provenance_dossier(
+                    case_ref=ref, case_version=record.version,
+                    current_input=input_snapshot, proposal=proposal,
+                    science_trace=science_trace, evidence_index=index,
+                    question_bindings=bindings,
+                )
+            except (ValueError, KeyError, TypeError) as exc:
+                raise LedgerIntegrityError(
+                    "untrusted three-track synthetic provenance projection"
+                ) from exc
+            self.ledger._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=actor, mode="AGRONOMY_SYNTHETIC_PROVENANCE_DOSSIER",
+            )
+            return result
 
     def read_assigned_synthetic_evidence_index(
         self, ref: str, principal: Principal,

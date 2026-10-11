@@ -16,6 +16,7 @@ from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
 from .internal_cultivation_plan_contract import _digest
 from .scoped_drafts import _synthetic_ref, _synthetic_subject
 
+EVENT_KIND = "SYNTHETIC_INPUT_MANIFEST_REVISION_RECORDED"
 MODE = "HOUSEHOLD_INPUT_MANIFEST_REVISION_SHA256:"
 CONTRACT_VERSION = "ronas.domestic.synthetic-household-input-revisions.v0"
 
@@ -55,6 +56,9 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
         self._input_ready = True
         with self._transaction() as db:
             self._verify(db)
+
+    def _extended_audit_kinds(self) -> frozenset[str]:
+        return frozenset({EVENT_KIND})
 
     @staticmethod
     def _binding(action: str, ref: str, case_version: int, revision: int,
@@ -105,7 +109,7 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
                         action, ref, case_version, revision, actor_hash,
                         manifest, prior,
                     ) or event is None
-                    or event.get("kind") != "READ_ALLOWED"
+                    or event.get("kind") != EVENT_KIND
                     or event.get("engine") != "DOMESTIC"
                     or event.get("ref") != ref
                     or event.get("case_version") != case_version
@@ -219,7 +223,7 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
                 synthetic_manifest_digest, prior_receipt,
             )
             audit = self._append(
-                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                db, kind=EVENT_KIND, engine="DOMESTIC", ref=ref,
                 actor=principal.subject, target=receipt, action_id=action_id,
                 mode=MODE + receipt,
             )

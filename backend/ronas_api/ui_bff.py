@@ -555,10 +555,12 @@ def build_authenticated_ui_router(
                     proposal = agronomy_workspace.read_assigned_proposal_structure(
                         ref, who,
                     )
-                except LedgerIntegrityError:
-                    # A stale proposal is not usable for current questions.
-                    # The action route still independently checks it.
-                    proposal = None
+                except LedgerIntegrityError as exc:
+                    # Corrupted / stale independent input or source lineage
+                    # cannot be presented as an ordinary navigable case.
+                    raise HTTPException(
+                        503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                    ) from exc
                 try:
                     next_step = expert_next_action(history, proposal)
                 except JourneyEvidenceMismatch as exc:
@@ -578,7 +580,7 @@ def build_authenticated_ui_router(
                         "رسید مشاهده شد؛ هیچ بررسی علمی یا برنامه‌ای تصویب نشده است",
                 }[next_step]
                 expert_journey_html = (
-                    '<nav aria-label="اقدام بعدی کارشناس">'
+                    '<nav class="journey" aria-label="اقدام بعدی کارشناس">'
                     '<h3>مرحله بعدی در همین پرونده</h3><p>'
                     + escape(guidance) + '</p>'
                     '<p><a href="/agronomy/assigned-drafts/'
@@ -1590,7 +1592,7 @@ def build_authenticated_ui_router(
                         "نسخه اطلاعات آزمایشی را بررسی یا اصلاح کنید",
                 }[next_step]
                 journey_html = (
-                    '<nav aria-label="اقدام بعدی پرونده خانوار">'
+                    '<nav class="journey" aria-label="اقدام بعدی پرونده خانوار">'
                     '<h3>اقدام بعدی در پرونده</h3><p>'
                     + escape(guidance) + '</p><p><a href="'
                     + escape(next_page, quote=True) +
@@ -1814,7 +1816,7 @@ def build_authenticated_ui_router(
                 else "پرسش نسخه‌دار موجود است؛ حقوق منبع و گزارش هنوز معتبر نیستند"
             )
             export_journey_html = (
-                '<nav aria-label="اقدام بعدی پژوهش صادرات">'
+                '<nav class="journey" aria-label="اقدام بعدی پژوهش صادرات">'
                 '<h3>اقدام بعدی پرونده پژوهش</h3><p>'
                 + escape(next_action) + '</p>'
                 '<p><a href="#export-demo-question-form">'

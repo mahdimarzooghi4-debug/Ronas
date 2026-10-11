@@ -3183,5 +3183,162 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertEqual(other.get(ROOT).status_code, 404)
 
 
+    def login_browser_demo(self, subject: str, role: str):
+        from ronas_api.oidc_browser import BrowserSession
+        import secrets
+        self.client.cookies.clear()
+        sid = secrets.token_urlsafe(32)
+        self.sessions[sid] = BrowserSession(
+            subject, frozenset({role}),
+            self.headers(subject, (role,))["Authorization"][7:],
+            secrets.token_urlsafe(32), int(time.time()) + 200,
+        )
+        self.client.cookies.set("__Host-ronas_session", sid)
+        return self.sessions[sid].csrf
+
+    @staticmethod
+    def demo_form(csrf, *, qrev=0, irev=1, track=TRACKS[0]):
+        return {
+            "csrf": csrf, "case_version": "3", "input_revision": str(irev),
+            "question_revision": str(qrev), "track": track,
+        }
+
+    def test_browser_complete_expert_owner_inspection_roundtrip(self):
+        self.seed_input()
+        base = "/agronomy/assigned-drafts/DEMO-D-1/review-questions"
+        csrf = self.login_browser_demo(EXPERT, "agronomy_expert")
+        page = self.client.get(base)
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("پرسش درباره کفایت داده", page.text)
+        self.assertIn("form-action 'self'", page.headers["content-security-policy"])
+        posted = self.client.post(
+            base + "/demo-question", data=self.demo_form(csrf),
+            headers={"Origin": "https://ronas.example.test"},
+            follow_redirects=False,
+        )
+        self.assertEqual(posted.status_code, 303, posted.text)
+        self.assertEqual(posted.headers["location"], base)
+        self.assertIn("پرسش آزمایشی 1", self.client.get(base).text)
+        self.assertEqual(self.client.post(
+            base + "/demo-question", data=self.demo_form(csrf),
+            headers={"Origin": "https://ronas.example.test"},
+        ).status_code, 409)
+
+        csrf = self.login_browser_demo(OWNER, "household")
+        owner_path = "/my-drafts/DEMO-D-1/question-responses"
+        owner_page = self.client.get(owner_path)
+        self.assertEqual(owner_page.status_code, 200, owner_page.text)
+        self.assertIn("ثبت مرجع پاسخ DEMO", owner_page.text)
+        answer = {
+            "csrf": csrf, "case_version": "3",
+            "input_revision": "1", "question_revision": "1",
+            "scenario": "DEMO-REPLY-BETA",
+        }
+        res = self.client.post(
+            owner_path + "/demo-reply", data=answer,
+            headers={"Origin": "https://ronas.example.test"},
+            follow_redirects=False,
+        )
+        self.assertEqual(res.status_code, 303, res.text)
+        self.assertIn("DEMO-REPLY-BETA", self.client.get(owner_path).text)
+        self.assertEqual(self.client.post(
+            owner_path + "/demo-reply", data=answer,
+            headers={"Origin": "https://ronas.example.test"},
+        ).status_code, 409)
+
+        csrf = self.login_browser_demo(EXPERT, "agronomy_expert")
+        view = self.client.get(base)
+        self.assertIn("پاسخ ساختاری خانوار دریافت شده", view.text)
+        self.assertNotIn("DEMO-REPLY-BETA", view.text)
+        self.assertIn("ثبت مشاهده رسید پاسخ DEMO", view.text)
+        observed = {
+            "csrf": csrf, "case_version": "3",
+            "input_revision": "1", "question_revision": "1",
+        }
+        res = self.client.post(
+            base + "/demo-inspection", data=observed,
+            headers={"Origin": "https://ronas.example.test"},
+            follow_redirects=False,
+        )
+        self.assertEqual(res.status_code, 303, res.text)
+        final = self.client.get(base)
+        self.assertIn("رسید پاسخ مشاهده شد (بدون داوری تخصصی)", final.text)
+        self.assertNotIn("DEMO-REPLY-BETA", final.text)
+        self.assertNotIn("ثبت مشاهده رسید پاسخ DEMO", final.text)
+        self.assertEqual(self.client.post(
+            base + "/demo-inspection", data=observed,
+            headers={"Origin": "https://ronas.example.test"},
+        ).status_code, 409)
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_browser_expert_question_rejects_csrf_origin_and_wrong_role(self):
+        self.seed_input()
+        base = "/agronomy/assigned-drafts/DEMO-D-1/review-questions"
+        csrf = self.login_browser_demo(EXPERT, "agronomy_expert")
+        data = self.demo_form(csrf)
+        for hdr, payload, expected in (
+            ({}, data, 403),
+            ({"Origin": "https://foreign.test"}, data, 403),
+            ({"Origin": "https://ronas.example.test"},
+             {**data, "csrf": "wrong"}, 403),
+            ({"Origin": "https://ronas.example.test"},
+             {**data, "track": "UNAUTHORIZED"}, 422),
+            ({"Origin": "https://ronas.example.test"},
+             {**data, "other": "PII"}, 422),
+            ({"Origin": "https://ronas.example.test"},
+             {**data, "input_revision": "00"}, 422),
+        ):
+            with self.subTest(payload=payload, hdr=hdr):
+                result = self.client.post(
+                    base + "/demo-question", data=payload, headers=hdr,
+                )
+                self.assertEqual(result.status_code, expected, result.text)
+        self.active = False
+        self.assertEqual(self.client.post(
+            base + "/demo-question", data=data,
+            headers={"Origin": "https://ronas.example.test"},
+        ).status_code, 404)
+        self.active = True
+        self.login_browser_demo(OWNER, "household")
+        self.assertEqual(self.client.post(
+            base + "/demo-question", data=self.demo_form(
+                self.sessions[self.client.cookies.get(
+                    "__Host-ronas_session")].csrf,
+            ), headers={"Origin": "https://ronas.example.test"},
+        ).status_code, 404)
+        self.assertEqual(self.client.get(
+            "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-questions",
+            headers=self.headers(),
+        ).json()["questions"], [])
+
+    def test_browser_household_response_stales_after_input_correction(self):
+        self.seed_input()
+        expert_csrf = self.login_browser_demo(EXPERT, "agronomy_expert")
+        base = "/agronomy/assigned-drafts/DEMO-D-1/review-questions"
+        self.assertEqual(self.client.post(
+            base + "/demo-question", data=self.demo_form(expert_csrf),
+            headers={"Origin": "https://ronas.example.test"},
+        ).status_code, 200)
+        owner_csrf = self.login_browser_demo(OWNER, "household")
+        owner_path = "/my-drafts/DEMO-D-1/question-responses"
+        data = {"csrf": owner_csrf, "case_version": "3",
+                "input_revision": "1", "question_revision": "1",
+                "scenario": "DEMO-REPLY-ALPHA"}
+        self.ledger.append_owned_input_manifest(
+            "DEMO-D-1", self.owner, action_id="DEMO-BROWSER-STALE-INPUT",
+            expected_case_version=3, expected_input_revision=1,
+            synthetic_manifest_digest="b" * 64,
+        )
+        response = self.client.post(
+            owner_path + "/demo-reply", data=data,
+            headers={"Origin": "https://ronas.example.test"},
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        history = self.client.get(owner_path)
+        self.assertEqual(history.status_code, 200, history.text)
+        self.assertIn("نسخه تاریخی", history.text)
+        self.assertNotIn("ثبت مرجع پاسخ DEMO", history.text)
+        self.assertTrue(self.reopen().verify_integrity())
+
 if __name__ == "__main__":
     unittest.main()

@@ -30,7 +30,9 @@ from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
                                      BusinessSourceSnapshotError, SOURCE_INTEGRITY_STATE)
 from .shared_workspaces import USER_ROLES, visible_user_workspaces
 from .agronomy_workspace import SyntheticAgronomyWorkspace
-from .expert_review_questions_sqlite import SqliteSyntheticExpertQuestionLedger
+from .expert_review_questions_sqlite import (
+    ReviewQuestionConflict, SqliteSyntheticExpertQuestionLedger,
+)
 from .export_supplier_workspace import (
     SyntheticSupplierUnavailable, SyntheticSupplierWorkspace,
 )
@@ -552,7 +554,12 @@ def build_authenticated_ui_router(
                 '<p><a href="/agronomy/assigned-drafts/'
                 + quote(ref) + '/expert-review-preparation">'
                 'سه محور آماده‌سازی بررسی مستقل متخصص (فقط DEMO)</a></p>'
-                '<p><a href="/workspace/agronomy_expert">'
+                + ('<p><a href="/agronomy/assigned-drafts/'
+                   + quote(ref) + '/review-questions">'
+                   'پرسش، دریافت پاسخ و مشاهده رسید DEMO</a></p>'
+                   if isinstance(agronomy_workspace.ledger,
+                                 SqliteSyntheticExpertQuestionLedger) else '')
+                + '<p><a href="/workspace/agronomy_expert">'
                 'بازگشت به فضای کار کارشناس کشاورزی</a></p>'
                 '</article>'
             )
@@ -729,6 +736,88 @@ def build_authenticated_ui_router(
                 raise HTTPException(
                     503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
                 )
+            # Historical questions must remain visible after an input or
+            # scientific source changes. Failure to obtain a CURRENT pinned
+            # synthetic proposal only disables new form commands.
+            current_proposal = None
+            try:
+                current_proposal = (
+                    agronomy_workspace.read_assigned_proposal_structure(
+                        ref, Principal(session.subject, session.roles),
+                    )
+                )
+            except LedgerIntegrityError:
+                pass
+            expert_forms = ""
+            if (current_proposal is not None
+                    and current_proposal["proposal_status"]
+                    == "STRUCTURE_ONLY_UNREVIEWED"
+                    and type(current_proposal.get("input_revision")) is int):
+                track_options = (
+                    ("HOUSEHOLD_INPUT_ADEQUACY", "پرسش درباره کفایت داده"),
+                    ("SCIENTIFIC_BASIS_AND_USE_RIGHTS", "پرسش درباره منشأ علمی"),
+                    ("INDIVIDUAL_CULTIVATION_PROPOSAL", "پرسش درباره پیشنهاد کشت"),
+                )
+                for track, label in track_options:
+                    revision = max((
+                        q["question_revision"] for q in notes["questions"]
+                        if q["track"] == track
+                    ), default=0)
+                    expert_forms += (
+                        '<form method="post" action="/agronomy/assigned-drafts/'
+                        + quote(ref) + '/review-questions/demo-question">'
+                        '<input type="hidden" name="csrf" value="'
+                        + escape(session.csrf, quote=True) + '">'
+                        '<input type="hidden" name="case_version" value="'
+                        + str(notes["case_version"]) + '">'
+                        '<input type="hidden" name="input_revision" value="'
+                        + str(current_proposal["input_revision"]) + '">'
+                        '<input type="hidden" name="question_revision" value="'
+                        + str(revision) + '">'
+                        '<input type="hidden" name="track" value="'
+                        + track + '">'
+                        '<p><button type="submit">' + escape(label)
+                        + ' (فقط DEMO)</button></p></form>'
+                    )
+            inspections = ""
+            if current_proposal is not None and type(
+                current_proposal.get("input_revision")
+            ) is int:
+                input_revision = current_proposal["input_revision"]
+                current_questions = [
+                    q for q in notes["questions"]
+                    if q["track"] == "HOUSEHOLD_INPUT_ADEQUACY"
+                ]
+                if current_questions:
+                    recent = max(
+                        current_questions, key=lambda q: q["question_revision"],
+                    )
+                    if (recent["bound_input_revision"] == input_revision
+                            and recent["synthetic_household_response_received"]
+                            and not recent["synthetic_receipt_inspected_not_reviewed"]):
+                        inspections = (
+                            '<form method="post" action="/agronomy/assigned-drafts/'
+                            + quote(ref) + '/review-questions/demo-inspection">'
+                            '<input type="hidden" name="csrf" value="'
+                            + escape(session.csrf, quote=True) + '">'
+                            '<input type="hidden" name="case_version" value="'
+                            + str(notes["case_version"]) + '">'
+                            '<input type="hidden" name="input_revision" value="'
+                            + str(input_revision) + '">'
+                            '<input type="hidden" name="question_revision" value="'
+                            + str(recent["question_revision"]) + '">'
+                            '<button type="submit">ثبت مشاهده رسید پاسخ DEMO '
+                            '(نه بررسی علمی)</button></form>'
+                        )
+            form_section = (
+                '<section aria-label="گردش آزمایشی پرسش متخصص">'
+                '<h3>ثبت پرسش ساختاری آزمایشی</h3>'
+                '<p>فقط شناسه‌های ثابت نمونه ثبت می‌شوند؛ '
+                'هیچ پرسش واقعی، سند تخصصی یا نتیجه ارزیابی دریافت نمی‌شود.</p>'
+                + (expert_forms if expert_forms else
+                   '<p>نسخه معتبرِ ساختاری برای پرسش جدید موجود نیست.</p>')
+                + inspections + '</section>'
+            )
             descriptions = {
                 "HOUSEHOLD_INPUT_ADEQUACY": "کفایت داده خانوار",
                 "SCIENTIFIC_BASIS_AND_USE_RIGHTS": "منشأ علمی و حقوق استفاده",
@@ -761,12 +850,109 @@ def build_authenticated_ui_router(
                 'نسخه قدیمی برای تصمیم جدید را نمی‌دهد.</p>'
                 '<p>فرم ثبت داده واقعی، تأیید برنامه، اصلاح تخصصی '
                 'و مجوز انتشار در این صفحه وجود ندارد.</p>'
-                '<p><a href="/agronomy/assigned-drafts/'
+                + form_section
+                + '<p><a href="/agronomy/assigned-drafts/'
                 + quote(ref) + '/expert-review-preparation">'
                 'بازگشت به سه محور بررسی</a></p></article>'
             )
             return page("روناس — تاریخچه پرسش‌های آزمایشی کارشناس",
-                        body, logged_in=True)
+                        body, logged_in=True, local_test_form=True)
+
+        @router.post("/agronomy/assigned-drafts/{ref}/review-questions/demo-question")
+        async def expert_demo_question(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            principal, form = await checked_browser_form(
+                request, sid, fields=frozenset({
+                    "csrf", "case_version", "input_revision",
+                    "question_revision", "track",
+                }),
+            )
+            track = form["track"]
+            if track not in (
+                "HOUSEHOLD_INPUT_ADEQUACY",
+                "SCIENTIFIC_BASIS_AND_USE_RIGHTS",
+                "INDIVIDUAL_CULTIVATION_PROPOSAL",
+            ):
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+            try:
+                created = agronomy_workspace.record_assigned_synthetic_review_question(
+                    ref, principal,
+                    action_id="DEMO-UI-Q-" + secrets.token_hex(10).upper(),
+                    track=track,
+                    expected_case_version=form_version(
+                        form["case_version"], zero_allowed=False,
+                    ),
+                    expected_input_revision=form_version(
+                        form["input_revision"], zero_allowed=False,
+                    ),
+                    expected_question_revision=form_version(
+                        form["question_revision"],
+                    ),
+                    reason_ref="DEMO-UI-MISSING-REF",
+                    evidence_ref="DEMO-UI-PENDING-REF",
+                )
+            except ReviewQuestionConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_QUESTION_VERSION_CONFLICT",
+                ) from exc
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
+            if created is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return RedirectResponse(
+                "/agronomy/assigned-drafts/" + quote(ref) + "/review-questions",
+                status_code=303,
+            )
+
+        @router.post(
+            "/agronomy/assigned-drafts/{ref}/review-questions/demo-inspection"
+        )
+        async def expert_demo_receipt_inspection(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            principal, form = await checked_browser_form(
+                request, sid, fields=frozenset({
+                    "csrf", "case_version", "input_revision",
+                    "question_revision",
+                }),
+            )
+            try:
+                checked = agronomy_workspace.inspect_assigned_synthetic_response_receipt(
+                    ref, principal,
+                    action_id="DEMO-UI-I-" + secrets.token_hex(10).upper(),
+                    expected_case_version=form_version(
+                        form["case_version"], zero_allowed=False,
+                    ),
+                    expected_input_revision=form_version(
+                        form["input_revision"], zero_allowed=False,
+                    ),
+                    expected_question_revision=form_version(
+                        form["question_revision"], zero_allowed=False,
+                    ),
+                )
+            except ReviewQuestionConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_RECEIPT_CONTEXT_CHANGED",
+                ) from exc
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
+            if checked is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return RedirectResponse(
+                "/agronomy/assigned-drafts/" + quote(ref) + "/review-questions",
+                status_code=303,
+            )
 
     if domestic_partner_workspace is not None:
         @router.get("/domestic-partners/my-preparation")
@@ -1167,6 +1353,41 @@ def build_authenticated_ui_router(
                 raise HTTPException(
                     503, detail="SYNTHETIC_QUESTION_RESPONSE_UNAVAILABLE",
                 )
+            # Only the latest question on the CURRENT owner's input
+            # revision may be answered. Historical lines remain visible.
+            current_items = [
+                q for q in notes["questions"]
+                if q["is_current_input_version"]
+            ]
+            active_question = (
+                max(current_items, key=lambda item: item["question_revision"])
+                if current_items else None
+            )
+            reply_form = ""
+            if (active_question is not None
+                    and active_question["response_state"] == "MISSING_RESPONSE"
+                    and active_question["bound_input_revision"] > 0):
+                reply_form = (
+                    '<section aria-label="پاسخ ساختاری آزمایشی خانوار">'
+                    '<h3>ثبت مرجع پاسخ DEMO</h3>'
+                    '<p>پاسخ واقعی یا اطلاعات شخصی دریافت نمی‌شود. '
+                    'این عمل تأیید متخصص نیست.</p>'
+                    '<form method="post" action="/my-drafts/'
+                    + quote(ref) + '/question-responses/demo-reply">'
+                    '<input type="hidden" name="csrf" value="'
+                    + escape(session.csrf, quote=True) + '">'
+                    '<input type="hidden" name="case_version" value="'
+                    + str(notes["case_version"]) + '">'
+                    '<input type="hidden" name="input_revision" value="'
+                    + str(active_question["bound_input_revision"]) + '">'
+                    '<input type="hidden" name="question_revision" value="'
+                    + str(active_question["question_revision"]) + '">'
+                    '<label for="owner-demo-answer">پاسخ مرجعی نمونه</label>'
+                    '<select id="owner-demo-answer" name="scenario">'
+                    + sample_choice_options(prefix="DEMO-REPLY-")
+                    + '</select><button type="submit">ثبت پاسخ DEMO</button>'
+                    '</form></section>'
+                )
             rows = ''.join(
                 '<li>پرسش آزمایشی ' + str(q["question_revision"])
                 + ' · نسخه ورودی ' + str(q["bound_input_revision"])
@@ -1192,13 +1413,61 @@ def build_authenticated_ui_router(
                 'برنامه پذیرفته‌شده محسوب نمی‌شوند.</p>'
                 '<p>در این صفحه فرم دریافت اطلاعات واقعی یا '
                 'فرمان تأیید/رد وجود ندارد.</p>'
-                '<p><a href="/my-drafts/' + quote(ref)
+                + reply_form
+                + '<p><a href="/my-drafts/' + quote(ref)
                 + '/input-revisions">بازگشت به تاریخچه نسخه‌ها</a></p>'
                 '</article>'
             )
             return page(
                 "روناس — پاسخ‌های آزمایشی خانوار",
-                body, logged_in=True,
+                body, logged_in=True, local_test_form=True,
+            )
+
+        @router.post("/my-drafts/{ref}/question-responses/demo-reply")
+        async def household_demo_reply(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            principal, form = await checked_browser_form(
+                request, sid, fields=frozenset({
+                    "csrf", "case_version", "input_revision",
+                    "question_revision", "scenario",
+                }),
+            )
+            if form["scenario"] not in ("DEMO-REPLY-ALPHA", "DEMO-REPLY-BETA"):
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+            try:
+                saved = household_input_ledger.append_owned_question_response(
+                    ref, principal,
+                    action_id="DEMO-UI-R-" + secrets.token_hex(10).upper(),
+                    track="HOUSEHOLD_INPUT_ADEQUACY",
+                    expected_case_version=form_version(
+                        form["case_version"], zero_allowed=False,
+                    ),
+                    expected_input_revision=form_version(
+                        form["input_revision"], zero_allowed=False,
+                    ),
+                    expected_question_revision=form_version(
+                        form["question_revision"], zero_allowed=False,
+                    ),
+                    answer_ref=form["scenario"],
+                    evidence_ref="DEMO-OWNER-PENDING-REF",
+                )
+            except ReviewQuestionConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_RESPONSE_VERSION_CONFLICT",
+                ) from exc
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_QUESTION_RESPONSE_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
+            if saved is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return RedirectResponse(
+                "/my-drafts/" + quote(ref) + "/question-responses",
+                status_code=303,
             )
 
     if (technical_review_ledger is not None
@@ -1244,6 +1513,11 @@ def build_authenticated_ui_router(
                    + quote(ref) + '/input-revisions">'
                    'تاریخچه آزمایشی اصلاح اطلاعات خانوار</a></p>'
                    if household_input_ledger is not None else '')
+                + ('<p><a href="/my-drafts/' + quote(ref)
+                   + '/question-responses">'
+                   'پرسش و پاسخ مرجعی خانوار (فقط DEMO)</a></p>'
+                   if isinstance(household_input_ledger,
+                                 SqliteSyntheticExpertQuestionLedger) else '')
                 + '<p><a href="/">بازگشت به پرونده‌های من</a></p>'
                 '</article>'
             )

@@ -1291,6 +1291,17 @@ def build_authenticated_ui_router(
             )
             if data is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            question = data["local_test_draft_question"]
+            demo_question = (
+                '<h3>پرسش آزمایشی ثبت‌شده در همین پرونده</h3>'
+                '<p>نسخه پرسش ' + str(question["question_revision"])
+                + ' — مرجع محصول ' + escape(question["product_ref"])
+                + ' · مرجع مقصد ' + escape(question["destination_ref"])
+                + '</p><p>صرفاً DEMO و تأییدنشده؛ منبع، محصول، مقصد، '
+                'حق استفاده یا یافته معتبر بازار احراز نشده‌اند.</p>'
+                if question is not None else
+                '<p>هنوز هیچ پرسش DEMO نسخه‌داری ثبت نشده است.</p>'
+            )
             stage_labels = {
                 "UNREQUESTED": "درخواست بررسی فنی هنوز ثبت نشده است",
                 "EVIDENCE_REVIEW_REQUESTED": "مرجع درخواست بررسی فنی ثبت شده است",
@@ -1320,7 +1331,9 @@ def build_authenticated_ui_router(
                 + quote(data["ref"]) + '/versions?' + navigation
                 + '">تاریخچه نسخه‌های این پرونده</a></p>'
                 '<h3>تعریف مسئله پژوهش</h3>'
-                '<p>محصول: تعیین نشده · مقصد: تعیین نشده · HS: تعیین نشده</p>'
+                '<p>محصول واقعی: تعیین نشده · مقصد واقعی: تعیین نشده '
+                '· HS: تعیین نشده</p>'
+                + demo_question
                 '<p>مرجع منبع صرفاً آزمایشی: '
                 + escape(data["source_ref"]) + '</p>'
                 '<p>حقوق استفاده و بازنشر این منبع احراز نشده است.</p>'

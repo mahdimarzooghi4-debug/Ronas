@@ -639,5 +639,168 @@ class ExportResearchQueueTests(unittest.TestCase):
         self.assertTrue(self.reopen().verify_integrity())
 
 
+    def question_payload(self, *, action="DEMO-Q-ONE", rev=0,
+                         product="DEMO-PRODUCT-ALPHA",
+                         destination="DEMO-DEST-ALPHA", case_version=3):
+        return {
+            "action_id": action, "expected_case_version": case_version,
+            "expected_question_revision": rev, "product_ref": product,
+            "destination_ref": destination,
+        }
+
+    def post_question(self, *, ref="DEMO-E-001", payload=None, headers=None,
+                      client=None):
+        return (client or self.client).post(
+            f"/api/v1/admin/export/research/drafts/{ref}/local-test-question",
+            json=payload if payload is not None else self.question_payload(),
+            headers=headers if headers is not None else self.headers(),
+        )
+
+    def test_export_question_authoring_versions_and_case_page(self):
+        first = self.post_question()
+        self.assertEqual(first.status_code, 201, first.text)
+        self.assertEqual(first.json()["question_revision"], 1)
+        self.assertFalse(first.json()["research_report_approved"])
+        self.assertFalse(first.json()["real_data"])
+        self.assertIsNone(first.json()["hs_code"])
+        self.assertEqual(first.json()["question_state"], "UNVERIFIED_LOCAL_TEST_DRAFT")
+        second = self.post_question(payload=self.question_payload(
+            action="DEMO-Q-TWO", rev=1,
+            product="DEMO-PRODUCT-BETA", destination="DEMO-DEST-BETA",
+        ))
+        self.assertEqual(second.status_code, 201, second.text)
+        self.assertEqual(second.json()["question_revision"], 2)
+        detail = self.client.get(
+            "/api/v1/admin/export/research/drafts/DEMO-E-001/workspace",
+            headers=self.headers(),
+        )
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertEqual(detail.json()["research_question"],
+                         {"product": None, "destination": None, "hs_code": None})
+        self.assertEqual(
+            detail.json()["local_test_draft_question"]["product_ref"],
+            "DEMO-PRODUCT-BETA",
+        )
+        self.login()
+        page = self.client.get("/admin/export/research/drafts/DEMO-E-001")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("DEMO-PRODUCT-BETA", page.text)
+        self.assertIn("DEMO-DEST-BETA", page.text)
+        self.assertIn("تأییدنشده", page.text)
+        self.assertNotIn("DEMO-Q-TWO", page.text)
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_export_question_idempotency_stale_and_cas(self):
+        good = self.question_payload()
+        self.assertEqual(self.post_question(payload=good).status_code, 201)
+        self.assertEqual(self.post_question(payload=good).status_code, 201)
+        self.assertEqual(self.post_question(payload=self.question_payload(
+            action="DEMO-Q-ONE", product="DEMO-PRODUCT-OTHER",
+        )).status_code, 409)
+        self.assertEqual(self.post_question(payload=self.question_payload(
+            action="DEMO-Q-STALE", rev=0,
+        )).status_code, 409)
+        self.assertEqual(self.post_question(payload=self.question_payload(
+            action="DEMO-Q-BAD-VERSION", case_version=2,
+        )).status_code, 409)
+        self.assertEqual(self.post_question(payload=self.question_payload(
+            action="DEMO-Q-TWO", rev=1,
+        )).status_code, 201)
+        self.assertEqual(self.post_question(payload=good).status_code, 409)
+        with sqlite3.connect(self.path) as db:
+            count = db.execute(
+                "SELECT COUNT(*) FROM export_research_question_draft"
+            ).fetchone()[0]
+        self.assertEqual(count, 2)
+
+    def test_export_question_denies_other_engine_roles_and_revocation(self):
+        route = self.post_question
+        self.assertEqual(route(headers=self.headers(
+            "synthetic-export-other")).status_code, 404)
+        self.assertEqual(route(headers=self.headers(
+            "synthetic-household-1", ("household",))).status_code, 404)
+        self.assertEqual(route(ref="DEMO-D-001").status_code, 404)
+        self.assertEqual(route(ref="DEMO-E-004").status_code, 404)
+        self.assertEqual(route(headers={}).status_code, 401)
+        self.assertEqual(route(headers={"Authorization":"Bearer garbage"}).status_code, 401)
+        self.login()
+        self.assertEqual(route(headers={}).status_code, 401)
+        self.client.cookies.clear()
+        self.ledger.revoke_grant(
+            engine="EXPORT", ref="DEMO-E-001",
+            subject="synthetic-export-001", role="export_ops",
+            actor="synthetic-controller", expected_grant_revision=0,
+            action_id="DEMO-Q-REVOKE",
+            reason_ref="DEMO-Q-REVOKE-REASON",
+        )
+        self.assertEqual(route().status_code, 404)
+        self.assertEqual(self.client.get(
+            "/api/v1/admin/export/research/drafts/DEMO-E-001/workspace",
+            headers=self.headers()).status_code, 404)
+
+    def test_export_question_bad_values_are_not_real_inputs(self):
+        for change in (
+            {"product_ref": "wheat"},
+            {"destination_ref": "Iran"},
+            {"destination_ref": "DEMO-PRODUCT-ALPHA"},
+            {"product_ref": "DEMO-DEST-ALPHA"},
+            {"expected_case_version": True},
+            {"expected_question_revision": -1},
+            {"action_id": "INVALID"},
+            {"unexpected": "data"},
+        ):
+            with self.subTest(change=change):
+                payload = self.question_payload()
+                payload.update(change)
+                self.assertEqual(self.post_question(payload=payload).status_code, 422)
+        self.assertFalse(self.ledger.audit_snapshot() and any(
+            e.kind == "EXPORT_RESEARCH_QUESTION_RECORDED"
+            for e in self.ledger.audit_snapshot()))
+
+    def test_export_question_tamper_and_missing_triggers_fail_closed(self):
+        self.assertEqual(self.post_question().status_code, 201)
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER export_question_no_update")
+            db.execute(
+                "UPDATE export_research_question_draft "
+                "SET product_ref='DEMO-PRODUCT-TAMPER'"
+            )
+        response = self.client.get(
+            "/api/v1/admin/export/research/drafts/DEMO-E-001/workspace",
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "TECHNICAL_REVIEW_UNAVAILABLE")
+        self.assertNotIn("DEMO-PRODUCT-TAMPER", response.text)
+
+    def test_export_question_atomic_rollback_on_audit_write_failure(self):
+        with sqlite3.connect(self.path) as db:
+            db.execute("""
+                CREATE TRIGGER reject_question_audit
+                BEFORE INSERT ON audit_event
+                WHEN NEW.payload LIKE '%EXPORT_RESEARCH_QUESTION_RECORDED%'
+                BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
+            """)
+        response = self.post_question()
+        self.assertEqual(response.status_code, 503, response.text)
+        with sqlite3.connect(self.path) as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM export_research_question_draft"
+            ).fetchone()[0], 0)
+            db.execute("DROP TRIGGER reject_question_audit")
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_export_question_default_app_and_no_public_research_decision(self):
+        default = TestClient(create_app(self.config), base_url=ORIGIN)
+        self.assertEqual(self.post_question(client=default).status_code, 404)
+        self.assertEqual(self.client.put(
+            "/api/v1/admin/export/research/drafts/DEMO-E-001/local-test-question",
+            headers=self.headers(), json=self.question_payload(),
+        ).status_code, 405)
+        self.assertEqual(self.client.post(
+            "/api/v1/admin/export/research/drafts/DEMO-E-001/approve",
+            headers=self.headers(), json={},
+        ).status_code, 404)
+
 if __name__ == "__main__":
     unittest.main()

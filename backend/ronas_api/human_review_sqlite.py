@@ -13,6 +13,10 @@ import sqlite3
 from typing import Callable, Iterable
 
 from .auth import Principal
+from .export_research_question import (
+    RECORDED as EXPORT_QUESTION_RECORDED, ExportResearchQuestionConflict,
+    question_binding, question_digest, question_preview, valid_question_refs,
+)
 from .domestic_preparation_preview import domestic_preparation_preview
 from .grant_ledger_sqlite import (
     LedgerIntegrityError, SqliteSyntheticGrantLedger, _hash, _json,
@@ -95,10 +99,31 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                 CREATE TRIGGER IF NOT EXISTS review_no_delete
                 BEFORE DELETE ON technical_review_step
                 BEGIN SELECT RAISE(ABORT, 'review history is immutable'); END;
+                CREATE TABLE IF NOT EXISTS export_research_question_draft (
+                    action_id TEXT PRIMARY KEY,
+                    ref TEXT NOT NULL, case_version INTEGER NOT NULL,
+                    revision INTEGER NOT NULL, actor_digest TEXT NOT NULL,
+                    source_ref TEXT NOT NULL, product_ref TEXT NOT NULL,
+                    destination_ref TEXT NOT NULL, command_digest TEXT NOT NULL,
+                    audit_sequence INTEGER NOT NULL UNIQUE,
+                    UNIQUE(ref, revision),
+                    FOREIGN KEY(audit_sequence) REFERENCES audit_event(sequence)
+                );
+                CREATE TRIGGER IF NOT EXISTS export_question_no_update
+                BEFORE UPDATE ON export_research_question_draft
+                BEGIN SELECT RAISE(ABORT, 'question history immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS export_question_no_delete
+                BEFORE DELETE ON export_research_question_draft
+                BEGIN SELECT RAISE(ABORT, 'question history immutable'); END;
             """)
         self._review_ready = True
         with self._transaction() as db:
             self._verify(db)
+
+    def _extended_audit_kinds(self) -> frozenset[str]:
+        return super()._extended_audit_kinds() | frozenset({
+            EXPORT_QUESTION_RECORDED,
+        })
 
     def _verify(self, db: sqlite3.Connection) -> None:
         super()._verify(db)
@@ -167,6 +192,65 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                         or steps[1].request_ref != steps[0].request_ref
                         or steps[1].actor_digest == steps[0].actor_digest):
                     raise LedgerIntegrityError("inconsistent human response lineage")
+
+        question_triggers = {r[0] for r in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' "
+            "AND tbl_name='export_research_question_draft'"
+        )}
+        if question_triggers != {
+            "export_question_no_update", "export_question_no_delete",
+        }:
+            raise LedgerIntegrityError("Export question immutable triggers missing")
+        expected_questions = {
+            int(seq): json.loads(payload)
+            for seq, payload in db.execute(
+                "SELECT sequence,payload FROM audit_event"
+            )
+            if json.loads(payload).get("kind") == EXPORT_QUESTION_RECORDED
+        }
+        paired_questions = set()
+        question_revisions = {}
+        for row in db.execute(
+            "SELECT action_id,ref,case_version,revision,actor_digest,"
+            "source_ref,product_ref,destination_ref,command_digest,"
+            "audit_sequence FROM export_research_question_draft "
+            "ORDER BY audit_sequence"
+        ):
+            (action, ref, case_version, revision, actor_digest, source_ref,
+             product_ref, destination_ref, digest, sequence) = row
+            record = self._catalogue.get(("EXPORT", ref))
+            event = expected_questions.get(sequence)
+            try:
+                binding = question_binding(
+                    action_id=action, ref=ref, case_version=case_version,
+                    revision=revision, actor_digest=actor_digest,
+                    source_ref=source_ref, product_ref=product_ref,
+                    destination_ref=destination_ref,
+                )
+            except (ValueError, TypeError) as exc:
+                raise LedgerIntegrityError("invalid Export question row") from exc
+            prior = question_revisions.get(ref, 0)
+            if (record is None or record.version != case_version
+                    or source_ref != record.source_ref
+                    or revision != prior + 1
+                    or event is None or sequence in paired_questions
+                    or question_digest(binding) != digest
+                    or event.get("kind") != EXPORT_QUESTION_RECORDED
+                    or event.get("engine") != "EXPORT"
+                    or event.get("ref") != ref
+                    or event.get("case_version") != case_version
+                    or event.get("action_id") != action
+                    or event.get("actor_digest") != actor_digest
+                    or event.get("reason_ref") != source_ref
+                    or event.get("target_digest") != digest
+                    or event.get("access_mode") != "LOCAL_TEST_QUESTION_DRAFT"):
+                raise LedgerIntegrityError(
+                    "Export question/audit/source/version mismatch"
+                )
+            question_revisions[ref] = revision
+            paired_questions.add(sequence)
+        if paired_questions != set(expected_questions):
+            raise LedgerIntegrityError("orphan Export question audit event")
 
     def _active_operator(self, db, engine: str, ref: str, principal: Principal) -> bool:
         if (not isinstance(principal, Principal)
@@ -375,6 +459,89 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                 "next_cursor": items[-1]["ref"] if len(selected) > limit else None,
             }
 
+    def _current_export_question(self, db, ref: str) -> dict | None:
+        row = db.execute(
+            "SELECT revision,source_ref,product_ref,destination_ref "
+            "FROM export_research_question_draft WHERE ref=? "
+            "ORDER BY revision DESC LIMIT 1", (ref,),
+        ).fetchone()
+        if row is None:
+            return None
+        record = self._catalogue[("EXPORT", ref)]
+        return question_preview(
+            ref=ref, case_version=record.version, revision=row[0],
+            source_ref=row[1], product_ref=row[2], destination_ref=row[3],
+        )
+
+    def record_export_research_question(
+        self, ref: str, principal: Principal, *,
+        expected_case_version: int, expected_question_revision: int,
+        action_id: str, product_ref: str, destination_ref: str,
+    ) -> dict | None:
+        """One versioned DEMO question and audit event in existing case DB."""
+        if not _synthetic_ref(ref):
+            return None
+        if (type(expected_case_version) is not int
+                or type(expected_question_revision) is not int
+                or expected_question_revision < 0
+                or not _synthetic_ref(action_id)
+                or not valid_question_refs(product_ref, destination_ref)):
+            raise ValueError("invalid DEMO export question command")
+        with self._transaction() as db:
+            self._verify(db)
+            record = self._catalogue.get(("EXPORT", ref))
+            if (record is None
+                    or not self._active_operator(db, "EXPORT", ref, principal)):
+                return None
+            if record.version != expected_case_version:
+                raise ExportResearchQuestionConflict("stale Export case version")
+            current = db.execute(
+                "SELECT COALESCE(MAX(revision),0) "
+                "FROM export_research_question_draft WHERE ref=?", (ref,),
+            ).fetchone()[0]
+            replay = db.execute(
+                "SELECT ref,case_version,revision,actor_digest,source_ref,"
+                "product_ref,destination_ref FROM export_research_question_draft "
+                "WHERE action_id=?", (action_id,),
+            ).fetchone()
+            if replay is not None:
+                if (replay != (
+                        ref, record.version, expected_question_revision + 1,
+                        _hash(principal.subject), record.source_ref,
+                        product_ref, destination_ref,
+                    ) or current != replay[2]):
+                    raise ExportResearchQuestionConflict(
+                        "stale or conflicting question action"
+                    )
+                return self._current_export_question(db, ref)
+            if expected_question_revision != current:
+                raise ExportResearchQuestionConflict("stale question revision")
+            revision = current + 1
+            binding = question_binding(
+                action_id=action_id, ref=ref, case_version=record.version,
+                revision=revision, actor_digest=_hash(principal.subject),
+                source_ref=record.source_ref, product_ref=product_ref,
+                destination_ref=destination_ref,
+            )
+            digest = question_digest(binding)
+            event = self._append(
+                db, kind=EXPORT_QUESTION_RECORDED, engine="EXPORT",
+                ref=ref, actor=principal.subject, action_id=action_id,
+                reason_ref=record.source_ref,
+                target=_json(binding), mode="LOCAL_TEST_QUESTION_DRAFT",
+            )
+            db.execute(
+                "INSERT INTO export_research_question_draft "
+                "(action_id,ref,case_version,revision,actor_digest,source_ref,"
+                "product_ref,destination_ref,command_digest,audit_sequence) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (action_id, ref, record.version, revision,
+                 _hash(principal.subject), record.source_ref, product_ref,
+                 destination_ref, digest, event.sequence),
+            )
+            self._verify(db)
+            return self._current_export_question(db, ref)
+
     def read_export_research_workspace(
         self, ref: str, principal: Principal,
     ) -> dict | None:
@@ -417,6 +584,11 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                         "hs_code": None,
                     },
                     "study_findings": None,
+                    # Explicit DEMO question does not turn any original
+                    # verified market fields into known research results.
+                    "local_test_draft_question": (
+                        self._current_export_question(db, ref)
+                    ),
                     "review_revision": len(steps),
                     "technical_review_state": STATES[len(steps)],
                     "technical_review_steps": [

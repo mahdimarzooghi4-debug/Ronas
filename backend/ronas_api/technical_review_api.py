@@ -7,11 +7,22 @@ each exact-case read. No response records a Business approval.
 from collections.abc import Callable
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
 
 from .auth import Principal
 from .grant_ledger_sqlite import LedgerIntegrityError
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
+from .export_research_question import ExportResearchQuestionConflict
+
+
+class SyntheticExportQuestionCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: StrictStr
+    expected_case_version: StrictInt
+    expected_question_revision: StrictInt
+    product_ref: StrictStr
+    destination_ref: StrictStr
 
 
 def build_technical_review_read_router(
@@ -126,6 +137,45 @@ def build_technical_review_read_router(
             ) from exc
         if result is None:
             raise HTTPException(status_code=404, detail="DRAFT_NOT_FOUND")
+        return result
+
+    @router.post(
+        "/api/v1/admin/export/research/drafts/{ref}/local-test-question",
+        status_code=201,
+    )
+    def record_export_local_question(
+        ref: str, command: SyntheticExportQuestionCommand,
+        authorization: str | None = Header(default=None),
+        p: Principal = Depends(verified_principal),
+    ) -> dict:
+        # Mutating demo endpoints explicitly demand signed Bearer auth.
+        # Session-cookie-only browser POST is forbidden (no CSRF bypass).
+        if (not isinstance(authorization, str)
+                or not authorization.startswith("Bearer ")):
+            raise HTTPException(401, detail="BEARER_REQUIRED")
+        try:
+            result = ledger.record_export_research_question(
+                ref, p,
+                expected_case_version=command.expected_case_version,
+                expected_question_revision=command.expected_question_revision,
+                action_id=command.action_id,
+                product_ref=command.product_ref,
+                destination_ref=command.destination_ref,
+            )
+        except ExportResearchQuestionConflict as exc:
+            raise HTTPException(
+                409, detail="EXPORT_LOCAL_QUESTION_CHANGED",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                422, detail="INVALID_EXPORT_LOCAL_QUESTION",
+            ) from exc
+        except (LedgerIntegrityError, sqlite3.Error) as exc:
+            raise HTTPException(
+                503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+            ) from exc
+        if result is None:
+            raise HTTPException(404, detail="DRAFT_NOT_FOUND")
         return result
 
     return router

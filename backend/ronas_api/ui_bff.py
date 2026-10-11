@@ -673,6 +673,9 @@ def build_authenticated_ui_router(
                 + ' · نسخه ورودی ' + str(q["bound_input_revision"])
                 + ' · ارجاع دلیل ' + escape(q["draft_reason_ref"])
                 + ' · ارجاع شاهد ' + escape(q["draft_evidence_ref"])
+                + (' · پاسخ ساختاری خانوار دریافت شده (بررسی نشده)'
+                   if q["synthetic_household_response_received"]
+                   else ' · پاسخی ثبت نشده')
                 + ' — صرفاً سابقه، بدون تأیید</li>'
                 for q in notes["questions"]
             )

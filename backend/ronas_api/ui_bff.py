@@ -989,11 +989,78 @@ def build_authenticated_ui_router(
                 'تأیید متخصص یا برنامه کشت معتبر نیست.</p>'
                 '<p>ثبت اصلاح واقعی و ارائه فرم رضایت '
                 'در این پیش‌نمای آزمایشی فعال نیست.</p>'
-                '<p><a href="/my-drafts/' + quote(ref)
+                + ('<p><a href="/my-drafts/' + quote(ref)
+                   + '/question-responses">'
+                   'پاسخ‌های آزمایشی من به پرسش کفایت اطلاعات</a></p>'
+                   if isinstance(household_input_ledger,
+                                 SqliteSyntheticExpertQuestionLedger) else '')
+                + '<p><a href="/my-drafts/' + quote(ref)
                 + '">بازگشت به پرونده من</a></p></article>'
             )
             return page("روناس — تاریخچه اصلاح آزمایشی اطلاعات خانوار",
                         body, logged_in=True)
+
+    if isinstance(household_input_ledger, SqliteSyntheticExpertQuestionLedger):
+        @router.get("/my-drafts/{ref}/question-responses")
+        def household_question_response_history(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            try:
+                notes = household_input_ledger.read_owned_question_responses(
+                    ref, Principal(session.subject, session.roles),
+                )
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_QUESTION_RESPONSE_UNAVAILABLE",
+                ) from exc
+            if notes is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            if (notes["engine"] != "DOMESTIC"
+                    or notes["purpose_consent_verified"] is not False
+                    or notes["expert_review_recorded"] is not False
+                    or notes["plan_accepted"] is not False
+                    or notes["real_data"] is not False):
+                raise HTTPException(
+                    503, detail="SYNTHETIC_QUESTION_RESPONSE_UNAVAILABLE",
+                )
+            rows = ''.join(
+                '<li>پرسش آزمایشی ' + str(q["question_revision"])
+                + ' · نسخه ورودی ' + str(q["bound_input_revision"])
+                + ' · وضعیت ' + escape(q["response_state"])
+                + (' · ارجاع پاسخ ' + escape(q["response_ref"])
+                   if q["response_ref"] else '')
+                + (' · ارجاع شاهد ' + escape(q["evidence_ref"])
+                   if q["evidence_ref"] else '')
+                + (' · نسخه فعلی' if q["is_current_input_version"]
+                   else ' · نسخه تاریخی')
+                + '</li>'
+                for q in notes["questions"]
+            )
+            body = (
+                '<article class="panel"><h2>تاریخچه پاسخ‌های ساختاری خانوار '
+                '(فقط DEMO)</h2>'
+                '<p>پرونده ' + escape(notes["case_ref"])
+                + ' · نسخه ' + str(notes["case_version"]) + '</p>'
+                + ('<ul>' + rows + '</ul>' if rows else
+                   '<p>هنوز پرسشی درباره ورودی خانوار ثبت نشده است.</p>')
+                + '<p>این پاسخ‌ها صرفاً ارجاع مصنوعی هستند؛ '
+                'رضایت خانوار، بررسی کفایت داده، تصمیم متخصص یا '
+                'برنامه پذیرفته‌شده محسوب نمی‌شوند.</p>'
+                '<p>در این صفحه فرم دریافت اطلاعات واقعی یا '
+                'فرمان تأیید/رد وجود ندارد.</p>'
+                '<p><a href="/my-drafts/' + quote(ref)
+                + '/input-revisions">بازگشت به تاریخچه نسخه‌ها</a></p>'
+                '</article>'
+            )
+            return page(
+                "روناس — پاسخ‌های آزمایشی خانوار",
+                body, logged_in=True,
+            )
 
     if (technical_review_ledger is not None
             and owned_case_ledger is technical_review_ledger):

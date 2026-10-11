@@ -21,6 +21,7 @@ from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES
 from .internal_expert_review_preparation import project_expert_review_preparation
 from .internal_expert_evidence_index import project_synthetic_review_evidence_index
 from .internal_expert_provenance_dossier import project_expert_provenance_dossier
+from .internal_expert_binding_drift import project_synthetic_review_binding_drift
 from .expert_review_questions_sqlite import (
     SqliteSyntheticExpertQuestionLedger, ReviewQuestionConflict, TRACKS,
 )
@@ -633,6 +634,95 @@ class SyntheticAgronomyWorkspace:
             self.ledger._append(
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                 actor=actor, mode="AGRONOMY_SYNTHETIC_PROVENANCE_DOSSIER",
+            )
+            return result
+
+
+    def read_assigned_synthetic_historical_binding_drift(
+        self, ref: str, principal: Principal,
+    ) -> dict | None:
+        """Audit-only historical diagnosis; stale fixtures never become usable.
+
+        Contrary to strict CURRENT provenance reads, historical records remain
+        visible when input or synthetic source candidate pointers drift.
+        """
+        if not isinstance(self.ledger, SqliteSyntheticExpertQuestionLedger):
+            raise ValueError("synthetic question ledger not installed")
+        if not _synthetic_ref(ref):
+            return None
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            record = self.ledger._catalogue.get(("DOMESTIC", ref))
+            actor = self._actor(principal)
+            if record is None or actor is None:
+                return None
+            if not self._allowed(actor, ref, record.version):
+                return None
+            current_input = self.ledger._input_snapshot_from_verified_transaction(
+                db, ref, record.version,
+            )
+            current_proposal = self._proposal_fixtures.get(ref)
+            source_state = "NO_SEPARATE_SOURCE_CATALOGUE"
+            if current_proposal is not None and self._scientific_basis_fixtures:
+                basis = self._scientific_basis_fixtures.get(
+                    current_proposal.scientific_basis_manifest_digest
+                )
+                try:
+                    latest_sources = self._trusted_scientific_sources()
+                except Exception as exc:
+                    raise LedgerIntegrityError(
+                        "synthetic science catalogue unavailable"
+                    ) from exc
+                if (type(latest_sources) is not tuple
+                        or any(not isinstance(s, ScientificSourceCandidate)
+                               for s in latest_sources)
+                        or len({s.ref for s in latest_sources}) != len(latest_sources)):
+                    raise LedgerIntegrityError(
+                        "malformed current synthetic source candidate catalogue"
+                    )
+                try:
+                    inspect_scientific_basis_structure(
+                        basis,
+                        expected_manifest_digest=(
+                            current_proposal.scientific_basis_manifest_digest
+                        ),
+                        current_sources=latest_sources,
+                    )
+                    source_state = "SOURCE_CANDIDATE_POINTERS_MATCH_UNVERIFIED"
+                except ValueError:
+                    # A structurally changed candidate is not a legitimate
+                    # reason to erase a previously recorded review question.
+                    source_state = "SOURCE_CANDIDATE_POINTERS_CHANGED"
+            historical = list(db.execute(
+                "SELECT track,revision,input_revision,input_digest,"
+                "science_digest,proposal_digest FROM expert_review_question "
+                "WHERE ref=? ORDER BY audit_sequence", (ref,),
+            ))
+            answered = set(db.execute(
+                "SELECT track,question_revision FROM household_question_response "
+                "WHERE ref=?", (ref,),
+            ))
+            inspected = set(db.execute(
+                "SELECT track,question_revision "
+                "FROM expert_response_receipt_inspection WHERE ref=?",
+                (ref,),
+            ))
+            try:
+                result = project_synthetic_review_binding_drift(
+                    case_ref=ref, case_version=record.version,
+                    current_input=current_input,
+                    current_proposal=current_proposal,
+                    source_pointer_state=source_state,
+                    question_bindings=historical, responses=answered,
+                    inspections=inspected,
+                )
+            except (ValueError, KeyError, TypeError) as exc:
+                raise LedgerIntegrityError(
+                    "untrusted synthetic historical drift projection"
+                ) from exc
+            self.ledger._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=actor, mode="AGRONOMY_SYNTHETIC_HISTORICAL_BINDING_DRIFT",
             )
             return result
 

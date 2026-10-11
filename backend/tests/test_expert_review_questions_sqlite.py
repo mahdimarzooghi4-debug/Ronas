@@ -319,6 +319,168 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertEqual(result.status_code, 503)
         self.assertNotIn("DEMO-FORGED", result.text)
 
+
+    def drift_url(self):
+        return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/historical-binding-drift"
+
+    def test_historical_binding_drift_keeps_owner_receipt_and_three_lanes(self):
+        self.seed_input()
+        self.assertEqual(self.post().status_code, 201)
+        self.assertEqual(self.owner_reply().status_code, 201)
+        self.assertEqual(self.inspect().status_code, 201)
+        self.assertEqual(self.post(
+            track=TRACKS[1], action="DEMO-SCI-Q",
+        ).status_code, 201)
+        self.assertEqual(self.post(
+            track=TRACKS[2], action="DEMO-PLAN-Q",
+        ).status_code, 201)
+        response = self.client.get(self.drift_url(), headers=self.headers())
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual([r["track"] for r in data["tracks"]], list(TRACKS))
+        self.assertEqual([r["historical_question_count"] for r in data["tracks"]],
+                         [1, 1, 1])
+        self.assertEqual(data["source_candidate_pointer_state"],
+                         "NO_SEPARATE_SOURCE_CATALOGUE")
+        self.assertEqual(data["tracks"][0]["questions"][0]["structural_context"],
+                         "SCIENTIFIC_CATALOGUE_NOT_CHECKED")
+        self.assertTrue(data["tracks"][0]["questions"][0]
+                        ["historical_receipt_sighted_not_reviewed"])
+        self.assertTrue(all(
+            not item["eligible_for_operational_reuse"]
+            for track in data["tracks"] for item in track["questions"]
+        ))
+        for secret in ("DEMO-ANSWER-A", "DEMO-OWNER-EVIDENCE",
+                       "DEMO-REASON-A", "DEMO-EVIDENCE-A",
+                       "DEMO-STAGE-A", "DEMO-RUN-1", "1" * 64):
+            self.assertNotIn(secret, response.text)
+        self.assertFalse(data["plan_accepted"])
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(len([
+            e for e in self.ledger.audit_snapshot()
+            if e.access_mode == "AGRONOMY_SYNTHETIC_HISTORICAL_BINDING_DRIFT"
+        ]), 1)
+
+    def test_historical_binding_drift_after_input_correction_and_new_question(self):
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        self.inspect()
+        self.post(action="DEMO-Q-B", revision=1)
+        self.seed_input(revision=1, digest="7" * 64, action="DEMO-INPUT-B")
+        response = self.client.get(self.drift_url(), headers=self.headers())
+        self.assertEqual(response.status_code, 200, response.text)
+        items = response.json()["tracks"][0]["questions"]
+        self.assertEqual(len(items), 2)
+        self.assertTrue(items[0]["superseded_by_newer_question"])
+        self.assertTrue(items[0]["historical_receipt_sighted_not_reviewed"])
+        self.assertEqual([x["structural_context"] for x in items], [
+            "HOUSEHOLD_INPUT_REVISION_OR_FINGERPRINT_CHANGED"] * 2)
+        self.assertEqual(self.client.get(
+            self.provenance_dossier_url(), headers=self.headers()
+        ).status_code, 503)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_historical_binding_drift_source_candidate_change_is_not_approval(self):
+        src = ScientificSourceCandidate(
+            ref="DEMO-SCI-DRIFT", version=1, content_sha256="a" * 64,
+            rights_document_ref="DEMO-RIGHTS-DRIFT",
+            rights_document_sha256="b" * 64,
+            science_review_request_ref="DEMO-SCI-REVIEW-DRIFT",
+            science_review_material_sha256="c" * 64,
+        )
+        basis = ScientificBasisCandidate(
+            ref="DEMO-BASIS-DRIFT", version=1, sources=(src,),
+        )
+        self.science_current[:] = [src]
+        self.workspace = self.specialist(
+            proposal=self.proposal(science=basis.manifest_digest),
+            science_basis=basis,
+        )
+        self.client = self.make_client()
+        self.seed_input()
+        self.post()
+        first = self.client.get(self.drift_url(), headers=self.headers())
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["tracks"][0]["questions"][0]
+                         ["structural_context"],
+                         "STRUCTURAL_FIXTURE_MATCH_ONLY_UNREVIEWED")
+        self.science_current[:] = [
+            replace(src, rights_document_sha256="d" * 64)
+        ]
+        drifted = self.client.get(self.drift_url(), headers=self.headers())
+        self.assertEqual(drifted.status_code, 200, drifted.text)
+        self.assertEqual(drifted.json()["tracks"][0]["questions"][0]
+                         ["structural_context"],
+                         "SCIENTIFIC_SOURCE_CANDIDATE_POINTERS_CHANGED")
+        self.assertEqual(self.client.get(
+            self.provenance_dossier_url(), headers=self.headers()
+        ).status_code, 503)
+        self.assertFalse(drifted.json()["scientific_validity_verified"])
+
+    def test_historical_drift_source_unavailable_or_malformed_fails_503(self):
+        src = ScientificSourceCandidate(
+            ref="DEMO-SCI-DRIFT", version=1, content_sha256="a" * 64,
+            rights_document_ref="DEMO-RIGHTS-DRIFT",
+            rights_document_sha256="b" * 64,
+            science_review_request_ref="DEMO-SCI-REVIEW-DRIFT",
+            science_review_material_sha256="c" * 64,
+        )
+        basis = ScientificBasisCandidate(
+            ref="DEMO-BASIS-DRIFT", version=1, sources=(src,),
+        )
+        self.science_current[:] = [src]
+        self.workspace = self.specialist(
+            proposal=self.proposal(science=basis.manifest_digest),
+            science_basis=basis,
+        )
+        self.client = self.make_client()
+        self.seed_input()
+        self.post()
+        self.science_current[:] = [src, src]
+        self.assertEqual(self.client.get(
+            self.drift_url(), headers=self.headers()
+        ).status_code, 503)
+        self.assertTrue(self.ledger.verify_integrity())
+        self.workspace._trusted_scientific_sources = (
+            lambda: (_ for _ in ()).throw(RuntimeError("source unavailable"))
+        )
+        self.assertEqual(self.client.get(
+            self.drift_url(), headers=self.headers()
+        ).status_code, 503)
+
+    def test_historical_drift_requires_signed_role_assignment_and_intact_ledger(self):
+        path = self.drift_url()
+        self.assertEqual(self.client.get(path).status_code, 401)
+        self.assertEqual(self.client.get(
+            path, headers=self.headers(OWNER, ("household",))
+        ).status_code, 404)
+        self.assertEqual(self.client.get(
+            path.replace("DEMO-D-1", "DEMO-E-1"),
+            headers=self.headers(),
+        ).status_code, 404)
+        self.assertEqual(self.client.post(
+            path, headers=self.headers(), json={}
+        ).status_code, 405)
+        self.active = False
+        self.assertEqual(self.client.get(
+            path, headers=self.headers()
+        ).status_code, 404)
+        self.active = True
+        self.assertEqual(TestClient(create_app(self.config)).get(
+            path, headers=self.headers()
+        ).status_code, 404)
+        self.seed_input()
+        self.post()
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER expert_question_no_update")
+            db.execute(
+                "UPDATE expert_review_question SET science_digest=?", ("f" * 64,)
+            )
+        bad = self.client.get(path, headers=self.headers())
+        self.assertEqual(bad.status_code, 503)
+        self.assertNotIn("f" * 64, bad.text)
+
     def evidence_index_url(self):
         return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-index"
 

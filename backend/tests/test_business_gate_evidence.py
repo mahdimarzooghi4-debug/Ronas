@@ -420,5 +420,221 @@ class GateEvidenceSnapshotTests(unittest.TestCase):
                 self.assertNotIn("PASS", r.text)
 
 
+    def test_decision_desk_pinned_source_and_three_domain_counts(self):
+        from ronas_api.operational_readiness import (
+            PINNED_FILES, SOURCE_HEAD_AT_REVIEW, SNAPSHOT,
+            verify_decision_sources,
+        )
+        gate, rights = verify_decision_sources()
+        self.assertEqual(len(PINNED_FILES), 5)
+        self.assertEqual([x["domain"] for x in gate["dossiers"]],
+                         ["DOMESTIC", "EXPORT", "FINANCE"])
+        self.assertEqual(len(rights["candidates"]), 5)
+        res = self.client.get(
+            "/api/v1/admin/operational-readiness",
+            headers=self.headers(),
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["snapshot_state"], SNAPSHOT)
+        self.assertEqual(res.json()["source_head_at_review"], SOURCE_HEAD_AT_REVIEW)
+        self.assertEqual([
+            (x["domain"], x["pending_evidence_count"])
+            for x in res.json()["items"]
+        ], [("DOMESTIC", 5), ("EXPORT", 4), ("FINANCE", 7)])
+        self.assertTrue(all(not x["actions_enabled"] for x in res.json()["items"]))
+
+    def test_decision_desk_domestic_requires_consent_and_review(self):
+        res = self.client.get(
+            "/api/v1/admin/operational-readiness/DOMESTIC",
+            headers=self.headers(("domestic_ops",)),
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        data = res.json()
+        self.assertEqual(data["gate_issue"], 2)
+        self.assertEqual(data["gate_status_at_source"], "OPEN")
+        self.assertEqual(data["candidate_scopes_not_approved"],
+                         ["CORE-D1-A", "CORE-D1-B", "CORE-D2"])
+        self.assertEqual(len(data["sources_not_licensed"]), 2)
+        self.assertIn("DOM-AGROVOC", [x["id"] for x in
+                                     data["sources_not_licensed"]])
+        self.assertTrue(all(not x["verified"] for x in data["pending_evidence"]))
+        for key in ("decision_authorized", "real_data_authorized",
+                    "operational_actions_enabled", "training_authorized"):
+            self.assertIs(data[key], False)
+
+    def test_decision_desk_export_retains_comtrade_rights_blocks(self):
+        d = self.client.get(
+            "/api/v1/admin/operational-readiness/EXPORT",
+            headers=self.headers(("export_ops",)),
+        ).json()
+        self.assertEqual(d["gate_issue"], 3)
+        self.assertEqual(len(d["sources_not_licensed"]), 3)
+        c = next(x for x in d["sources_not_licensed"]
+                 if x["id"] == "EXP-COMTRADE")
+        self.assertIn("INTERNAL_USE_NOT_PUBLIC_REDISTRIBUTION",
+                      c["review_flags"])
+        self.assertFalse(c["rights_verified"])
+        self.assertFalse(c["training_rights_verified"])
+        self.assertNotIn("source_arithmetic_not_budget", d)
+
+    def test_decision_desk_finance_exact_source_not_real_budget(self):
+        d = self.client.get(
+            "/api/v1/admin/operational-readiness/FINANCE",
+            headers=self.headers(("finance",)),
+        ).json()
+        self.assertEqual(d["gate_issue"], 4)
+        self.assertEqual(d["sources_not_licensed"], [])
+        self.assertEqual(d["source_arithmetic_not_budget"][
+            "arithmetic_unexplained_difference"], 11405)
+        self.assertFalse(d["source_arithmetic_not_budget"]["payments_enabled"])
+        self.assertFalse(d["source_arithmetic_not_budget"][
+            "corrected_budget_approved"])
+
+    def test_decision_desk_scoped_roles_and_unknown_domain(self):
+        base = "/api/v1/admin/operational-readiness"
+        for role, own in (("domestic_ops", "DOMESTIC"),
+                          ("export_ops", "EXPORT"),
+                          ("finance", "FINANCE")):
+            with self.subTest(role=role):
+                res = self.client.get(base, headers=self.headers((role,)))
+                self.assertEqual([x["domain"] for x in res.json()["items"]],
+                                 [own])
+                for domain in ("DOMESTIC", "EXPORT", "FINANCE", "UNKNOWN"):
+                    if domain != own:
+                        self.assertEqual(self.client.get(
+                            base + "/" + domain,
+                            headers=self.headers((role,)),
+                        ).status_code, 404)
+        self.assertEqual(self.client.get(
+            base, headers=self.headers(("household",)),
+        ).status_code, 403)
+        self.assertEqual(len(self.client.get(
+            base, headers=self.headers(("governance",)),
+        ).json()["items"]), 3)
+
+    def test_decision_desk_html_linked_by_role_without_submission(self):
+        for role, own in (("domestic_ops", "DOMESTIC"),
+                          ("export_ops", "EXPORT"),
+                          ("finance", "FINANCE")):
+            with self.subTest(role=role):
+                self.client.cookies.clear()
+                self.login((role,))
+                url = "/admin/operational-readiness/" + own
+                admin = self.client.get("/admin")
+                self.assertIn(url, admin.text)
+                res = self.client.get(url)
+                self.assertEqual(res.status_code, 200, res.text)
+                self.assertIn("مدرک معتبر هنوز احراز نشده", res.text)
+                self.assertIn("/issues/" + str({
+                    "DOMESTIC": 2, "EXPORT": 3, "FINANCE": 4,
+                }[own]), res.text)
+                self.assertIn("form-action 'none'",
+                              res.headers["content-security-policy"])
+                self.assertEqual(res.headers["cache-control"], "no-store")
+                for other in ("DOMESTIC", "EXPORT", "FINANCE"):
+                    if other != own:
+                        self.assertNotIn(
+                            "/admin/operational-readiness/" + other,
+                            admin.text,
+                        )
+                        self.assertEqual(self.client.get(
+                            "/admin/operational-readiness/" + other
+                        ).status_code, 404)
+
+    def test_decision_desk_governance_no_case_data(self):
+        self.login(("governance",))
+        menu = self.client.get("/admin")
+        for domain in ("DOMESTIC", "EXPORT", "FINANCE"):
+            self.assertIn("/admin/operational-readiness/" + domain, menu.text)
+        page = self.client.get("/admin/operational-readiness/EXPORT")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("حق استفاده و آموزش AI احراز نشده", page.text)
+        self.assertNotIn("DEMO-E-001", page.text)
+        self.assertNotIn("synthetic-review-user", page.text)
+
+    def test_decision_desk_authentication_and_revoked_session(self):
+        url = "/api/v1/admin/operational-readiness"
+        self.assertEqual(self.client.get(url).status_code, 401)
+        self.assertEqual(self.client.get(
+            url, headers={"Authorization": "Bearer forged"},
+        ).status_code, 401)
+        self.assertEqual(self.client.get(
+            url, headers=self.headers(expired=True),
+        ).status_code, 401)
+        self.assertEqual(self.client.get(
+            "/admin/operational-readiness/DOMESTIC",
+        ).status_code, 401)
+        sid = self.login(("domestic_ops",))
+        self.assertEqual(self.client.get(
+            "/admin/operational-readiness/DOMESTIC",
+        ).status_code, 200)
+        self.sessions.revoke_session(sid)
+        self.assertEqual(self.client.get(
+            "/admin/operational-readiness/DOMESTIC",
+        ).status_code, 401)
+
+    def test_decision_desk_any_source_drift_fails_closed(self):
+        from ronas_api.operational_readiness import PINNED_FILES
+        item = "docs/business/official-source-rights-screening.json"
+        with patch.dict(PINNED_FILES, {item: "f" * 40}):
+            for url in (
+                "/api/v1/admin/operational-readiness",
+                "/api/v1/admin/operational-readiness/DOMESTIC",
+                "/api/v1/admin/operational-readiness/FINANCE",
+            ):
+                res = self.client.get(url, headers=self.headers())
+                self.assertEqual(res.status_code, 503)
+                self.assertEqual(res.json(),
+                                 {"detail": "PINNED_BUSINESS_SOURCE_UNAVAILABLE"})
+                self.assertNotIn("AGROVOC", res.text)
+            self.login(("governance",))
+            menu = self.client.get("/admin")
+            self.assertNotIn("/admin/operational-readiness/EXPORT", menu.text)
+            self.assertIn("پیوندها غیرفعال هستند", menu.text)
+
+    def test_decision_desk_checkout_tamper_and_missing_source(self):
+        from ronas_api.operational_readiness import (
+            PINNED_FILES, verify_decision_sources,
+        )
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            self._copy_pinned_sources(dest)
+            for rel in PINNED_FILES:
+                target = dest / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(root / rel, target)
+            gate, rights = verify_decision_sources(root=dest)
+            self.assertEqual(len(gate["dossiers"]), 3)
+            self.assertEqual(len(rights["candidates"]), 5)
+            candidate = dest / "docs/business/official-source-rights-screening.json"
+            original = candidate.read_bytes()
+            candidate.write_bytes(original.replace(
+                b'"source_use_approved": false', b'"source_use_approved": true',
+            ))
+            with self.assertRaises(BusinessSourceSnapshotError):
+                verify_decision_sources(root=dest)
+            candidate.write_bytes(original)
+            (dest / "docs/business/75-operational-three-gate-decision-docket.md"
+             ).unlink()
+            with self.assertRaises(BusinessSourceSnapshotError):
+                verify_decision_sources(root=dest)
+
+    def test_decision_desk_read_only_and_default_app_off(self):
+        root = "/api/v1/admin/operational-readiness"
+        default = TestClient(create_app(self.config), base_url=ORIGIN)
+        self.assertEqual(default.get(root, headers=self.headers()).status_code, 404)
+        self.assertEqual(default.get(
+            "/admin/operational-readiness/DOMESTIC",
+            headers=self.headers(),
+        ).status_code, 404)
+        for path in (root, root + "/DOMESTIC",
+                     "/admin/operational-readiness/DOMESTIC"):
+            response = self.client.post(
+                path, json={"gate_status": "PASS"},
+                headers=self.headers(),
+            )
+            self.assertEqual(response.status_code, 405, response.text)
+
 if __name__ == "__main__":
     unittest.main()

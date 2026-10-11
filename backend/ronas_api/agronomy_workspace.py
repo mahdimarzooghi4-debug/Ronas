@@ -19,6 +19,10 @@ from .internal_cultivation_plan_contract import (
 )
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES
 from .scoped_drafts import _synthetic_ref, _synthetic_subject
+from .internal_scientific_basis_contract import (
+    ScientificBasisCandidate, ScientificSourceCandidate,
+    inspect_scientific_basis_structure,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +47,10 @@ class SyntheticAgronomyWorkspace:
         trusted_assignment_active: Callable[[str, str, int], bool],
         proposal_fixtures: Iterable[InternalCultivationProposal] = (),
         trusted_input_snapshot: Callable[[str, int], tuple[int, str] | None] | None = None,
+        scientific_basis_fixtures: Iterable[ScientificBasisCandidate] = (),
+        trusted_scientific_source_snapshot: Callable[
+            [], tuple[ScientificSourceCandidate, ...]
+        ] | None = None,
     ) -> None:
         if (not isinstance(ledger, SqliteSyntheticHumanReviewLedger)
                 or not callable(trusted_assignment_active)):
@@ -81,6 +89,30 @@ class SyntheticAgronomyWorkspace:
                 or trusted_input_snapshot is not None
                    and not callable(trusted_input_snapshot)):
             raise ValueError("independent input snapshot authority required")
+        # A pinned, *unverified* scientific provenance catalogue is entirely
+        # optional and must have a separately read current-source authority.
+        # Structural provenance never authorizes a source or plan.
+        bases: dict[str, ScientificBasisCandidate] = {}
+        for basis in scientific_basis_fixtures:
+            if not isinstance(basis, ScientificBasisCandidate):
+                raise ValueError("untrusted scientific basis fixture")
+            digest = basis.manifest_digest
+            if digest in bases:
+                raise ValueError("duplicate scientific basis")
+            bases[digest] = basis
+        if ((bases and not callable(trusted_scientific_source_snapshot))
+                or trusted_scientific_source_snapshot is not None
+                   and not callable(trusted_scientific_source_snapshot)):
+            raise ValueError("current scientific source authority required")
+        if bases and not catalog:
+            raise ValueError("scientific basis without proposal")
+        if bases and any(
+            item.scientific_basis_manifest_digest not in bases
+            for item in catalog.values()
+        ):
+            raise ValueError("unbound scientific basis digest")
+        self._scientific_basis_fixtures = bases
+        self._trusted_scientific_sources = trusted_scientific_source_snapshot
         self._proposal_fixtures = catalog
         self._trusted_input_snapshot = trusted_input_snapshot
         self.ledger = ledger
@@ -291,13 +323,33 @@ class SyntheticAgronomyWorkspace:
                         raise LedgerIntegrityError(
                             "stale/mismatched synthetic proposal lineage"
                         ) from exc
-                    # Client receives no digests, model ref, source material,
-                    # household profile or fictional scientific content.
+                    provenance_state = "SCIENTIFIC_SOURCE_UNVERIFIED"
+                    if self._scientific_basis_fixtures:
+                        basis = self._scientific_basis_fixtures.get(
+                            proposal.scientific_basis_manifest_digest,
+                        )
+                        try:
+                            latest = self._trusted_scientific_sources()
+                            science_trace = inspect_scientific_basis_structure(
+                                basis,
+                                expected_manifest_digest=(
+                                    proposal.scientific_basis_manifest_digest
+                                ),
+                                current_sources=latest,
+                            )
+                        except Exception as exc:
+                            raise LedgerIntegrityError(
+                                "stale/unavailable internal scientific source lineage"
+                            ) from exc
+                        provenance_state = science_trace["basis_state"]
+                    # Client receives no digests, source content/rights
+                    # references, model ref or scientific approval.
                     result = {
                         "contract_version": "ronas.domestic.internal-proposal-handoff.v0",
                         "engine": "DOMESTIC", "case_ref": ref,
                         "case_version": record.version,
                         "proposal_status": traced["proposal_status"],
+                        "scientific_basis_state": provenance_state,
                         "proposed_stage_refs": traced["proposed_stage_refs"],
                         "input_revision": snapshot[0],
                         "input_state": case["cultivation_preparation"]["input_state"],

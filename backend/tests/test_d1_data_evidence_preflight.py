@@ -48,7 +48,7 @@ class D1DataEvidencePreflightTests(unittest.TestCase):
     def test_no_evidence_is_blocked_with_explicit_missing_slots(self):
         report = evidence_preflight()
         self.assertEqual(report["provided_pointer_count"], 0)
-        self.assertEqual(report["required_slots"], len(D1_EVIDENCE_IDS) * 2)
+        self.assertEqual(report["candidate_review_slots"], len(D1_EVIDENCE_IDS) * 2)
         self.assertEqual(len(report["evidence_items"]), 14)
         self.assertTrue(all(
             row["preparation_status"] == "MISSING"

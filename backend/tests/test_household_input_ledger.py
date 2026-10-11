@@ -505,5 +505,88 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         self.assertFalse(ordinary.json()["purpose_consent_verified"])
 
 
+    def demo_browser_form(self, *, rev=0, choice="DEMO-MANIFEST-ALPHA",
+                          case_version=3, csrf=None):
+        sid_cookie = self.client.cookies.get("__Host-ronas_session")
+        session = self.sessions.get_session(sid_cookie)
+        return {
+            "csrf": session.csrf if csrf is None else csrf,
+            "case_version": str(case_version),
+            "input_revision": str(rev),
+            "scenario": choice,
+        }
+
+    def test_browser_local_demo_correction_roundtrip_and_stale(self):
+        self.browser()
+        before = self.client.get(HTML)
+        self.assertEqual(before.status_code, 200, before.text)
+        self.assertIn('form-action \'self\'', before.headers["content-security-policy"])
+        self.assertIn("ثبت نسخه DEMO", before.text)
+        form = self.demo_browser_form()
+        route = HTML + "/demo-correction"
+        first = self.client.post(route, data=form,
+                                 headers={"Origin": ORIGIN},
+                                 follow_redirects=False)
+        self.assertEqual(first.status_code, 303, first.text)
+        self.assertEqual(first.headers["location"], HTML)
+        self.assertEqual(self.client.get(ROOT, headers=self.headers()).json()[
+            "input_revisions"], [1])
+        stale = self.client.post(route, data=form, headers={"Origin": ORIGIN})
+        self.assertEqual(stale.status_code, 409)
+        current = self.client.get(HTML)
+        self.assertIn("بازنگری آزمایشی 1", current.text)
+        self.assertNotIn("رضایت آگاهانه احراز شده", current.text)
+        second = self.client.post(
+            route, data=self.demo_browser_form(
+                rev=1, choice="DEMO-MANIFEST-BETA",
+            ), headers={"Origin": ORIGIN}, follow_redirects=False,
+        )
+        self.assertEqual(second.status_code, 303, second.text)
+        self.assertEqual(self.reopen().read_owned_input_revisions(
+            "DEMO-D-1", Principal(OWNER, frozenset({"household"}))
+        )["input_revisions"], [1, 2])
+
+    def test_browser_local_demo_correction_csrf_origin_and_scope(self):
+        self.browser()
+        route = HTML + "/demo-correction"
+        form = self.demo_browser_form()
+        for hdr, payload, status in (
+            ({}, form, 403),
+            ({"Origin": "https://evil.test"}, form, 403),
+            ({"Origin": ORIGIN}, {**form, "csrf": "wrong"}, 403),
+            ({"Origin": ORIGIN}, {**form, "scenario": "wheat"}, 422),
+            ({"Origin": ORIGIN}, {**form, "case_version": "03"}, 422),
+            ({"Origin": ORIGIN}, {**form, "new_field": "PII"}, 422),
+        ):
+            with self.subTest(payload=payload, hdr=hdr):
+                got = self.client.post(route, data=payload, headers=hdr)
+                self.assertEqual(got.status_code, status, got.text)
+        self.assertEqual(self.client.post(
+            "/my-drafts/DEMO-D-2/input-revisions/demo-correction",
+            data=form, headers={"Origin": ORIGIN},
+        ).status_code, 404)
+        self.assertEqual(self.client.post(
+            "/my-drafts/DEMO-E-1/input-revisions/demo-correction",
+            data=form, headers={"Origin": ORIGIN},
+        ).status_code, 404)
+        self.assertEqual(self.client.get(ROOT, headers=self.headers()).json()[
+            "input_revisions"], [])
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_browser_local_demo_correction_no_session_or_expired(self):
+        self.assertEqual(self.client.post(
+            HTML + "/demo-correction", data={
+                "csrf": "invalid", "case_version": "3",
+                "input_revision": "0",
+                "scenario": "DEMO-MANIFEST-ALPHA",
+            }, headers={"Origin": ORIGIN},
+        ).status_code, 401)
+        self.browser(subject="synthetic-household-other")
+        self.assertEqual(self.client.get(HTML).status_code, 404)
+        self.assertEqual(self.client.post(
+            HTML + "/demo-correction", data=self.demo_browser_form(),
+            headers={"Origin": ORIGIN},
+        ).status_code, 404)
+
 if __name__ == "__main__":
     unittest.main()

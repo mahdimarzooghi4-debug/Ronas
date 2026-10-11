@@ -802,5 +802,85 @@ class ExportResearchQueueTests(unittest.TestCase):
             headers=self.headers(), json={},
         ).status_code, 404)
 
+    def demo_export_form(self, *, rev=0, case_version=3,
+                         product="DEMO-PRODUCT-ALPHA",
+                         destination="DEMO-DEST-ALPHA", csrf=None):
+        sid = self.client.cookies.get("__Host-ronas_session")
+        session = self.store.get_session(sid)
+        return {
+            "csrf": session.csrf if csrf is None else csrf,
+            "case_version": str(case_version),
+            "question_revision": str(rev),
+            "product_ref": product,
+            "destination_ref": destination,
+        }
+
+    def test_export_browser_question_form_end_to_end_with_revisions(self):
+        self.login()
+        base = "/admin/export/research/drafts/DEMO-E-001"
+        page = self.client.get(base)
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("ثبت پرسش آزمایشی", page.text)
+        self.assertIn("form-action 'self'", page.headers["content-security-policy"])
+        payload = self.demo_export_form()
+        post = self.client.post(base + "/local-test-question",
+                                data=payload, headers={"Origin": ORIGIN},
+                                follow_redirects=False)
+        self.assertEqual(post.status_code, 303, post.text)
+        self.assertEqual(post.headers["location"], base)
+        self.assertIn("DEMO-PRODUCT-ALPHA", self.client.get(base).text)
+        self.assertEqual(self.client.post(
+            base + "/local-test-question", data=payload,
+            headers={"Origin": ORIGIN},
+        ).status_code, 409)
+        second = self.client.post(base + "/local-test-question",
+            data=self.demo_export_form(
+                rev=1, product="DEMO-PRODUCT-BETA",
+                destination="DEMO-DEST-BETA",
+            ), headers={"Origin": ORIGIN}, follow_redirects=False)
+        self.assertEqual(second.status_code, 303, second.text)
+        data = self.client.get(
+            base.replace("/admin/", "/api/v1/admin/") + "/workspace",
+            headers=self.headers(),
+        )
+        self.assertEqual(data.status_code, 200, data.text)
+        self.assertEqual(data.json()["local_test_draft_question"][
+            "question_revision"], 2)
+        self.assertEqual(data.json()["research_question"],
+                         {"product": None, "destination": None, "hs_code": None})
+        self.assertFalse(data.json()["research_report_approved"])
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_export_browser_question_csrf_origin_role_scope_and_non_demo(self):
+        self.login()
+        base = "/admin/export/research/drafts/DEMO-E-001"
+        route = base + "/local-test-question"
+        data = self.demo_export_form()
+        for hdr, value, expected in (
+            ({}, data, 403),
+            ({"Origin": "https://invalid.test"}, data, 403),
+            ({"Origin": ORIGIN}, {**data, "csrf": "bad"}, 403),
+            ({"Origin": ORIGIN}, {**data, "product_ref": "wheat"}, 422),
+            ({"Origin": ORIGIN}, {**data, "destination_ref": "Iran"}, 422),
+            ({"Origin": ORIGIN}, {**data, "question_revision": "00"}, 422),
+            ({"Origin": ORIGIN}, {**data, "untrusted": "x"}, 422),
+        ):
+            with self.subTest(hdr=hdr, value=value):
+                self.assertEqual(self.client.post(
+                    route, data=value, headers=hdr,
+                ).status_code, expected)
+        self.assertEqual(self.client.post(
+            "/admin/export/research/drafts/DEMO-E-004/local-test-question",
+            data=data, headers={"Origin": ORIGIN},
+        ).status_code, 404)
+        self.assertEqual(self.client.post(
+            "/admin/export/research/drafts/DEMO-D-001/local-test-question",
+            data=data, headers={"Origin": ORIGIN},
+        ).status_code, 404)
+        self.assertEqual(self.client.get(
+            "/api/v1/admin/export/research/drafts/DEMO-E-001/workspace",
+            headers=self.headers(),
+        ).json()["local_test_draft_question"], None)
+
 if __name__ == "__main__":
     unittest.main()

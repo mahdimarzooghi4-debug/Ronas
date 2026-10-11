@@ -5,17 +5,25 @@ rendered from fixed templates, not client-supplied text or arbitrary files.
 No live workflow or personal data exists in this UI foundation.
 """
 from html import escape
-from urllib.parse import quote
+from urllib.parse import quote, parse_qs
 from pathlib import Path
+import hashlib
+import hmac
+import secrets
 
-from fastapi import APIRouter, Cookie, HTTPException
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi import APIRouter, Cookie, HTTPException, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 from .auth import InvalidToken, Principal
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES as TECHNICAL_STATES
 from .scoped_drafts import _synthetic_ref
 from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
-from .household_input_ledger_sqlite import SqliteSyntheticHouseholdInputLedger
+from .household_input_ledger_sqlite import (
+    InputRevisionConflict, SqliteSyntheticHouseholdInputLedger,
+)
+from .export_research_question import (
+    ExportResearchQuestionConflict, valid_question_refs,
+)
 from .oidc_browser import BrowserOIDC
 from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
                                      visible_dossiers, verify_pinned_business_sources,
@@ -66,7 +74,8 @@ LOGOUT_SCRIPT = """document.addEventListener('DOMContentLoaded', () => {
   });
 });"""
 
-def page(title: str, body: str, *, logged_in: bool, code: int = 200) -> HTMLResponse:
+def page(title: str, body: str, *, logged_in: bool, code: int = 200,
+         local_test_form: bool = False) -> HTMLResponse:
     logout = (
         '<button type="button" id="ronas-logout">خروج امن</button>'
         '<p id="logout-message" role="status" aria-live="polite"></p>'
@@ -87,8 +96,9 @@ def page(title: str, body: str, *, logged_in: bool, code: int = 200) -> HTMLResp
     response = HTMLResponse(html, status_code=code)
     response.headers["Content-Security-Policy"] = (
         "default-src 'none'; style-src 'self'; script-src 'self'; "
-        "connect-src 'self'; base-uri 'none'; form-action 'none'; "
-        "frame-ancestors 'none'; object-src 'none'"
+        "connect-src 'self'; base-uri 'none'; form-action "
+        + ("'self'" if local_test_form else "'none'")
+        + "; frame-ancestors 'none'; object-src 'none'"
     )
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Cache-Control"] = "no-store"
@@ -211,6 +221,63 @@ def build_authenticated_ui_router(
         raise ValueError("explicit synthetic Domestic partner workspace required")
     router = APIRouter()
     cookie_name = "__Host-ronas_session"
+
+    async def checked_browser_form(
+        request: Request, sid: str | None, *,
+        fields: frozenset[str],
+    ) -> tuple[Principal, dict[str, str]]:
+        """Verified server session, strict Origin+CSRF and bounded form input.
+
+        This is not the existing Bearer API route. Never accept ambient cookies
+        as enough: the signed session is reverified, as are CSRF and Origin.
+        """
+        if request.headers.get("origin") != flow.config.origin:
+            raise HTTPException(403, detail="ORIGIN_REQUIRED")
+        if (request.headers.get("content-type", "").split(";")[0].strip()
+                != "application/x-www-form-urlencoded"):
+            raise HTTPException(415, detail="FORM_CONTENT_TYPE_REQUIRED")
+        try:
+            session = flow.session(sid)
+        except InvalidToken:
+            raise HTTPException(401, detail="INVALID_SESSION") from None
+        raw = await request.body()
+        if len(raw) > 1200:
+            raise HTTPException(413, detail="LOCAL_TEST_FORM_TOO_LARGE")
+        try:
+            form = parse_qs(
+                raw.decode("ascii"), keep_blank_values=True,
+                strict_parsing=True, max_num_fields=8,
+                encoding="ascii", errors="strict",
+            )
+        except (ValueError, UnicodeError) as exc:
+            raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
+        if (set(form) != fields
+                or any(len(items) != 1 or len(items[0]) > 150
+                       for items in form.values())):
+            raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+        data = {key: values[0] for key, values in form.items()}
+        if not hmac.compare_digest(session.csrf, data["csrf"]):
+            raise HTTPException(403, detail="CSRF_REQUIRED")
+        return Principal(session.subject, session.roles), data
+
+    def form_version(data: str, *, zero_allowed: bool = True) -> int:
+        if (not data.isascii() or not data.isdecimal()
+                or (len(data) > 1 and data.startswith("0"))
+                or len(data) > 12):
+            raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+        value = int(data)
+        if (value < (0 if zero_allowed else 1)
+                or value > 2147483647):
+            raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+        return value
+
+    def sample_choice_options(*, prefix: str) -> str:
+        return ''.join(
+            '<option value="' + prefix + option + '">'
+            + ('سناریوی نمونه الف' if option == "ALPHA"
+               else 'سناریوی نمونه ب') + '</option>'
+            for option in ("ALPHA", "BETA")
+        )
 
     def export_navigation_query(technical_state: str, after_ref: str | None) -> str:
         # Navigation only; never grant or infer Export case access from URL.
@@ -978,6 +1045,25 @@ def build_authenticated_ui_router(
             )
             if result is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            demo_form = (
+                '<section aria-label="ثبت اصلاح صرفاً نمایشی">'
+                '<h3>ثبت اصلاح نسخه DEMO</h3>'
+                '<p>فقط یک سناریوی از پیش تعریف‌شده ثبت می‌شود. '
+                'هیچ اطلاعات کشت، هویت یا رضایت واقعی دریافت نمی‌شود.</p>'
+                '<form method="post" action="/my-drafts/'
+                + quote(ref) + '/input-revisions/demo-correction">'
+                '<input type="hidden" name="csrf" value="'
+                + escape(session.csrf, quote=True) + '">'
+                '<input type="hidden" name="case_version" value="'
+                + str(result["case_version"]) + '">'
+                '<input type="hidden" name="input_revision" value="'
+                + str(result["current_input_revision"] or 0) + '">'
+                '<label for="domestic-demo-choice">سناریوی اصلاح نمونه</label>'
+                '<select id="domestic-demo-choice" name="scenario">'
+                + sample_choice_options(prefix="DEMO-MANIFEST-")
+                + '</select><button type="submit">ثبت نسخه DEMO</button>'
+                '</form></section>'
+            )
             entries = ''.join(
                 '<li>بازنگری آزمایشی ' + str(number) + '</li>'
                 for number in result["input_revisions"]
@@ -995,6 +1081,7 @@ def build_authenticated_ui_router(
                 'تأیید متخصص یا برنامه کشت معتبر نیست.</p>'
                 '<p>ثبت اصلاح واقعی و ارائه فرم رضایت '
                 'در این پیش‌نمای آزمایشی فعال نیست.</p>'
+                + demo_form
                 + ('<p><a href="/my-drafts/' + quote(ref)
                    + '/question-responses">'
                    'پاسخ‌های آزمایشی من به پرسش کفایت اطلاعات</a></p>'
@@ -1004,7 +1091,53 @@ def build_authenticated_ui_router(
                 + '">بازگشت به پرونده من</a></p></article>'
             )
             return page("روناس — تاریخچه اصلاح آزمایشی اطلاعات خانوار",
-                        body, logged_in=True)
+                        body, logged_in=True, local_test_form=True)
+
+        @router.post("/my-drafts/{ref}/input-revisions/demo-correction")
+        async def household_demo_correction(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            principal, form = await checked_browser_form(
+                request, sid,
+                fields=frozenset({
+                    "csrf", "case_version", "input_revision", "scenario",
+                }),
+            )
+            scenario = form["scenario"]
+            if scenario not in ("DEMO-MANIFEST-ALPHA", "DEMO-MANIFEST-BETA"):
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+            case_version = form_version(form["case_version"], zero_allowed=False)
+            observed = form_version(form["input_revision"])
+            # Private opaque sample digest: no physical cultivation/user data.
+            digest = hashlib.sha256(
+                ("ronas.local-test.manifest.v1:" + ref + ":"
+                 + str(observed) + ":" + scenario).encode("ascii")
+            ).hexdigest() if _synthetic_ref(ref) else ""
+            try:
+                updated = household_input_ledger.append_owned_input_manifest(
+                    ref, principal,
+                    action_id="DEMO-UI-D-" + secrets.token_hex(10).upper(),
+                    expected_case_version=case_version,
+                    expected_input_revision=observed,
+                    synthetic_manifest_digest=digest,
+                )
+            except InputRevisionConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_INPUT_VERSION_CONFLICT",
+                ) from exc
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_INPUT_HISTORY_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
+            if updated is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return RedirectResponse(
+                "/my-drafts/" + quote(ref) + "/input-revisions",
+                status_code=303,
+            )
 
     if isinstance(household_input_ledger, SqliteSyntheticExpertQuestionLedger):
         @router.get("/my-drafts/{ref}/question-responses")
@@ -1302,6 +1435,32 @@ def build_authenticated_ui_router(
                 if question is not None else
                 '<p>هنوز هیچ پرسش DEMO نسخه‌داری ثبت نشده است.</p>'
             )
+            version = (
+                question["question_revision"] if question is not None else 0
+            )
+            demo_form = (
+                '<section aria-label="ویرایش پرسش آزمایشی صادرات">'
+                '<h3>تعریف یا اصلاح پرسش DEMO</h3>'
+                '<p>صرفاً شناسه‌های نمونه؛ هیچ محصول، کشور یا مأخذ واقعی '
+                'در این صفحه ثبت یا تأیید نمی‌شود.</p>'
+                '<form method="post" action="/admin/export/research/drafts/'
+                + quote(ref) + '/local-test-question">'
+                '<input type="hidden" name="csrf" value="'
+                + escape(session.csrf, quote=True) + '">'
+                '<input type="hidden" name="case_version" value="'
+                + str(data["case_version"]) + '">'
+                '<input type="hidden" name="question_revision" value="'
+                + str(version) + '">'
+                '<label for="export-demo-product">مرجع محصول DEMO</label>'
+                '<select id="export-demo-product" name="product_ref">'
+                + sample_choice_options(prefix="DEMO-PRODUCT-")
+                + '</select>'
+                '<label for="export-demo-destination">مرجع مقصد DEMO</label>'
+                '<select id="export-demo-destination" name="destination_ref">'
+                + sample_choice_options(prefix="DEMO-DEST-")
+                + '</select><button type="submit">ثبت پرسش آزمایشی</button>'
+                '</form></section>'
+            )
             stage_labels = {
                 "UNREQUESTED": "درخواست بررسی فنی هنوز ثبت نشده است",
                 "EVIDENCE_REVIEW_REQUESTED": "مرجع درخواست بررسی فنی ثبت شده است",
@@ -1335,6 +1494,7 @@ def build_authenticated_ui_router(
                 '· HS: تعیین نشده</p>'
                 '<p>محصول و مقصد واقعی همچنان تعیین و اعتبارسنجی نشده‌اند.</p>'
                 + demo_question
+                + demo_form
                 + '<p>مرجع منبع صرفاً آزمایشی: '
                 + escape(data["source_ref"]) + '</p>'
                 '<p>حقوق استفاده و بازنشر این منبع احراز نشده است.</p>'
@@ -1348,7 +1508,59 @@ def build_authenticated_ui_router(
                 '</article>'
             )
             return page("روناس — فضای پژوهش صادرات آزمایشی",
-                        body, logged_in=True)
+                        body, logged_in=True, local_test_form=True)
+
+        @router.post("/admin/export/research/drafts/{ref}/local-test-question")
+        async def export_demo_question_browser(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            principal, form = await checked_browser_form(
+                request, sid,
+                fields=frozenset({
+                    "csrf", "case_version", "question_revision",
+                    "product_ref", "destination_ref",
+                }),
+            )
+            if not valid_question_refs(
+                form["product_ref"], form["destination_ref"],
+            ) or form["product_ref"] not in (
+                "DEMO-PRODUCT-ALPHA", "DEMO-PRODUCT-BETA",
+            ) or form["destination_ref"] not in (
+                "DEMO-DEST-ALPHA", "DEMO-DEST-BETA",
+            ):
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+            try:
+                result = technical_review_ledger.record_export_research_question(
+                    ref, principal,
+                    expected_case_version=form_version(
+                        form["case_version"], zero_allowed=False,
+                    ),
+                    expected_question_revision=form_version(
+                        form["question_revision"],
+                    ),
+                    action_id="DEMO-UI-E-" + secrets.token_hex(10).upper(),
+                    product_ref=form["product_ref"],
+                    destination_ref=form["destination_ref"],
+                )
+            except ExportResearchQuestionConflict as exc:
+                raise HTTPException(
+                    409, detail="EXPORT_LOCAL_QUESTION_CHANGED",
+                ) from exc
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(
+                    422, detail="INVALID_LOCAL_TEST_FORM",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return RedirectResponse(
+                "/admin/export/research/drafts/" + quote(ref),
+                status_code=303,
+            )
 
     if authority_enquiry_ledger is not None:
         @router.get("/admin/gate-evidence/{domain}/readiness")

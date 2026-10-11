@@ -447,6 +447,38 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         self.assertIs(revised.json()["plan_accepted"], False)
         self.assertTrue(self.ledger.verify_integrity())
 
+    def test_new_household_revision_stales_all_three_review_tracks(self):
+        specialist = self.specialist()
+        route = "/api/v1/agronomy/assigned-drafts/DEMO-D-1/expert-review-preparation"
+        token = self.headers("synthetic-agronomist-one", ("agronomy_expert",))
+        self.assertEqual(specialist.get(route, headers=token).status_code, 503)
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(), headers=self.headers(),
+        ).status_code, 201)
+        available = specialist.get(route, headers=token)
+        self.assertEqual(available.status_code, 200, available.text)
+        self.assertEqual(available.json()["tracks"][0]["observed_structure"],
+                         "SYNTHETIC_INPUT_REVISION_BOUND_NOT_VALIDATED")
+        self.assertTrue(all(
+            t["review_outcome"] == "NOT_REVIEWED"
+            for t in available.json()["tracks"]
+        ))
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(1, DIGEST2, "DEMO-INPUT-B"),
+            headers=self.headers(),
+        ).status_code, 201)
+        old = specialist.get(route, headers=token)
+        self.assertEqual(old.status_code, 503)
+        self.assertNotIn("HOUSEHOLD_INPUT_ADEQUACY", old.text)
+        new_specialist = self.specialist(revision=2, digest=DIGEST2)
+        new = new_specialist.get(route, headers=token)
+        self.assertEqual(new.status_code, 200, new.text)
+        self.assertEqual(new.json()["combined_review_status"],
+                         "NOT_AUTHORIZED_FOR_DECISION")
+        self.assertFalse(new.json()["plan_accepted"])
+        self.assertFalse(new.json()["qualified_reviewer_identity_verified"])
+        self.assertTrue(self.ledger.verify_integrity())
+
     def test_persisted_household_revision_cannot_grant_expert_role_or_approval(self):
         self.client.post(ROOT, json=self.command(), headers=self.headers())
         specialist = self.specialist()

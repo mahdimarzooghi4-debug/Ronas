@@ -29,8 +29,11 @@ def basis(*sources, **changes):
     return ScientificBasisCandidate(**kwargs)
 
 
-def inspect(value, current_sources=None, **changes):
-    if current_sources is None:
+_UNSET = object()
+
+
+def inspect(value, current_sources=_UNSET, **changes):
+    if current_sources is _UNSET:
         current_sources = value.sources
     options = dict(
         expected_manifest_digest=value.manifest_digest,
@@ -125,7 +128,7 @@ class RonasInternalScientificBasisTests(unittest.TestCase):
                 basis(*values)
         for values in ([], None, "fake", (source(), 12)):
             with self.subTest(values=values), self.assertRaises(ValueError):
-                basis(source(), sources=values)
+                basis(sources=values)
 
     def test_source_identifier_and_version_must_be_explicit_local_values(self):
         for ref in ("", "SOURCE", "DEMO-../bad", "DEMO/SRC", 9, None):

@@ -481,6 +481,9 @@ def build_authenticated_ui_router(
                 '<p><a href="/agronomy/assigned-drafts/'
                 + quote(ref) + '/internal-plan-proposal">'
                 'ساختار پیشنهاد داخلی برنامه کشت (فقط DEMO)</a></p>'
+                '<p><a href="/agronomy/assigned-drafts/'
+                + quote(ref) + '/expert-review-preparation">'
+                'سه محور آماده‌سازی بررسی مستقل متخصص (فقط DEMO)</a></p>'
                 '<p><a href="/workspace/agronomy_expert">'
                 'بازگشت به فضای کار کارشناس کشاورزی</a></p>'
                 '</article>'
@@ -553,6 +556,74 @@ def build_authenticated_ui_router(
             )
             return page("روناس — بررسی ساختار پیشنهاد کشت (DEMO)",
                         body, logged_in=True)
+
+    if agronomy_workspace is not None:
+        @router.get("/agronomy/assigned-drafts/{ref}/expert-review-preparation")
+        def agronomy_expert_review_preparation_page(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            try:
+                dossier = agronomy_workspace.read_assigned_expert_review_preparation(
+                    ref, Principal(session.subject, session.roles),
+                )
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            if dossier is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            if (dossier["engine"] != "DOMESTIC"
+                    or dossier["case_status"] != "DRAFT_ONLY"
+                    or dossier["combined_review_status"] != "NOT_AUTHORIZED_FOR_DECISION"
+                    or dossier["plan_accepted"] is not False
+                    or dossier["real_data"] is not False
+                    or dossier["new_advice_enabled"] is not False):
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                )
+            descriptions = {
+                "HOUSEHOLD_INPUT_ADEQUACY": (
+                    "۱. کفایت اطلاعات خانوار",
+                    "نسخه ساختاری به معنی کفایت داده یا رضایت خانوار نیست."),
+                "SCIENTIFIC_BASIS_AND_USE_RIGHTS": (
+                    "۲. منشأ علمی و حقوق استفاده",
+                    "منبع نسخه‌دار به معنی حق استفاده یا اعتبار علمی نیست."),
+                "INDIVIDUAL_CULTIVATION_PROPOSAL": (
+                    "۳. بررسی خود برنامه پیشنهادی",
+                    "ساختار پیشنهادی AI تأیید برنامه توسط متخصص نیست."),
+            }
+            items = []
+            for part in dossier["tracks"]:
+                label, note = descriptions[part["track"]]
+                items.append(
+                    '<section><h3>' + escape(label) + '</h3>'
+                    '<p>وضعیت ساختاری: ' + escape(part["observed_structure"])
+                    + '</p><p>' + escape(note) + '</p>'
+                    '<p>نتیجه بررسی مستقل: ثبت نشده.</p></section>'
+                )
+            body = (
+                '<article class="panel"><h2>آماده‌سازی سه محور بررسی متخصص '
+                '(فقط DEMO)</h2>'
+                '<p>پرونده: ' + escape(dossier["case_ref"])
+                + ' · نسخه ' + str(dossier["case_version"]) + '</p>'
+                + ''.join(items)
+                + '<p>این سه محور مستقل‌اند. هیچ تصمیم کارشناسی واقعی، '
+                'رضایت معتبر خانوار، احراز صلاحیت، مجوز علمی یا '
+                'تأیید برنامه ثبت نشده است.</p>'
+                '<p>تأیید، رد، اصلاح برنامه، ثبت گزارش کشت '
+                'و توصیه جدید در این صفحه غیرفعال‌اند.</p>'
+                '<p><a href="/agronomy/assigned-drafts/' + quote(ref)
+                + '">بازگشت به پرونده تخصیص‌یافته</a></p></article>'
+            )
+            return page(
+                "روناس — آماده‌سازی بررسی مستقل برنامه کشت (DEMO)",
+                body, logged_in=True,
+            )
 
     if domestic_partner_workspace is not None:
         @router.get("/domestic-partners/my-preparation")

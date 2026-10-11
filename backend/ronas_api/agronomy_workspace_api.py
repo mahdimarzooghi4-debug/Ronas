@@ -42,6 +42,20 @@ def build_agronomy_workspace_router(
                 status_code=422, detail="INVALID_ASSIGNED_CASE_QUERY",
             ) from exc
 
+    @router.get("/api/v1/agronomy/assigned-drafts/{ref}/expert-review-preparation")
+    def assigned_expert_review_preparation(
+        ref: str, p: Principal = Depends(verified_principal),
+    ) -> dict:
+        try:
+            data = workspace.read_assigned_expert_review_preparation(ref, p)
+        except (LedgerIntegrityError, sqlite3.Error) as exc:
+            raise HTTPException(
+                status_code=503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+            ) from exc
+        if data is None:
+            raise HTTPException(status_code=404, detail="DRAFT_NOT_FOUND")
+        return data
+
     @router.get("/api/v1/agronomy/assigned-drafts/{ref}/internal-plan-proposal")
     def assigned_internal_proposal(
         ref: str, p: Principal = Depends(verified_principal),

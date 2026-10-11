@@ -19,6 +19,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from ronas_api.app import create_app
+from ronas_api.auth import Principal
+from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
+from ronas_api.expert_review_questions_sqlite import SqliteSyntheticExpertQuestionLedger
+from ronas_api.agronomy_workspace import (
+    SyntheticAgronomyWorkspace, SyntheticAgronomyAssignment,
+)
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.local_keycloak_bff import (
     LocalBFFConfigurationError, LocalBFFSettings, create_local_test_bff,
@@ -67,7 +73,8 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
         return {"token_type": "Bearer", "access_token": access, "id_token": identity}
 
     def _client(self, *, role="household", subject="synthetic-user",
-                bad_nonce=False, bad_token=False):
+                bad_nonce=False, bad_token=False, case_ledger=None,
+                agronomy_workspace=None):
         calls = []
         captured = {}
 
@@ -88,7 +95,10 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
             return httpx.Response(200, json=body)
 
         transport = httpx.MockTransport(serve)
-        app = create_local_test_bff(self.settings, transport=transport)
+        app = create_local_test_bff(
+            self.settings, transport=transport, case_ledger=case_ledger,
+            agronomy_workspace=agronomy_workspace,
+        )
         return TestClient(app, base_url=ORIGIN, follow_redirects=False), calls, captured
 
     def _start(self, client, captured):
@@ -263,6 +273,178 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
             "payments_enabled": True,
         }).status_code, 405)
 
+
+    def _case_ledger(self):
+        return SqliteSyntheticExpertQuestionLedger(
+            self.root / "synthetic-cases.db",
+            (
+                ScopedDraft("DEMO-D-1", "DOMESTIC",
+                            "synthetic-household-one", 3, ()),
+                ScopedDraft("DEMO-D-2", "DOMESTIC",
+                            "synthetic-household-other", 1, ()),
+                ScopedDraft("DEMO-E-1", "EXPORT",
+                            "synthetic-export-owner", 2,
+                            (ScopedGrant("synthetic-export-operator",
+                                         "export_ops"),),
+                            source_ref="DEMO-SOURCE-1"),
+            ),
+            trusted_revoke_authorizer=lambda actor, engine, ref: (
+                actor == "synthetic-controller" and engine == "EXPORT"
+            ),
+            trusted_human_review_authorizer=lambda *_: False,
+        )
+
+    def _signed_login(self, *, role, subject, ledger, expert=None):
+        client, _, captured = self._client(
+            role=role, subject=subject, case_ledger=ledger,
+            agronomy_workspace=expert,
+        )
+        login = self._start(client, captured)
+        cb = client.get("/api/auth/callback",
+                        params={"code": "test-code", "state": login["state"][0]})
+        self.assertEqual(cb.status_code, 303, cb.text)
+        session = client.get("/api/auth/session")
+        self.assertEqual(session.status_code, 200, session.text)
+        self.assertNotIn("access_token", session.text)
+        return client, session.json()["csrf"]
+
+    def test_real_oidc_signed_owner_session_writes_audited_current_input(self):
+        ledger = self._case_ledger()
+        owner, csrf = self._signed_login(
+            role="household", subject="synthetic-household-one", ledger=ledger,
+        )
+        base = "/my-drafts/DEMO-D-1/input-revisions"
+        before = owner.get(base)
+        self.assertEqual(before.status_code, 200, before.text)
+        self.assertIn("ثبت نسخه DEMO", before.text)
+        form = {"csrf": csrf, "case_version": "3", "input_revision": "0",
+                "scenario": "DEMO-MANIFEST-ALPHA"}
+        written = owner.post(
+            base + "/demo-correction", data=form, headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(written.status_code, 303, written.text)
+        read = owner.get(base)
+        self.assertEqual(read.status_code, 200, read.text)
+        self.assertIn("بازنگری آزمایشی 1", read.text)
+        self.assertEqual(ledger.read_owned_input_revisions(
+            "DEMO-D-1", Principal("synthetic-household-one",
+                                 frozenset({"household"})),
+        )["input_revisions"], [1])
+        self.assertEqual(owner.post(
+            base + "/demo-correction", data=form, headers={"Origin": ORIGIN},
+        ).status_code, 409)
+        self.assertEqual(owner.get("/admin").status_code, 403)
+        self.assertTrue(ledger.verify_integrity())
+
+    def test_real_oidc_signed_export_operator_question_revision_and_revocation(self):
+        ledger = self._case_ledger()
+        admin, csrf = self._signed_login(
+            role="export_ops", subject="synthetic-export-operator",
+            ledger=ledger,
+        )
+        base = "/admin/export/research/drafts/DEMO-E-1"
+        before = admin.get(base)
+        self.assertEqual(before.status_code, 200, before.text)
+        self.assertIn("ثبت پرسش آزمایشی", before.text)
+        form = {"csrf": csrf, "case_version": "2", "question_revision": "0",
+                "product_ref": "DEMO-PRODUCT-ALPHA",
+                "destination_ref": "DEMO-DEST-BETA"}
+        created = admin.post(
+            base + "/local-test-question", data=form,
+            headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(created.status_code, 303, created.text)
+        self.assertIn("DEMO-PRODUCT-ALPHA", admin.get(base).text)
+        self.assertEqual(admin.post(
+            base + "/local-test-question", data=form,
+            headers={"Origin": ORIGIN},
+        ).status_code, 409)
+        response = admin.get(
+            "/api/v1/admin/export/research/drafts/DEMO-E-1/workspace",
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["source_rights_verified"])
+        self.assertFalse(response.json()["research_report_approved"])
+        self.assertIsNone(response.json()["research_question"]["product"])
+        ledger.revoke_grant(
+            engine="EXPORT", ref="DEMO-E-1",
+            subject="synthetic-export-operator", role="export_ops",
+            actor="synthetic-controller", expected_grant_revision=0,
+            action_id="DEMO-E-REVOCATION", reason_ref="DEMO-REVOKE-REASON",
+        )
+        self.assertEqual(admin.get(base).status_code, 404)
+        self.assertEqual(admin.get(
+            "/api/v1/admin/export/research/drafts/DEMO-E-1/workspace",
+        ).status_code, 404)
+        self.assertTrue(ledger.verify_integrity())
+
+    def test_real_oidc_case_scope_does_not_follow_role_alone(self):
+        ledger = self._case_ledger()
+        intruder, _ = self._signed_login(
+            role="household", subject="synthetic-household-other", ledger=ledger,
+        )
+        self.assertEqual(intruder.get(
+            "/my-drafts/DEMO-D-1/input-revisions",
+        ).status_code, 404)
+        self.assertEqual(intruder.get("/my-drafts/DEMO-D-2").status_code, 200)
+        unassigned, _ = self._signed_login(
+            role="export_ops", subject="synthetic-unassigned-export",
+            ledger=ledger,
+        )
+        self.assertEqual(unassigned.get(
+            "/admin/export/research/drafts/DEMO-E-1",
+        ).status_code, 404)
+        self.assertEqual(unassigned.get(
+            "/api/v1/admin/export/research/drafts/DEMO-E-1/workspace",
+        ).status_code, 404)
+
+    def test_real_oidc_specialist_assignment_is_separate_from_role_and_owner(self):
+        ledger = self._case_ledger()
+        expert = SyntheticAgronomyWorkspace(
+            ledger, (SyntheticAgronomyAssignment(
+                "DEMO-D-1", "synthetic-agronomy-one", 3,
+            ),),
+            trusted_assignment_active=lambda actor, ref, ver: (
+                actor == "synthetic-agronomy-one"
+                and ref == "DEMO-D-1" and ver == 3
+            ),
+        )
+        authorized, _ = self._signed_login(
+            role="agronomy_expert", subject="synthetic-agronomy-one",
+            ledger=ledger, expert=expert,
+        )
+        self.assertEqual(authorized.get(
+            "/agronomy/assigned-drafts/DEMO-D-1",
+        ).status_code, 200)
+        self.assertEqual(authorized.get(
+            "/my-drafts/DEMO-D-1",
+        ).status_code, 404)
+        unassigned, _ = self._signed_login(
+            role="agronomy_expert", subject="synthetic-agronomy-other",
+            ledger=ledger, expert=expert,
+        )
+        self.assertEqual(unassigned.get(
+            "/agronomy/assigned-drafts/DEMO-D-1",
+        ).status_code, 404)
+        self.assertEqual(unassigned.get("/admin").status_code, 403)
+        self.assertTrue(ledger.verify_integrity())
+
+    def test_local_case_composition_needs_explicit_shared_ledger(self):
+        with self.assertRaises(LocalBFFConfigurationError):
+            create_local_test_bff(self.settings, case_ledger=object())
+        ledger = self._case_ledger()
+        workspace = SyntheticAgronomyWorkspace(
+            ledger, (), trusted_assignment_active=lambda *_: False,
+        )
+        with self.assertRaises(LocalBFFConfigurationError):
+            create_local_test_bff(self.settings, agronomy_workspace=workspace)
+        other = self._case_ledger()
+        with self.assertRaises(LocalBFFConfigurationError):
+            create_local_test_bff(
+                self.settings, case_ledger=other,
+                agronomy_workspace=workspace,
+            )
+        self.assertTrue(ledger.verify_integrity())
 
 if __name__ == "__main__":
     unittest.main()

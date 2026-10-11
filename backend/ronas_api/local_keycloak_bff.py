@@ -22,6 +22,8 @@ from .keycloak import KeycloakConfig
 from .keycloak_exchange import KeycloakCodeExchanger
 from .oidc_browser import BrowserOIDC, BrowserOIDCConfig
 from .session_sqlite import SqliteBrowserSessionStore
+from .expert_review_questions_sqlite import SqliteSyntheticExpertQuestionLedger
+from .agronomy_workspace import SyntheticAgronomyWorkspace
 
 
 class LocalBFFConfigurationError(ValueError):
@@ -110,14 +112,28 @@ def create_local_test_bff(
     settings: LocalBFFSettings,
     *,
     transport: httpx.AsyncBaseTransport | None = None,
+    case_ledger: SqliteSyntheticExpertQuestionLedger | None = None,
+    agronomy_workspace: SyntheticAgronomyWorkspace | None = None,
 ) -> FastAPI:
     """Opt-in composed application. `transport` is injected only by tests.
 
-    No real case records or active workspaces are passed into create_app().
-    HTTP code exchange occurs only after the signed callback state is consumed.
+    Existing offline *synthetic* cases may be explicitly injected for full
+    end-to-end workflow testing. No case or assignment is ever inferred from
+    a signed role or created by this factory. No real intake is enabled.
+    HTTP code exchange occurs only after signed callback state consumption.
     """
     if not isinstance(settings, LocalBFFSettings):
         raise LocalBFFConfigurationError("complete local BFF settings required")
+    if case_ledger is not None and not isinstance(
+        case_ledger, SqliteSyntheticExpertQuestionLedger,
+    ):
+        raise LocalBFFConfigurationError("only existing synthetic case ledger allowed")
+    if agronomy_workspace is not None and (
+        case_ledger is None
+        or not isinstance(agronomy_workspace, SyntheticAgronomyWorkspace)
+        or agronomy_workspace.ledger is not case_ledger
+    ):
+        raise LocalBFFConfigurationError("agronomy must share exact case ledger")
     # A private SQLite file under a publicly writable directory can be
     # replaced or redirected. The LOCAL/TEST session directory is therefore
     # required to be an already existing, owned and non-shared directory.
@@ -144,7 +160,12 @@ def create_local_test_bff(
             return await KeycloakCodeExchanger(cfg, client)(code, verifier)
 
     flow = BrowserOIDC(cfg, store, exchange)
-    app = create_app(settings.keycloak, browser_flow=flow)
+    app = create_app(
+        settings.keycloak, browser_flow=flow,
+        scoped_registry=case_ledger,
+        technical_review_ledger=case_ledger,
+        agronomy_workspace=agronomy_workspace,
+    )
     app.state.ronas_local_test_only = True
     return app
 

@@ -53,6 +53,7 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.ledger = self.reopen()
         self.science_current = []
         self.workspace = self.specialist()
+        self.sessions = {}
         self.client = self.make_client()
         self.owner = Principal(OWNER, frozenset({"household"}))
         self.expert = Principal(EXPERT, frozenset({"agronomy_expert"}))
@@ -107,14 +108,15 @@ class LocalExpertQuestionTests(unittest.TestCase):
     def make_client(self):
         # Existing Keycloak app requires an explicit browser session flow to
         # mount specialist API, even when this test only invokes Bearer routes.
-        from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig
+        from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
+        session_records = self.sessions
 
         class EmptySessions:
             def get_session(self, sid):
-                return None
+                return session_records.get(sid)
 
             def revoke_session(self, sid):
-                return None
+                session_records.pop(sid, None)
 
         async def no_external_identity(*_args):
             raise AssertionError("external auth call forbidden")
@@ -380,6 +382,57 @@ class LocalExpertQuestionTests(unittest.TestCase):
         with sqlite3.connect(self.path) as db:
             count = db.execute("SELECT COUNT(*) FROM expert_review_question").fetchone()[0]
         self.assertEqual(count, 0)
+
+    def test_history_page_is_owner_scoped_persian_read_only_with_logout(self):
+        from ronas_api.oidc_browser import BrowserSession
+        import secrets
+        self.seed_input()
+        self.assertEqual(self.post().status_code, 201)
+        sid = secrets.token_urlsafe(32)
+        self.sessions[sid] = BrowserSession(
+            EXPERT, frozenset({"agronomy_expert"}),
+            self.headers()["Authorization"][7:],
+            secrets.token_urlsafe(32), int(time.time()) + 200,
+        )
+        self.client.cookies.set("__Host-ronas_session", sid)
+        path = "/agronomy/assigned-drafts/DEMO-D-1/review-questions"
+        page = self.client.get(path)
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("تاریخچه پرسش‌های بررسی متخصص", page.text)
+        self.assertIn("کفایت داده خانوار", page.text)
+        self.assertIn("DEMO-REASON-A", page.text)
+        self.assertIn("صرفاً سابقه", page.text)
+        self.assertNotIn("1" * 64, page.text)
+        self.assertEqual(page.headers["cache-control"], "no-store")
+        self.assertIn("frame-ancestors 'none'",
+                      page.headers["content-security-policy"])
+        for method in ("post", "put", "patch", "delete"):
+            self.assertEqual(
+                getattr(self.client, method)(path).status_code, 405,
+            )
+        self.active = False
+        self.assertEqual(self.client.get(path).status_code, 404)
+        self.active = True
+        self.sessions.pop(sid)
+        self.assertEqual(self.client.get(path).status_code, 401)
+
+    def test_history_page_cookie_cannot_submit_bearer_only_question(self):
+        from ronas_api.oidc_browser import BrowserSession
+        import secrets
+        self.seed_input()
+        sid = secrets.token_urlsafe(32)
+        self.sessions[sid] = BrowserSession(
+            EXPERT, frozenset({"agronomy_expert"}),
+            self.headers()["Authorization"][7:],
+            secrets.token_urlsafe(32), int(time.time()) + 200,
+        )
+        self.client.cookies.set("__Host-ronas_session", sid)
+        self.assertEqual(
+            self.client.post(ROOT, json=self.command()).status_code, 401,
+        )
+        self.assertEqual(
+            self.client.get(ROOT, headers=self.headers()).json()["questions"], [],
+        )
 
     def test_default_app_does_not_expose_question_writer(self):
         other = TestClient(create_app(self.config), base_url="https://ronas.example.test")

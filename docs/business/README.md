@@ -10,6 +10,8 @@
 **تمرکز جاری روی محصول اصلی:** بنا به دستور کارفرما، [سه بسته عملیاتی و گیت](72-core-delivery-critical-path-and-business-gate-readiness.md) برای Domestic/Export/Finance مقدم بر پیگیری جزئیات مدل AI هستند؛ **بدون انتخاب Scope/گیت خودکار**.  
 **منبع پایه:** «طرح نامه جامع روناس»، مرداد ۱۴۰۵، ۳۷ صفحه فایل (۳۶ صفحه شماره‌گذاری داخلی)، سفارش معاونت اشتغال کمیته امداد امام خمینی(ره)، طراح خانه خلاق و نوآوری آینه.
 
+**پرونده تصمیم‌های اجرایی برای رفع گیت:** [75 — Domestic / Export / Finance، شواهد و اختیار لازم](75-operational-three-gate-decision-docket.md)؛ [76 — ممیزی عددی FIN-002 و مدارک واقعی Finance](76-finance-source-arithmetic-and-evidence.md). هر دو DRAFT هستند، نه مصوبه یا اجازه ورود به داده واقعی.
+
 ## ترتیب مطالعه
 
 1. [Business Foundation](00-business-foundation.md): چشم‌انداز، دامنه، نقش‌ها، قابلیت‌های مشترک و مرز دو موتور.

@@ -70,6 +70,12 @@ class SyntheticAgronomyWorkspace:
                     or fixture.household_case_ref in catalog):
                 raise ValueError("proposal fixture case/version not pinned")
             catalog[fixture.household_case_ref] = fixture
+        if (isinstance(ledger, SqliteSyntheticHouseholdInputLedger)
+                and trusted_input_snapshot is not None):
+            # The persisted household owner journal is the sole authority.
+            # An injected callback must never override a newer correction
+            # to revive a stale AI proposal.
+            raise ValueError("conflicting household input authorities")
         if (catalog and not (callable(trusted_input_snapshot)
                              or isinstance(ledger, SqliteSyntheticHouseholdInputLedger))
                 or trusted_input_snapshot is not None
@@ -250,14 +256,15 @@ class SyntheticAgronomyWorkspace:
                 else:
                     authority = self._trusted_input_snapshot
                     try:
-                        if authority is not None:
-                            snapshot = authority(ref, record.version)
-                        elif isinstance(self.ledger, SqliteSyntheticHouseholdInputLedger):
-                            # Same transaction and verified independent owner
-                            # input journal; no nested SQLite transaction.
+                        if isinstance(self.ledger, SqliteSyntheticHouseholdInputLedger):
+                            # Current persisted owner revision always wins.
+                            # No callback can override the revised snapshot;
+                            # reuse the verified transaction (no DB deadlock).
                             snapshot = self.ledger._input_snapshot_from_verified_transaction(
                                 db, ref, record.version,
                             )
+                        elif authority is not None:
+                            snapshot = authority(ref, record.version)
                         else:
                             raise LedgerIntegrityError("input authority not configured")
                     except Exception as exc:

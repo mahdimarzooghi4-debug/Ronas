@@ -508,6 +508,29 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertNotIn("DEMO-OWNER-EVIDENCE", after.text)
         self.assertIs(after.json()["plan_accepted"], False)
 
+    def test_specialist_persian_history_shows_only_unreviewed_receipt_marker(self):
+        from ronas_api.oidc_browser import BrowserSession
+        import secrets
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        sid = secrets.token_urlsafe(32)
+        self.sessions[sid] = BrowserSession(
+            EXPERT, frozenset({"agronomy_expert"}),
+            self.headers()["Authorization"][7:],
+            secrets.token_urlsafe(32), int(time.time()) + 200,
+        )
+        self.client.cookies.set("__Host-ronas_session", sid)
+        page = self.client.get("/agronomy/assigned-drafts/DEMO-D-1/review-questions")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("پاسخ ساختاری خانوار دریافت شده (بررسی نشده)", page.text)
+        self.assertIn("بدون تأیید", page.text)
+        self.assertNotIn("DEMO-ANSWER-A", page.text)
+        self.assertNotIn("DEMO-OWNER-EVIDENCE", page.text)
+        self.assertNotIn("1" * 64, page.text)
+        self.assertEqual(page.headers["cache-control"], "no-store")
+        self.assertTrue(self.ledger.verify_integrity())
+
     def test_training_science_and_plan_questions_cannot_take_household_reply(self):
         self.seed_input()
         for ix, track in enumerate(TRACKS):

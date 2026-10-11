@@ -116,6 +116,16 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
             key = (ref, track)
             record = self._catalogue.get(("DOMESTIC", ref))
             linked = event_map.get(sequence)
+            # The question's input must actually be a previously recorded,
+            # verified household-owned DEMO revision. Never accept a
+            # self-asserted digest/number in a historical review question.
+            source_input = db.execute(
+                "SELECT manifest_digest,audit_sequence FROM household_input_revision "
+                "WHERE ref=? AND revision=?", (ref, input_revision),
+            ).fetchone()
+            if (source_input is None or source_input[0] != input_digest
+                    or source_input[1] >= sequence):
+                raise LedgerIntegrityError("question input lineage missing or altered")
             if (record is None or case_version != record.version
                     or track not in TRACKS or type(revision) is not int
                     or revision != counts.get(key, 0) + 1

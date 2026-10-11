@@ -936,5 +936,31 @@ class ExportResearchQueueTests(unittest.TestCase):
         self.assertNotIn("DEMO-PRODUCT-ALPHA", now.text)
         self.assertTrue(self.reopen().verify_integrity())
 
+    def test_export_next_step_first_question_then_rights_pending(self):
+        self.login()
+        base = "/admin/export/research/drafts/DEMO-E-001"
+        first = self.client.get(base)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertIn("اقدام بعدی پرونده پژوهش", first.text)
+        self.assertIn("پرسش محصول–مقصد صرفاً آزمایشی", first.text)
+        self.assertIn('href="#export-demo-question-form"', first.text)
+        result = self.client.post(
+            base + "/local-test-question",
+            data=self.demo_export_form(), headers={"Origin": ORIGIN},
+            follow_redirects=False,
+        )
+        self.assertEqual(result.status_code, 303, result.text)
+        after = self.client.get(base)
+        self.assertEqual(after.status_code, 200, after.text)
+        self.assertIn("حقوق منبع و گزارش هنوز معتبر نیستند", after.text)
+        self.assertNotIn("گزارش پژوهش تأیید شده است", after.text)
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_export_unknown_operator_never_sees_next_step(self):
+        self.login(subject="synthetic-export-other")
+        r = self.client.get("/admin/export/research/drafts/DEMO-E-001")
+        self.assertEqual(r.status_code, 404)
+        self.assertNotIn("اقدام بعدی پرونده پژوهش", r.text)
+
 if __name__ == "__main__":
     unittest.main()

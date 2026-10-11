@@ -588,5 +588,30 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
             headers={"Origin": ORIGIN},
         ).status_code, 404)
 
+    def test_owned_case_guides_to_current_input_without_real_consent(self):
+        self.browser()
+        case = "/my-drafts/DEMO-D-1"
+        first = self.client.get(case)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertIn("اقدام بعدی در پرونده", first.text)
+        self.assertIn("/input-revisions#domestic-demo-correction", first.text)
+        self.assertNotIn("طرح کشت تأیید شده", first.text)
+        # The exact currently authorized ledger, not browser storage,
+        # supplies the revision. The next link remains safe and demo-only.
+        self.ledger.append_owned_input_manifest(
+            "DEMO-D-1", Principal(OWNER, frozenset({"household"})),
+            action_id="DEMO-NEXT-INPUT", expected_case_version=3,
+            expected_input_revision=0, synthetic_manifest_digest=DIGEST1,
+        )
+        again = self.client.get(case)
+        self.assertEqual(again.status_code, 200, again.text)
+        self.assertIn("اقدام بعدی در پرونده", again.text)
+
+    def test_owned_case_next_step_does_not_expose_other_owner(self):
+        self.browser(subject="synthetic-household-other")
+        resp = self.client.get("/my-drafts/DEMO-D-1")
+        self.assertEqual(resp.status_code, 404)
+        self.assertNotIn("اقدام بعدی", resp.text)
+
 if __name__ == "__main__":
     unittest.main()

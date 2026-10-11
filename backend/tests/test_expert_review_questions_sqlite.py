@@ -3340,5 +3340,64 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertNotIn("ثبت مرجع پاسخ DEMO", history.text)
         self.assertTrue(self.reopen().verify_integrity())
 
+    def test_assigned_expert_case_next_step_waits_and_then_receipt_only(self):
+        self.seed_input()
+        base = "/agronomy/assigned-drafts/DEMO-D-1"
+        csrf = self.login_browser_demo(EXPERT, "agronomy_expert")
+        initial = self.client.get(base)
+        self.assertEqual(initial.status_code, 200, initial.text)
+        self.assertIn("مرحله بعدی در همین پرونده", initial.text)
+        self.assertIn("پرسش ساختاری آزمایشی", initial.text)
+        qpath = base + "/review-questions"
+        send = self.client.post(
+            qpath + "/demo-question", data=self.demo_form(csrf),
+            headers={"Origin": "https://ronas.example.test"},
+            follow_redirects=False,
+        )
+        self.assertEqual(send.status_code, 303, send.text)
+        wait = self.client.get(base)
+        self.assertEqual(wait.status_code, 200, wait.text)
+        self.assertIn("دریافت پاسخ مرجعی خانوار در انتظار است", wait.text)
+
+        owner_csrf = self.login_browser_demo(OWNER, "household")
+        owner = self.client.get("/my-drafts/DEMO-D-1")
+        self.assertEqual(owner.status_code, 200, owner.text)
+        self.assertIn("/question-responses#owner-demo-reply", owner.text)
+        answer = self.client.post(
+            "/my-drafts/DEMO-D-1/question-responses/demo-reply",
+            data={"csrf": owner_csrf, "case_version": "3",
+                  "input_revision": "1", "question_revision": "1",
+                  "scenario": "DEMO-REPLY-ALPHA"},
+            headers={"Origin": "https://ronas.example.test"},
+            follow_redirects=False,
+        )
+        self.assertEqual(answer.status_code, 303, answer.text)
+        answered = self.client.get("/my-drafts/DEMO-D-1")
+        self.assertIn("بررسی و تأیید تخصصی هنوز انجام نشده است", answered.text)
+
+        expert_csrf = self.login_browser_demo(EXPERT, "agronomy_expert")
+        inspect = self.client.get(base)
+        self.assertEqual(inspect.status_code, 200, inspect.text)
+        self.assertIn("رسید پاسخ خانوار قابل مشاهده است", inspect.text)
+        self.assertNotIn("DEMO-REPLY-ALPHA", inspect.text)
+        response = self.client.post(
+            qpath + "/demo-inspection",
+            data={"csrf": expert_csrf, "case_version": "3",
+                  "input_revision": "1", "question_revision": "1"},
+            headers={"Origin": "https://ronas.example.test"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303, response.text)
+        final = self.client.get(base)
+        self.assertIn("هیچ بررسی علمی یا برنامه‌ای تصویب نشده", final.text)
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_unassigned_expert_case_has_no_next_action(self):
+        self.seed_input()
+        self.login_browser_demo("synthetic-unassigned-expert", "agronomy_expert")
+        denied = self.client.get("/agronomy/assigned-drafts/DEMO-D-1")
+        self.assertEqual(denied.status_code, 404)
+        self.assertNotIn("مرحله بعدی", denied.text)
+
 if __name__ == "__main__":
     unittest.main()

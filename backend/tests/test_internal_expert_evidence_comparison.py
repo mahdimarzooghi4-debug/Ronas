@@ -38,11 +38,10 @@ class SyntheticEvidenceComparisonTests(unittest.TestCase):
         timeline = synthetic_evidence_timeline(
             case_ref="DEMO-D-1", case_version=3, events=stream)
         self.assertEqual(timeline["contract_version"], VERSION)
-        self.assertEqual(timeline["latest_evidence_revision"], 6)
+        self.assertEqual(timeline["latest_evidence_revision"], 7)
         self.assertEqual([r["event_kind"] for r in timeline["revisions"]], [
-            KINDS[0], KINDS[1], KINDS[1], KINDS[2], KINDS[1], KINDS[3],
-        ] if False else [
-            KINDS[0], KINDS[1], KINDS[1], KINDS[1], KINDS[2], KINDS[3],
+            KINDS[0], KINDS[1], KINDS[1], KINDS[1],
+            KINDS[2], KINDS[3], KINDS[0],
         ])
         self.assertFalse(timeline["global_audit_sequence_exposed"])
         self.assertNotIn("17", str(timeline))

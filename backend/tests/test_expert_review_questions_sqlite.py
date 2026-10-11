@@ -997,6 +997,39 @@ class LocalExpertQuestionTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM expert_response_receipt_inspection",
             ).fetchone()[0], 0)
 
+    def test_persian_history_shows_inspection_but_no_owner_response_data(self):
+        from ronas_api.oidc_browser import BrowserSession
+        import secrets
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        self.assertEqual(self.inspect().status_code, 201)
+        sid = secrets.token_urlsafe(32)
+        self.sessions[sid] = BrowserSession(
+            EXPERT, frozenset({"agronomy_expert"}),
+            self.headers()["Authorization"][7:],
+            secrets.token_urlsafe(32), int(time.time()) + 200,
+        )
+        self.client.cookies.set("__Host-ronas_session", sid)
+        page = self.client.get(
+            "/agronomy/assigned-drafts/DEMO-D-1/review-questions",
+        )
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("رسید پاسخ مشاهده شد (بدون داوری تخصصی)", page.text)
+        self.assertIn("بدون تأیید", page.text)
+        self.assertNotIn("DEMO-ANSWER-A", page.text)
+        self.assertNotIn("DEMO-OWNER-EVIDENCE", page.text)
+        self.assertEqual(page.headers["cache-control"], "no-store")
+        self.active = False
+        self.assertEqual(self.client.get(
+            "/agronomy/assigned-drafts/DEMO-D-1/review-questions",
+        ).status_code, 404)
+        self.active = True
+        self.sessions.pop(sid)
+        self.assertEqual(self.client.get(
+            "/agronomy/assigned-drafts/DEMO-D-1/review-questions",
+        ).status_code, 401)
+
     def test_default_app_does_not_mount_inspection_command(self):
         other = TestClient(create_app(self.config),
                            base_url="https://ronas.example.test")

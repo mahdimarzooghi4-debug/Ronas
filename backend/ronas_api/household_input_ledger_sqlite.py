@@ -248,6 +248,23 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
             "plan_accepted": False, "real_data": False,
         }
 
+    def _input_snapshot_from_verified_transaction(
+        self, db: sqlite3.Connection, ref: str, version: int,
+    ) -> tuple[int, str] | None:
+        """Only while an exact shared-ledger transaction has verified integrity.
+
+        Never open another connection from the assigned specialist read:
+        BEGIN IMMEDIATE is already held and a nested writer would deadlock.
+        """
+        record = self._catalogue.get(("DOMESTIC", ref))
+        if record is None or record.version != version:
+            return None
+        row = db.execute(
+            "SELECT revision,manifest_digest FROM household_input_revision "
+            "WHERE ref=? ORDER BY revision DESC LIMIT 1", (ref,),
+        ).fetchone()
+        return (row[0], row[1]) if row else None
+
     def internal_input_snapshot(self, ref: str, version: int) -> tuple[int, str] | None:
         """Internal-only independent digest source; do not serve by HTTP."""
         with self._transaction() as db:

@@ -470,11 +470,80 @@ def build_authenticated_ui_router(
                 'تولید نشده است.</p>'
                 '<p>تخصیص فنی کارشناس، صلاحیت حرفه‌ای را احراز نمی‌کند؛ '
                 'رضایت واقعی خانوار و تأیید علمی/طرح کشت وجود ندارد.</p>'
+                '<p><a href="/agronomy/assigned-drafts/'
+                + quote(ref) + '/internal-plan-proposal">'
+                'ساختار پیشنهاد داخلی برنامه کشت (فقط DEMO)</a></p>'
                 '<p><a href="/workspace/agronomy_expert">'
                 'بازگشت به فضای کار کارشناس کشاورزی</a></p>'
                 '</article>'
             )
             return page("روناس — فضای کار کارشناس کشاورزی (آزمایشی)",
+                        body, logged_in=True)
+
+    if agronomy_workspace is not None:
+        @router.get("/agronomy/assigned-drafts/{ref}/internal-plan-proposal")
+        def agronomy_internal_proposal_page(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            try:
+                data = agronomy_workspace.read_assigned_proposal_structure(
+                    ref, Principal(session.subject, session.roles),
+                )
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            if data is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            if (data["engine"] != "DOMESTIC"
+                    or data["plan_state"] != "NOT_AUTHORED"
+                    or data["plan_accepted"] is not False
+                    or data["advice_enabled"] is not False
+                    or data["real_data"] is not False):
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                )
+            status = data["proposal_status"]
+            if status == "NO_INTERNAL_PROPOSAL_FIXTURE":
+                explanation = (
+                    '<p>هنوز هیچ پیشنهاد ساختاری AI داخلی روناس '
+                    'برای این پرونده آزمایشی وجود ندارد.</p>'
+                )
+            elif status == "STRUCTURE_ONLY_UNREVIEWED":
+                stages = ''.join(
+                    '<li>' + escape(stage_ref) + '</li>'
+                    for stage_ref in data["proposed_stage_refs"]
+                )
+                explanation = (
+                    '<p>نمونه ساختاری آزمایشی برای مطالعه پیوند نسخه‌ها موجود است. '
+                    'اجرای واقعی مدل، محتوای علمی و اعتبارسنجی آن تأیید نشده‌اند.</p>'
+                    '<h3>شناسه‌های مراحل پیشنهادی غیرعملیاتی</h3>'
+                    '<ul>' + stages + '</ul>'
+                )
+            else:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                )
+            body = (
+                '<article class="panel"><h2>بررسی ساختار پیشنهاد داخلی کشت '
+                '(فقط DEMO)</h2>'
+                '<p>پرونده ' + escape(data["case_ref"])
+                + ' · نسخه ' + str(data["case_version"]) + '</p>'
+                + explanation
+                + '<p>این پاسخ یک برنامه کشت یا تأیید متخصص نیست؛ '
+                'داده‌های خانوار، رضایت، منابع علمی، مدل اجرایی و '
+                'صلاحیت واقعی متخصص هنوز احراز نشده‌اند.</p>'
+                '<p>هیچ برنامه‌ای پذیرفته نشده و گزارش مرحله‌ای '
+                'یا توصیه کشت از آن فعال نمی‌شود.</p>'
+                '<p><a href="/agronomy/assigned-drafts/' + quote(ref)
+                + '">بازگشت به پرونده تخصیص‌یافته</a></p></article>'
+            )
+            return page("روناس — بررسی ساختار پیشنهاد کشت (DEMO)",
                         body, logged_in=True)
 
     if domestic_partner_workspace is not None:

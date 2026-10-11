@@ -22,6 +22,7 @@ from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
                                      BusinessSourceSnapshotError, SOURCE_INTEGRITY_STATE)
 from .shared_workspaces import USER_ROLES, visible_user_workspaces
 from .agronomy_workspace import SyntheticAgronomyWorkspace
+from .expert_review_questions_sqlite import SqliteSyntheticExpertQuestionLedger
 from .export_supplier_workspace import (
     SyntheticSupplierUnavailable, SyntheticSupplierWorkspace,
 )
@@ -617,13 +618,82 @@ def build_authenticated_ui_router(
                 'تأیید برنامه ثبت نشده است.</p>'
                 '<p>تأیید، رد، اصلاح برنامه، ثبت گزارش کشت '
                 'و توصیه جدید در این صفحه غیرفعال‌اند.</p>'
-                '<p><a href="/agronomy/assigned-drafts/' + quote(ref)
+                + ('<p><a href="/agronomy/assigned-drafts/'
+                   + quote(ref) + '/review-questions">'
+                   'تاریخچه پرسش‌های آزمایشی سه محور</a></p>'
+                   if isinstance(agronomy_workspace.ledger,
+                                 SqliteSyntheticExpertQuestionLedger)
+                   else '')
+                + '<p><a href="/agronomy/assigned-drafts/' + quote(ref)
                 + '">بازگشت به پرونده تخصیص‌یافته</a></p></article>'
             )
             return page(
                 "روناس — آماده‌سازی بررسی مستقل برنامه کشت (DEMO)",
                 body, logged_in=True,
             )
+
+    if (agronomy_workspace is not None
+            and isinstance(agronomy_workspace.ledger,
+                           SqliteSyntheticExpertQuestionLedger)):
+        @router.get("/agronomy/assigned-drafts/{ref}/review-questions")
+        def agronomy_question_history_page(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            try:
+                notes = agronomy_workspace.read_assigned_synthetic_review_questions(
+                    ref, Principal(session.subject, session.roles),
+                )
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            if notes is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            if (notes["engine"] != "DOMESTIC"
+                    or notes["qualification_verified"] is not False
+                    or notes["questions_are_review_decisions"] is not False
+                    or notes["plan_accepted"] is not False
+                    or notes["real_data"] is not False):
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                )
+            descriptions = {
+                "HOUSEHOLD_INPUT_ADEQUACY": "کفایت داده خانوار",
+                "SCIENTIFIC_BASIS_AND_USE_RIGHTS": "منشأ علمی و حقوق استفاده",
+                "INDIVIDUAL_CULTIVATION_PROPOSAL": "پیشنهاد اختصاصی کشت",
+            }
+            rows = ''.join(
+                '<li>' + escape(descriptions[q["track"]])
+                + ' · پرسش آزمایشی ' + str(q["question_revision"])
+                + ' · نسخه ورودی ' + str(q["bound_input_revision"])
+                + ' · ارجاع دلیل ' + escape(q["draft_reason_ref"])
+                + ' · ارجاع شاهد ' + escape(q["draft_evidence_ref"])
+                + ' — صرفاً سابقه، بدون تأیید</li>'
+                for q in notes["questions"]
+            )
+            body = (
+                '<article class="panel"><h2>تاریخچه پرسش‌های بررسی '
+                'متخصص (فقط DEMO)</h2>'
+                '<p>پرونده ' + escape(notes["case_ref"])
+                + ' · نسخه ' + str(notes["case_version"]) + '</p>'
+                + ('<ul>' + rows + '</ul>' if rows else
+                   '<p>هنوز پرسشی در نمونه آزمایشی ثبت نشده است.</p>')
+                + '<p>پرسش‌ها بازخورد یا رأی علمی نیستند؛ '
+                'تغییر نسخه ورودی یا منبع، اجازه استفاده از '
+                'نسخه قدیمی برای تصمیم جدید را نمی‌دهد.</p>'
+                '<p>فرم ثبت داده واقعی، تأیید برنامه، اصلاح تخصصی '
+                'و مجوز انتشار در این صفحه وجود ندارد.</p>'
+                '<p><a href="/agronomy/assigned-drafts/'
+                + quote(ref) + '/expert-review-preparation">'
+                'بازگشت به سه محور بررسی</a></p></article>'
+            )
+            return page("روناس — تاریخچه پرسش‌های آزمایشی کارشناس",
+                        body, logged_in=True)
 
     if domestic_partner_workspace is not None:
         @router.get("/domestic-partners/my-preparation")

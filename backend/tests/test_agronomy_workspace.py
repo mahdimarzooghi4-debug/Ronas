@@ -1244,5 +1244,176 @@ class AgronomyWorkspaceTests(unittest.TestCase):
         self.assertNotIn("DEMO-STAGE-A", denied.text)
 
 
+    def test_legacy_unseeded_expert_dossier_has_three_non_authorizing_tracks(self):
+        route = ROOT + "/DEMO-D-001/expert-review-preparation"
+        res = self.client.get(route, headers=self.headers())
+        self.assertEqual(res.status_code, 200, res.text)
+        data = res.json()
+        self.assertEqual(data["case_ref"], "DEMO-D-001")
+        self.assertEqual(data["combined_review_status"], "NOT_AUTHORIZED_FOR_DECISION")
+        self.assertEqual(len(data["tracks"]), 3)
+        self.assertEqual(data["tracks"][0]["observed_structure"],
+                         "NO_SYNTHETIC_INPUT_BINDING")
+        self.assertEqual(data["tracks"][1]["observed_structure"],
+                         "NO_PROPOSAL_SCIENCE_BINDING")
+        self.assertEqual(data["tracks"][2]["observed_structure"],
+                         "NO_INTERNAL_PROPOSAL_FIXTURE")
+        self.assertTrue(all(
+            part["review_outcome"] == "NOT_REVIEWED"
+            for part in data["tracks"]
+        ))
+        self.assertFalse(data["plan_accepted"])
+        self.assertFalse(data["qualified_reviewer_identity_verified"])
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_proposal_dossier_separates_three_independent_review_tracks(self):
+        self.workspace = self.internal_proposal_workspace()
+        self.client = self.client_for()
+        route = ROOT + "/DEMO-D-001/expert-review-preparation"
+        res = self.client.get(route, headers=self.headers())
+        self.assertEqual(res.status_code, 200, res.text)
+        item = res.json()
+        self.assertEqual(item["tracks"][0]["observed_structure"],
+                         "SYNTHETIC_INPUT_REVISION_BOUND_NOT_VALIDATED")
+        self.assertEqual(item["tracks"][1]["observed_structure"],
+                         "SCIENTIFIC_SOURCE_UNVERIFIED")
+        self.assertEqual(item["tracks"][2]["observed_structure"],
+                         "STRUCTURE_ONLY_UNREVIEWED")
+        self.assertEqual(item["tracks"][2]["synthetic_stage_reference_count"], 2)
+        self.assertNotIn("DEMO-STAGE-A", res.text)
+        for key in ("plan_accepted", "stages_activated",
+                    "new_advice_enabled", "marketplace_enabled"):
+            self.assertIs(item[key], False)
+
+    def test_scientific_basis_dossier_remains_unreviewed_after_structural_check(self):
+        source, basis, proposal = self.synthetic_science()
+        self.workspace = self.internal_proposal_workspace(
+            proposal=proposal, science_bases=(basis,),
+            source_snapshot=lambda: (source,),
+        )
+        self.client = self.client_for()
+        res = self.client.get(
+            ROOT + "/DEMO-D-001/expert-review-preparation",
+            headers=self.headers(),
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["tracks"][1]["observed_structure"],
+                         "PROVENANCE_PINNED_UNVERIFIED")
+        self.assertIs(res.json()["tracks"][1]["rights_for_service_verified"], False)
+        self.assertIs(res.json()["tracks"][1]["scientific_relevance_review_recorded"], False)
+        for forbidden in ("DEMO-SCI-SOURCE", "DEMO-SCI-RIGHTS",
+                          "DEMO-SCI-REVIEW", basis.manifest_digest,
+                          "DEMO-STAGE-A"):
+            self.assertNotIn(forbidden, res.text)
+
+    def test_source_revision_change_blocks_full_review_dossier(self):
+        source, basis, proposal = self.synthetic_science()
+        latest = [source]
+        self.workspace = self.internal_proposal_workspace(
+            proposal=proposal, science_bases=(basis,),
+            source_snapshot=lambda: tuple(latest),
+        )
+        self.client = self.client_for()
+        route = ROOT + "/DEMO-D-001/expert-review-preparation"
+        self.assertEqual(self.client.get(
+            route, headers=self.headers()).status_code, 200)
+        latest[0] = replace(source, rights_document_sha256="d" * 64)
+        denied = self.client.get(route, headers=self.headers())
+        self.assertEqual(denied.status_code, 503)
+        self.assertEqual(denied.json(), {
+            "detail": "SYNTHETIC_AGRONOMY_UNAVAILABLE",
+        })
+        self.assertNotIn("DEMO-STAGE-A", denied.text)
+
+    def test_expert_dossier_same_exact_live_assignment_signed_role(self):
+        self.workspace = self.internal_proposal_workspace()
+        self.client = self.client_for()
+        route = ROOT + "/DEMO-D-001/expert-review-preparation"
+        for who, roles, ref in (
+            ("synthetic-ops-001", ("domestic_ops",), "DEMO-D-001"),
+            ("synthetic-agronomist-001", ("household",), "DEMO-D-001"),
+            ("synthetic-agronomist-other", ("agronomy_expert",), "DEMO-D-001"),
+            ("synthetic-agronomist-001", ("agronomy_expert",), "DEMO-D-003"),
+            ("synthetic-agronomist-001", ("agronomy_expert",), "DEMO-E-001"),
+        ):
+            with self.subTest(who=who, ref=ref):
+                res = self.client.get(
+                    ROOT + "/" + ref + "/expert-review-preparation",
+                    headers=self.headers(who, roles),
+                )
+                self.assertEqual(res.status_code, 404)
+        self.assertEqual(self.client.get(
+            route, headers=self.headers()).status_code, 200)
+        self.active.remove("DEMO-D-001")
+        self.assertEqual(self.client.get(
+            route, headers=self.headers()).status_code, 404)
+
+    def test_expert_review_page_is_read_only_in_existing_rtl_workspace(self):
+        self.workspace = self.internal_proposal_workspace()
+        self.client = self.client_for()
+        sid = self.session()
+        case = self.client.get(DETAIL)
+        self.assertEqual(case.status_code, 200)
+        page_path = "/agronomy/assigned-drafts/DEMO-D-001/expert-review-preparation"
+        self.assertIn(page_path, case.text)
+        page = self.client.get(page_path)
+        self.assertEqual(page.status_code, 200, page.text)
+        for name in (
+            "کفایت اطلاعات خانوار", "منشأ علمی و حقوق استفاده",
+            "بررسی خود برنامه پیشنهادی",
+            "نتیجه بررسی مستقل: ثبت نشده",
+        ):
+            self.assertIn(name, page.text)
+        for forbidden in ("DEMO-STAGE-A", "DEMO-RUN-001",
+                          "synthetic-household-001", "approve=true"):
+            self.assertNotIn(forbidden, page.text)
+        self.assertEqual(page.headers["cache-control"], "no-store")
+        self.assertIn("frame-ancestors 'none'",
+                      page.headers["content-security-policy"])
+        for method in ("post", "put", "patch", "delete"):
+            with self.subTest(method=method):
+                self.assertEqual(
+                    getattr(self.client, method)(page_path).status_code, 405,
+                )
+        self.active.remove("DEMO-D-001")
+        self.assertEqual(self.client.get(page_path).status_code, 404)
+        self.sessions.revoke_session(sid)
+        self.assertEqual(self.client.get(page_path).status_code, 401)
+
+    def test_forged_or_expired_jwt_cannot_read_expert_dossier(self):
+        route = ROOT + "/DEMO-D-001/expert-review-preparation"
+        self.assertEqual(self.client.get(route).status_code, 401)
+        for token in ("fake", self.signed(expired=True)):
+            response = self.client.get(
+                route, headers={"Authorization": "Bearer " + token},
+            )
+            self.assertEqual(response.status_code, 401)
+        default = TestClient(create_app(self.config), base_url=ORIGIN)
+        self.assertEqual(default.get(
+            route, headers=self.headers()).status_code, 404)
+        for method in ("post", "put", "patch", "delete"):
+            self.assertEqual(
+                getattr(self.client, method)(
+                    route, headers=self.headers(),
+                ).status_code, 405,
+            )
+
+    def test_assigned_dossier_read_is_audited_once_not_three_fake_reviews(self):
+        self.workspace = self.internal_proposal_workspace()
+        self.client = self.client_for()
+        before = len(self.ledger.audit_snapshot())
+        res = self.client.get(
+            ROOT + "/DEMO-D-001/expert-review-preparation",
+            headers=self.headers(),
+        )
+        self.assertEqual(res.status_code, 200)
+        new = self.ledger.audit_snapshot()[before:]
+        self.assertEqual(len(new), 1)
+        self.assertEqual(new[0].kind, "READ_ALLOWED")
+        self.assertEqual(new[0].access_mode, "AGRONOMY_INTERNAL_PROPOSAL_HANDOFF")
+        self.assertEqual(res.json()["technical_case_tracking"], "UNREQUESTED")
+        self.assertTrue(self.ledger.verify_integrity())
+
+
 if __name__ == "__main__":
     unittest.main()

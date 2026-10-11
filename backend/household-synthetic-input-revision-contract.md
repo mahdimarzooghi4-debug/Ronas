@@ -58,6 +58,22 @@ digest. Its output still cannot approve any programme or source consent.
 No new model, training data, AI suggestion, specialist qualification or
 scientific plan is created here.
 
+## Same-ledger specialist handoff — stale proposal fails closed
+
+When the existing **opt-in** `SyntheticAgronomyWorkspace` is attached to
+**the same** `SqliteSyntheticHouseholdInputLedger`, its synthetic internal
+proposal fixture can obtain the separately recorded latest input revision
+and digest from the *already-verified transaction* (no nested writer
+connection). That is a genuine independent **test-only revision source**,
+not consent or real input data. An expert still needs a signed
+`agronomy_expert` role and exact live assignment. A fixture with revision
+1 is visible as structural/unreviewed only while the owner's journal
+still reports revision 1 and its exact digest. The moment the household
+appends revision 2, reading the old fixture fails sanitized 503 without
+exposing stages; a separately supplied revision-2 fixture can be inspected
+but it remains unapproved. Test cases verify this end-to-end, plus that
+a household correction never grants expert rights or accepts a plan.
+
 ## Integrity and concurrency
 
 - Exact case/version/owner binding, strictly increasing per-case revisions,

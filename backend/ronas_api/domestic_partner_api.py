@@ -17,6 +17,15 @@ def build_domestic_partner_router(
         raise ValueError("explicit synthetic Domestic partner workspace required")
     router = APIRouter()
 
+    @router.get("/api/v1/domestic-partners/my-preparation")
+    def my_preparation(p: Principal = Depends(verified_principal)) -> dict:
+        try:
+            return workspace.own_preparation_overview(p)
+        except SyntheticDomesticPartnerUnavailable as exc:
+            raise HTTPException(
+                status_code=503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE",
+            ) from exc
+
     @router.get("/api/v1/local-buyer/my-preview")
     def buyer_preview(p: Principal = Depends(verified_principal)) -> dict:
         return _own("local_buyer", p)

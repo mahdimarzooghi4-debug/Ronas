@@ -399,8 +399,10 @@ def build_authenticated_ui_router(
             )
             local_read = (
                 '<h3>پیش‌نمای شخصی نقش داخلی (فقط DEMO)</h3>'
+                '<p><a href="/domestic-partners/my-preparation">'
+                'نمای یکپارچه آماده‌سازی شخصی من</a></p>'
                 '<p>این جایگاه آزمایشی به معنی وجود درخواست خرید، موجودی '
-                'تجهیزات، مجوز، پیشنهاد یا معامله نیست.</p>'
+                'تجهیزات، مجوز، پیشنهاد یا معامله نیست.</p>
                 + ('<p><a href="' + link
                    + '">مشاهده پیش‌نمای آماده‌سازی شخصی</a></p>'
                    if preview is not None else
@@ -476,6 +478,77 @@ def build_authenticated_ui_router(
                         body, logged_in=True)
 
     if domestic_partner_workspace is not None:
+        @router.get("/domestic-partners/my-preparation")
+        def domestic_partner_preparation_page(
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            if not ({"local_buyer", "equipment_seller"} & session.roles):
+                raise HTTPException(404, detail="PREVIEW_NOT_FOUND")
+            try:
+                overview = domestic_partner_workspace.own_preparation_overview(
+                    Principal(session.subject, session.roles),
+                )
+            except SyntheticDomesticPartnerUnavailable as exc:
+                raise HTTPException(
+                    503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE",
+                ) from exc
+            labels = {
+                "local_buyer": (
+                    "خریدار محلی", "/local-buyer/my-preview",
+                    ("هویت", "محصول درخواستی", "مقدار درخواستی",
+                     "محل تحویل", "بودجه"),
+                ),
+                "equipment_seller": (
+                    "فروشنده تجهیزات", "/equipment-seller/my-preview",
+                    ("هویت", "فهرست تجهیزات", "موجودی",
+                     "محدوده خدمات", "تناسب فنی تجهیزات"),
+                ),
+            }
+            blocks = []
+            for item in overview["items"]:
+                role = item["role"]
+                label, url, slots = labels[role]
+                if (item["business_readiness"] != "NOT_EVALUATED"
+                        or item["commercial_actions_enabled"] is not False
+                        or item["data_submission_enabled"] is not False
+                        or item["unknown_display_slots"] !=
+                           list(DOMESTIC_PARTNER_FIELDS[role])):
+                    raise HTTPException(
+                        503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE",
+                    )
+                rows = ''.join(
+                    '<li>' + escape(name) + ': هنوز داده‌ای ثبت نشده</li>'
+                    for name in slots
+                )
+                blocks.append(
+                    '<section class="section"><h3>' + escape(label) + '</h3>'
+                    '<p>نمونه اختصاصی: ' + escape(item["profile_ref"])
+                    + ' — نسخه ' + str(item["profile_version"]) + '</p>'
+                    '<p>وضعیت بررسی آمادگی تجاری: انجام نشده (DEMO)</p>'
+                    '<ul>' + rows + '</ul>'
+                    '<p><a href="' + url
+                    + '">مشاهده جزئیات همین نقش</a></p></section>'
+                )
+            content = (
+                '<article class="panel"><h2>آماده‌سازی شخصی من (فقط DEMO)</h2>'
+                '<p>فقط نمونه‌هایی نمایش داده می‌شوند که این حساب با نقش '
+                'امضاشده و مجوز جاری اختصاصی به آن‌ها دسترسی دارد.</p>'
+                '<p>این جایگاه‌ها صرفاً نمایشی و داده‌های آن‌ها نامشخص‌اند؛ '
+                'معیار اجباری ثبت‌نام یا صلاحیت نیستند.</p>'
+                + (''.join(blocks) if blocks else
+                   '<p>هیچ پیش‌نمای مجاز آزمایشی موجود نیست.</p>')
+                + '<p>ارتباط با خانوار، تطبیق خریدار و فروشنده، '
+                'پیشنهاد، سفارش، قیمت، پرداخت و فعالیت تجاری فعال نیست.</p>'
+                '<p><a href="/">بازگشت به محیط مشترک</a></p>'
+                '</article>'
+            )
+            return page("روناس — نمای آماده‌سازی شخصی (DEMO)",
+                        content, logged_in=True)
+
         def partner_page(
             role: str, sid: str | None,
         ) -> HTMLResponse:

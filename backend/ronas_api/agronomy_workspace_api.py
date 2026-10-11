@@ -6,11 +6,15 @@ cultivation plan approval. A role by itself confers no case permission.
 from collections.abc import Callable
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
 
 from .auth import Principal
 from .agronomy_workspace import SyntheticAgronomyWorkspace
 from .grant_ledger_sqlite import LedgerIntegrityError
+from .expert_review_questions_sqlite import (
+    SqliteSyntheticExpertQuestionLedger, ReviewQuestionConflict,
+)
 
 
 def build_agronomy_workspace_router(
@@ -20,6 +24,72 @@ def build_agronomy_workspace_router(
     if not isinstance(workspace, SyntheticAgronomyWorkspace):
         raise ValueError("explicit agronomy workspace required")
     router = APIRouter()
+
+
+    # Explicit opt-in ONLY. No POST route on the existing/default workspace.
+    if isinstance(workspace.ledger, SqliteSyntheticExpertQuestionLedger):
+        class SyntheticQuestionCommand(BaseModel):
+            model_config = ConfigDict(extra="forbid", strict=True)
+            action_id: StrictStr
+            track: StrictStr
+            expected_case_version: StrictInt
+            expected_input_revision: StrictInt
+            expected_question_revision: StrictInt
+            reason_ref: StrictStr
+            evidence_ref: StrictStr
+
+        @router.get("/api/v1/agronomy/assigned-drafts/{ref}/review-questions")
+        def assigned_review_questions(
+            ref: str, p: Principal = Depends(verified_principal),
+        ) -> dict:
+            try:
+                result = workspace.read_assigned_synthetic_review_questions(ref, p)
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return result
+
+        @router.post(
+            "/api/v1/agronomy/assigned-drafts/{ref}/review-questions",
+            status_code=201,
+        )
+        def record_review_question(
+            ref: str, command: SyntheticQuestionCommand,
+            authorization: str | None = Header(default=None),
+            p: Principal = Depends(verified_principal),
+        ) -> dict:
+            # No ambient browser-cookie mutation, no scientific approval.
+            if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
+                raise HTTPException(401, detail="BEARER_REQUIRED_FOR_MUTATION")
+            try:
+                result = workspace.record_assigned_synthetic_review_question(
+                    ref, p,
+                    action_id=command.action_id,
+                    track=command.track,
+                    expected_case_version=command.expected_case_version,
+                    expected_input_revision=command.expected_input_revision,
+                    expected_question_revision=command.expected_question_revision,
+                    reason_ref=command.reason_ref,
+                    evidence_ref=command.evidence_ref,
+                )
+            except ReviewQuestionConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_QUESTION_VERSION_CONFLICT",
+                ) from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(
+                    422, detail="INVALID_SYNTHETIC_REVIEW_QUESTION",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return result
 
     @router.get("/api/v1/agronomy/assigned-drafts")
     def assigned_cases(

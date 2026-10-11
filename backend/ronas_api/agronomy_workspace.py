@@ -37,6 +37,7 @@ from .internal_scientific_basis_contract import (
     ScientificBasisCandidate, ScientificSourceCandidate,
     inspect_scientific_basis_structure,
 )
+from .internal_specialist_scope_contract import SyntheticSpecialistEvidenceRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +65,9 @@ class SyntheticAgronomyWorkspace:
         scientific_basis_fixtures: Iterable[ScientificBasisCandidate] = (),
         trusted_scientific_source_snapshot: Callable[
             [], tuple[ScientificSourceCandidate, ...]
+        ] | None = None,
+        trusted_specialist_governance_snapshot: Callable[
+            [], SyntheticSpecialistEvidenceRegistry
         ] | None = None,
     ) -> None:
         if (not isinstance(ledger, SqliteSyntheticHumanReviewLedger)
@@ -125,6 +129,12 @@ class SyntheticAgronomyWorkspace:
             for item in catalog.values()
         ):
             raise ValueError("unbound scientific basis digest")
+        if (trusted_specialist_governance_snapshot is not None
+                and not callable(trusted_specialist_governance_snapshot)):
+            raise ValueError("specialist governance callback must be independent")
+        self._trusted_specialist_governance_snapshot = (
+            trusted_specialist_governance_snapshot
+        )
         self._scientific_basis_fixtures = bases
         self._trusted_scientific_sources = trusted_scientific_source_snapshot
         self._proposal_fixtures = catalog
@@ -906,6 +916,55 @@ class SyntheticAgronomyWorkspace:
             ref, principal,
             from_revision=from_revision, to_revision=to_revision,
         )
+
+
+    def read_assigned_specialist_scope_evidence(
+        self, ref: str, principal: Principal,
+    ) -> dict | None:
+        """Non-authorizing specialist evidence candidate, audited and redacted.
+
+        The candidate can NEVER grant access or prove professional competence.
+        This strictly reuses existing signed role + independent LIVE case
+        assignment. An unavailable separate candidate registry fails closed.
+        """
+        if not isinstance(self.ledger, SqliteSyntheticExpertQuestionLedger):
+            raise ValueError("synthetic specialist review ledger not mounted")
+        if not _synthetic_ref(ref):
+            return None
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            record = self.ledger._catalogue.get(("DOMESTIC", ref))
+            actor = self._actor(principal)
+            if record is None or actor is None:
+                return None
+            if not self._allowed(actor, ref, record.version):
+                return None
+            if self._trusted_specialist_governance_snapshot is None:
+                registry = SyntheticSpecialistEvidenceRegistry()
+            else:
+                try:
+                    registry = self._trusted_specialist_governance_snapshot()
+                except Exception as exc:
+                    raise LedgerIntegrityError(
+                        "independent specialist candidate source unavailable"
+                    ) from exc
+            if not isinstance(registry, SyntheticSpecialistEvidenceRegistry):
+                raise LedgerIntegrityError(
+                    "untrusted synthetic specialist candidate registry"
+                )
+            try:
+                result = registry.project_assigned_case(
+                    subject=actor, case_ref=ref, case_version=record.version,
+                )
+            except (ValueError, TypeError, KeyError) as exc:
+                raise LedgerIntegrityError(
+                    "stale specialist scope candidate or case version"
+                ) from exc
+            self.ledger._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=actor, mode="AGRONOMY_SYNTHETIC_SPECIALIST_SCOPE_EVIDENCE",
+            )
+            return result
 
     def read_assigned_synthetic_evidence_index(
         self, ref: str, principal: Principal,

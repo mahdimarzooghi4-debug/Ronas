@@ -839,6 +839,143 @@ class LocalExpertQuestionTests(unittest.TestCase):
         ).status_code, 200)
         self.assertTrue(self.ledger.verify_integrity())
 
+
+    def specialist_scope_evidence_url(self):
+        return ("/api/v1/agronomy/assigned-drafts/DEMO-D-1/"
+                "specialist-scope-evidence")
+
+    def specialist_governance_fixture(self):
+        from ronas_api.internal_specialist_scope_contract import (
+            SpecialistScopeEvidenceCandidate, SpecialistScopeEvidenceEvent,
+            SyntheticSpecialistEvidenceRegistry, RECORDED,
+        )
+        scope=SpecialistScopeEvidenceCandidate(
+            subject=EXPERT, case_ref="DEMO-D-1", case_version=3,
+            evidence_revision=1,
+            declared_review_tracks=(TRACKS[0], TRACKS[2]),
+            qualification_evidence_ref="DEMO-QUAL-FIXTURE",
+            qualification_evidence_sha256="a"*64,
+            appointment_evidence_ref="DEMO-APPT-FIXTURE",
+            appointment_evidence_sha256="b"*64,
+            conflict_disclosure_ref="DEMO-CONFLICT-FIXTURE",
+            conflict_disclosure_sha256="c"*64,
+            conflict_declaration_state="POTENTIAL_CONFLICT_DECLARED",
+        )
+        record=SpecialistScopeEvidenceEvent(
+            action_ref="DEMO-GOV-EV-A", subject=EXPERT,
+            case_ref="DEMO-D-1", case_version=3,
+            evidence_revision=1, operation=RECORDED, candidate=scope,
+        )
+        return SyntheticSpecialistEvidenceRegistry((record,))
+
+    def test_specialist_scope_evidence_is_redacted_non_authorizing(self):
+        from ronas_api.internal_specialist_scope_contract import (
+            SyntheticSpecialistEvidenceRegistry,
+        )
+        state={"current":self.specialist_governance_fixture()}
+        self.workspace._trusted_specialist_governance_snapshot = (
+            lambda: state["current"]
+        )
+        url=self.specialist_scope_evidence_url()
+        first=self.client.get(url, headers=self.headers())
+        self.assertEqual(first.status_code, 200, first.text)
+        r=first.json()
+        self.assertEqual(r["evidence_state"],"EVIDENCE_POINTERS_PRESENT_UNVERIFIED")
+        self.assertTrue(r["potential_conflict_disclosed"])
+        self.assertFalse(r["conflict_independently_cleared"])
+        self.assertFalse(r["scope_authorized_for_real_review"])
+        self.assertFalse(r["plan_accepted"])
+        self.assertEqual([t["declared_candidate_scope_present"]
+                          for t in r["track_scopes"]],[True,False,True])
+        self.assertTrue(all(not t["may_decide_cultivation_plan"]
+                            for t in r["track_scopes"]))
+        for secret in ("DEMO-QUAL-FIXTURE","DEMO-APPT-FIXTURE",
+                       "DEMO-CONFLICT-FIXTURE","a"*64,"b"*64,"c"*64,EXPERT):
+            self.assertNotIn(secret,first.text)
+        self.assertEqual(first.headers["cache-control"],"no-store")
+        self.assertEqual(sum(
+            e.access_mode == "AGRONOMY_SYNTHETIC_SPECIALIST_SCOPE_EVIDENCE"
+            for e in self.ledger.audit_snapshot()),1)
+        state["current"]=SyntheticSpecialistEvidenceRegistry()
+        other=self.client.get(url, headers=self.headers())
+        self.assertEqual(other.status_code,200,other.text)
+        self.assertEqual(other.json()["evidence_state"],
+                         "NO_SYNTHETIC_EVIDENCE_CANDIDATE")
+        self.assertFalse(other.json()["candidate_is_access_grant"])
+
+    def test_specialist_scope_evidence_withdrawal_is_never_decision_clearance(self):
+        from ronas_api.internal_specialist_scope_contract import (
+            SpecialistScopeEvidenceEvent, WITHHELD,
+        )
+        history=self.specialist_governance_fixture()
+        state={"current":history}
+        self.workspace._trusted_specialist_governance_snapshot=(
+            lambda:state["current"]
+        )
+        url=self.specialist_scope_evidence_url()
+        self.assertEqual(self.client.get(url,headers=self.headers()).status_code,200)
+        state["current"]=history.with_event(SpecialistScopeEvidenceEvent(
+            action_ref="DEMO-GOV-WITHHOLD",subject=EXPERT,
+            case_ref="DEMO-D-1",case_version=3,evidence_revision=2,
+            operation=WITHHELD,reason_ref="DEMO-WITHHOLD-REASON",
+        ))
+        r=self.client.get(url,headers=self.headers())
+        self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(r.json()["evidence_state"],
+                         "CANDIDATE_WITHHELD_NOT_AUTHORIZED")
+        self.assertFalse(r.json()["scope_authorized_for_real_review"])
+        self.assertEqual(history.project_assigned_case(
+            subject=EXPERT,case_ref="DEMO-D-1",case_version=3
+        )["candidate_revision"],1)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_specialist_scope_evidence_live_role_scope_and_authority_failure(self):
+        url=self.specialist_scope_evidence_url()
+        self.assertEqual(self.client.get(url).status_code,401)
+        self.assertEqual(self.client.get(
+            url,headers=self.headers(OWNER,("household",))
+        ).status_code,404)
+        self.assertEqual(self.client.get(
+            url.replace("DEMO-D-1","DEMO-E-1"),headers=self.headers()
+        ).status_code,404)
+        self.assertEqual(self.client.post(
+            url,headers=self.headers(),json={}
+        ).status_code,405)
+        self.active=False
+        self.assertEqual(self.client.get(
+            url,headers=self.headers()
+        ).status_code,404)
+        self.active=True
+        self.assertEqual(TestClient(create_app(self.config)).get(
+            url,headers=self.headers()
+        ).status_code,404)
+        state={"current":self.specialist_governance_fixture()}
+        self.workspace._trusted_specialist_governance_snapshot=(
+            lambda:state["current"]
+        )
+        self.assertEqual(self.client.get(url,headers=self.headers()).status_code,200)
+        self.workspace._trusted_specialist_governance_snapshot=(
+            lambda: (_ for _ in ()).throw(RuntimeError("offline"))
+        )
+        self.assertEqual(self.client.get(url,headers=self.headers()).status_code,503)
+        self.workspace._trusted_specialist_governance_snapshot=lambda: {"approved":True}
+        self.assertEqual(self.client.get(url,headers=self.headers()).status_code,503)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_specialist_scope_evidence_tampered_case_ledger_fails_closed(self):
+        self.seed_input()
+        self.post()
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER expert_question_no_update")
+            db.execute(
+                "UPDATE expert_review_question SET reason_ref='DEMO-FORGED'"
+            )
+        r=self.client.get(
+            self.specialist_scope_evidence_url(),headers=self.headers()
+        )
+        self.assertEqual(r.status_code,503)
+        self.assertNotIn("DEMO-FORGED",r.text)
+
     def evidence_index_url(self):
         return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-index"
 

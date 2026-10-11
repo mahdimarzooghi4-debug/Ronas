@@ -12,7 +12,7 @@ Explicit required env keys:
 - `RONAS_LOCAL_BFF_ENABLE=LOCAL_TEST_ONLY`, without which the launcher fails to import.
 - Existing `RONAS_KEYCLOAK_ISSUER`, `RONAS_KEYCLOAK_API_CLIENT_ID`, `RONAS_KEYCLOAK_BROWSER_CLIENT_ID`, `RONAS_KEYCLOAK_JWKS_FILE` (public version-pinned JWKS verified by the operator).
 - `RONAS_LOCAL_BFF_CALLBACK_URL`: exact `https://localhost:PORT/api/auth/callback` or `https://127.0.0.1:PORT/api/auth/callback`, matching authorized Keycloak redirect URI; PORT is chosen by the operator and not assumed here.
-- `RONAS_LOCAL_BFF_SESSION_DATABASE`: absolute local SQLite path under a pre-created user-owned private directory; this is **not** Production storage.
+- `RONAS_LOCAL_BFF_SESSION_DATABASE`: absolute local SQLite path under a pre-created user-owned **non-shared** private directory (no group/world permissions, symlink parent refused); this is **not** Production storage.
 - `RONAS_LOCAL_BFF_SESSION_KEY_FILE`: absolute existing user-owned 0600 regular binary file holding exactly 32 random bytes in a private directory; the value must never be stored in source control or shell history.
 
 An operator with a separately approved local HTTPS certificate/server may run an ASGI server bound to **loopback only** against the module `ronas_local_bff:app`. Neither HTTPS certificates, user accounts, secret keys nor a Keycloak deployment are provisioned by Ronas. Session store handles atomic state take, encrypted PKCE/access token/CSRF persistence, expiration and revocation in one host. The BFF never exposes access tokens to the browser, uses Secure/HttpOnly/SameSite cookies, CSRF plus strict Origin for logout, and rejects the second use of callback state.

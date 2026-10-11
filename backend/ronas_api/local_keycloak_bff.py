@@ -42,7 +42,12 @@ class LocalBFFSettings:
             parsed = urlsplit(self.callback_url)
         except ValueError as exc:
             raise LocalBFFConfigurationError("invalid callback") from exc
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise LocalBFFConfigurationError("invalid loopback HTTPS port") from exc
         if (parsed.scheme != "https"
+                or port == 0
                 or parsed.hostname not in ("localhost", "127.0.0.1", "::1")
                 or parsed.username is not None or parsed.password is not None
                 or parsed.query or parsed.fragment
@@ -113,6 +118,18 @@ def create_local_test_bff(
     """
     if not isinstance(settings, LocalBFFSettings):
         raise LocalBFFConfigurationError("complete local BFF settings required")
+    # A private SQLite file under a publicly writable directory can be
+    # replaced or redirected. The LOCAL/TEST session directory is therefore
+    # required to be an already existing, owned and non-shared directory.
+    try:
+        directory = settings.session_database.parent.lstat()
+        if (not stat.S_ISDIR(directory.st_mode)
+                or stat.S_IMODE(directory.st_mode) & 0o077
+                or (hasattr(os, "getuid")
+                    and directory.st_uid != os.getuid())):
+            raise LocalBFFConfigurationError("session directory must be private")
+    except OSError as exc:
+        raise LocalBFFConfigurationError("session directory unavailable") from exc
     key = _private_session_key(settings.session_key_file)
     store = SqliteBrowserSessionStore(settings.session_database, key)
     cfg = BrowserOIDCConfig(settings.keycloak, settings.callback_url)

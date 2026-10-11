@@ -124,6 +124,7 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
             "https://localhost:8765/other",
             "https://user:pass@localhost/api/auth/callback",
             "https://127.0.0.1:8765/api/auth/callback?debug=yes",
+            "https://localhost:abc/api/auth/callback",
         ):
             with self.subTest(callback=callback), self.assertRaises(
                 LocalBFFConfigurationError
@@ -162,6 +163,17 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
         self.keyfile.symlink_to(self.root / "missing")
         with self.assertRaises(LocalBFFConfigurationError):
             create_local_test_bff(self.settings)
+
+    def test_private_session_directory_is_required_before_database_creation(self):
+        public = self.root / "public"
+        public.mkdir(mode=0o755)
+        public.chmod(0o755)
+        settings = LocalBFFSettings(
+            self.realm, CALLBACK, public / "session.db", self.keyfile,
+        )
+        with self.assertRaises(LocalBFFConfigurationError):
+            create_local_test_bff(settings)
+        self.assertFalse(settings.session_database.exists())
 
     def test_full_pkce_exchange_real_signed_role_shell_logout_and_replay(self):
         client, calls, captured = self._client(role="household")

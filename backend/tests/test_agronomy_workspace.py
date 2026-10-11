@@ -21,6 +21,9 @@ from ronas_api.agronomy_workspace import (
 from ronas_api.app import create_app
 from ronas_api.auth import Principal
 from ronas_api.grant_ledger_sqlite import LedgerIntegrityError
+from ronas_api.internal_cultivation_plan_contract import (
+    InternalCultivationProposal, ProposedCultivationStage,
+)
 from ronas_api.human_review_sqlite import SqliteSyntheticHumanReviewLedger
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
@@ -895,6 +898,233 @@ class AgronomyWorkspaceTests(unittest.TestCase):
         ui = self.client.get(ROLE + "?technical_state=UNREQUESTED")
         self.assertEqual(ui.status_code, 503)
         self.assertNotIn("DEMO-D-001", ui.text)
+
+
+    def internal_proposal_workspace(self, *, proposal=None, snapshot=None):
+        if proposal is None:
+            proposal = InternalCultivationProposal(
+                household_case_ref="DEMO-D-001",
+                household_case_version=2,
+                household_input_revision=3,
+                household_input_snapshot_digest="1" * 64,
+                scientific_basis_manifest_digest="2" * 64,
+                internal_model_artifact_digest="3" * 64,
+                internal_run_ref="DEMO-RUN-001",
+                proposal_content_digest="4" * 64,
+                proposed_stages=(
+                    ProposedCultivationStage(
+                        "DEMO-STAGE-A", "5" * 64, "6" * 64,
+                    ),
+                    ProposedCultivationStage(
+                        "DEMO-STAGE-B", "7" * 64, "8" * 64,
+                    ),
+                ),
+            )
+        if snapshot is None:
+            snapshot = lambda ref, version: (
+                (3, "1" * 64) if ref == "DEMO-D-001" and version == 2 else None
+            )
+        return SyntheticAgronomyWorkspace(
+            self.ledger,
+            (SyntheticAgronomyAssignment(
+                "DEMO-D-001", "synthetic-agronomist-001", 2,
+            ),),
+            trusted_assignment_active=lambda actor, ref, version: (
+                actor == "synthetic-agronomist-001"
+                and ref in self.active and version == 2
+            ),
+            proposal_fixtures=(proposal,),
+            trusted_input_snapshot=snapshot,
+        )
+
+    def test_unseeded_specialist_handoff_never_invents_internal_ai_execution(self):
+        route = ROOT + "/DEMO-D-001/internal-plan-proposal"
+        res = self.client.get(route, headers=self.headers())
+        self.assertEqual(res.status_code, 200, res.text)
+        data = res.json()
+        self.assertEqual(data["proposal_status"], "NO_INTERNAL_PROPOSAL_FIXTURE")
+        self.assertEqual(data["cultivation_inputs"], {
+            "crop": None, "growing_area": None, "water": None,
+            "soil": None, "location": None,
+        })
+        self.assertEqual(data["plan_state"], "NOT_AUTHORED")
+        for flag in ("expert_qualification_verified", "scientific_review_approved",
+                     "plan_accepted", "advice_enabled", "real_data"):
+            self.assertIs(data[flag], False)
+        self.assertNotIn("proposed_stage_refs", data)
+        self.assertNotIn("internal_model_artifact_digest", res.text)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_signed_assigned_expert_sees_only_structural_fixture_not_plan(self):
+        self.workspace = self.internal_proposal_workspace()
+        self.client = self.client_for()
+        route = ROOT + "/DEMO-D-001/internal-plan-proposal"
+        res = self.client.get(route, headers=self.headers())
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["contract_version"],
+                         "ronas.domestic.internal-proposal-handoff.v0")
+        self.assertEqual(body["case_ref"], "DEMO-D-001")
+        self.assertEqual(body["case_version"], 2)
+        self.assertEqual(body["input_revision"], 3)
+        self.assertEqual(body["proposal_status"], "STRUCTURE_ONLY_UNREVIEWED")
+        self.assertEqual(body["proposed_stage_refs"],
+                         ["DEMO-STAGE-A", "DEMO-STAGE-B"])
+        self.assertEqual(body["plan_state"], "NOT_AUTHORED")
+        for flag in ("expert_qualification_verified", "scientific_review_approved",
+                     "plan_accepted", "advice_enabled", "real_data"):
+            self.assertIs(body[flag], False)
+        for forbidden in ("synthetic-household-001", "synthetic-ops-001",
+                          "DEMO-RUN-001", "internal_model_artifact_digest",
+                          "scientific_basis_manifest_digest",
+                          "proposal_content_digest", "1" * 64,
+                          "agronomy_advice", "crop_name"):
+            self.assertNotIn(forbidden, res.text)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_specialist_handoff_requires_live_role_exact_case_and_assign(self):
+        self.workspace = self.internal_proposal_workspace()
+        self.client = self.client_for()
+        route = ROOT + "/DEMO-D-001/internal-plan-proposal"
+        for subject, roles, case in (
+            ("synthetic-agronomist-001", ("household",), "DEMO-D-001"),
+            ("synthetic-ops-001", ("domestic_ops",), "DEMO-D-001"),
+            ("synthetic-agronomist-other", ("agronomy_expert",), "DEMO-D-001"),
+            ("synthetic-agronomist-001", ("agronomy_expert",), "DEMO-D-002"),
+            ("synthetic-agronomist-001", ("agronomy_expert",), "DEMO-E-001"),
+            ("synthetic-agronomist-001", ("agronomy_expert",), "DEMO-NONE"),
+        ):
+            with self.subTest(subject=subject, roles=roles, case=case):
+                path = ROOT + "/" + case + "/internal-plan-proposal"
+                res = self.client.get(path, headers=self.headers(subject, roles))
+                self.assertEqual(res.status_code, 404)
+                self.assertNotIn("DEMO-STAGE-A", res.text)
+        self.assertEqual(self.client.get(route, headers=self.headers()).status_code, 200)
+        self.active.remove("DEMO-D-001")
+        revoked = self.client.get(route, headers=self.headers())
+        self.assertEqual(revoked.status_code, 404)
+        self.assertNotIn("DEMO-STAGE-A", revoked.text)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_stale_input_or_case_proposal_never_reaches_expert(self):
+        for current in ((2, "1" * 64), (3, "9" * 64), None, (True, "1" * 64),
+                        ("3", "1" * 64), (3, "Z" * 64), (3,), []):
+            with self.subTest(current=current):
+                self.workspace = self.internal_proposal_workspace(
+                    snapshot=lambda *_: current,
+                )
+                self.client = self.client_for()
+                res = self.client.get(
+                    ROOT + "/DEMO-D-001/internal-plan-proposal",
+                    headers=self.headers(),
+                )
+                self.assertEqual(res.status_code, 503)
+                self.assertNotIn("DEMO-STAGE-A", res.text)
+                self.assertEqual(res.json(), {
+                    "detail": "SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                })
+
+    def test_missing_independent_source_rejects_fixture_at_construction(self):
+        proposal = self.internal_proposal_workspace()._proposal_fixtures["DEMO-D-001"]
+        with self.assertRaises(ValueError):
+            SyntheticAgronomyWorkspace(
+                self.ledger,
+                (SyntheticAgronomyAssignment(
+                    "DEMO-D-001", "synthetic-agronomist-001", 2,
+                ),),
+                trusted_assignment_active=lambda *_: True,
+                proposal_fixtures=(proposal,),
+            )
+        with self.assertRaises(ValueError):
+            SyntheticAgronomyWorkspace(
+                self.ledger, (),
+                trusted_assignment_active=lambda *_: True,
+                proposal_fixtures=(proposal, proposal),
+                trusted_input_snapshot=lambda *_: (3, "1" * 64),
+            )
+
+    def test_invalid_snapshot_source_or_assignment_outage_fails_closed(self):
+        self.workspace = self.internal_proposal_workspace(
+            snapshot=lambda *_: (_ for _ in ()).throw(
+                RuntimeError("PRIVATE SNAPSHOT ERROR")
+            ),
+        )
+        self.client = self.client_for()
+        result = self.client.get(
+            ROOT + "/DEMO-D-001/internal-plan-proposal",
+            headers=self.headers(),
+        )
+        self.assertEqual(result.status_code, 503)
+        self.assertNotIn("PRIVATE SNAPSHOT ERROR", result.text)
+        self.assertNotIn("DEMO-STAGE-A", result.text)
+        self.workspace._live_authority = lambda *_: (
+            (_ for _ in ()).throw(RuntimeError("PRIVATE ASSIGN ERROR"))
+        )
+        result = self.client.get(
+            ROOT + "/DEMO-D-001/internal-plan-proposal",
+            headers=self.headers(),
+        )
+        self.assertEqual(result.status_code, 503)
+        self.assertNotIn("PRIVATE ASSIGN ERROR", result.text)
+
+    def test_persian_case_to_proposal_to_case_navigation_uses_current_assignment(self):
+        self.workspace = self.internal_proposal_workspace()
+        self.client = self.client_for()
+        sid = self.session()
+        detail = self.client.get(DETAIL)
+        self.assertEqual(detail.status_code, 200)
+        self.assertIn("/agronomy/assigned-drafts/DEMO-D-001/internal-plan-proposal",
+                      detail.text)
+        page = self.client.get(
+            "/agronomy/assigned-drafts/DEMO-D-001/internal-plan-proposal",
+        )
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("ساختار پیشنهاد داخلی کشت", page.text)
+        self.assertIn("DEMO-STAGE-A", page.text)
+        self.assertIn("تأیید نشده", page.text)
+        self.assertIn(DETAIL, page.text)
+        for forbidden in ("DEMO-RUN-001", "synthetic-household-001", "1" * 64):
+            self.assertNotIn(forbidden, page.text)
+        self.active.remove("DEMO-D-001")
+        denied = self.client.get(
+            "/agronomy/assigned-drafts/DEMO-D-001/internal-plan-proposal",
+        )
+        self.assertEqual(denied.status_code, 404)
+        self.assertNotIn("DEMO-STAGE-A", denied.text)
+        self.sessions.revoke_session(sid)
+        self.assertEqual(self.client.get(
+            "/agronomy/assigned-drafts/DEMO-D-001/internal-plan-proposal",
+        ).status_code, 401)
+
+    def test_unseeded_html_proposal_preparation_truth_and_no_writes(self):
+        self.session()
+        route = "/agronomy/assigned-drafts/DEMO-D-001/internal-plan-proposal"
+        page = self.client.get(route)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("هنوز هیچ پیشنهاد ساختاری AI داخلی", page.text)
+        self.assertNotIn("DEMO-STAGE-A", page.text)
+        self.assertIn("هیچ برنامه‌ای پذیرفته نشده", page.text)
+        self.assertEqual(page.headers["cache-control"], "no-store")
+        self.assertIn("frame-ancestors 'none'",
+                      page.headers["content-security-policy"])
+        for path in (route, ROOT + "/DEMO-D-001/internal-plan-proposal"):
+            for method in ("post", "put", "patch", "delete"):
+                with self.subTest(path=path, method=method):
+                    self.assertEqual(
+                        getattr(self.client, method)(path).status_code, 405,
+                    )
+
+    def test_signed_invalid_token_no_authorized_proposal_on_browser_or_api(self):
+        route = ROOT + "/DEMO-D-001/internal-plan-proposal"
+        self.assertEqual(self.client.get(route).status_code, 401)
+        for token in ("forged", self.signed(expired=True)):
+            denied = self.client.get(
+                route, headers={"Authorization": "Bearer " + token}
+            )
+            self.assertEqual(denied.status_code, 401)
+        self.assertEqual(self.client.get(
+            "/agronomy/assigned-drafts/DEMO-D-001/internal-plan-proposal"
+        ).status_code, 401)
 
 
 if __name__ == "__main__":

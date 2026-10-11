@@ -52,6 +52,10 @@ from .internal_authority_revision_witness import (
     compare_authority_vectors, versioned_context_fingerprint,
 )
 from .internal_authority_checkpointed_read import LocalCheckpointedAuthorityRead
+from .internal_authority_source_owned_read import (
+    SourceOwnedCandidateAuthorityRead, compare_owned_observations,
+    source_owned_context_fingerprint,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +97,7 @@ class SyntheticAgronomyWorkspace:
             [str, str, int], SyntheticAuthorityWitness
         ] | None = None,
         local_checkpointed_authority: LocalCheckpointedAuthorityRead | None = None,
+        source_owned_authority: SourceOwnedCandidateAuthorityRead | None = None,
     ) -> None:
         if (not isinstance(ledger, SqliteSyntheticHumanReviewLedger)
                 or not callable(trusted_assignment_active)):
@@ -174,6 +179,15 @@ class SyntheticAgronomyWorkspace:
         if (local_checkpointed_authority is not None
                 and any(x is not None for x in authority_versions)):
             raise ValueError("ambiguous source authority in checkpoint mode")
+        if (source_owned_authority is not None
+                and not isinstance(source_owned_authority,
+                                   SourceOwnedCandidateAuthorityRead)):
+            raise ValueError("invalid source-owned candidate adapter")
+        if (source_owned_authority is not None
+                and (local_checkpointed_authority is not None
+                     or any(x is not None for x in authority_versions))):
+            raise ValueError("ambiguous versioned source ownership")
+        self._source_owned_authority = source_owned_authority
         self._local_checkpointed_authority = local_checkpointed_authority
         self._authority_version_callbacks = authority_versions
         self._scientific_basis_fixtures = bases
@@ -1096,7 +1110,19 @@ class SyntheticAgronomyWorkspace:
                 self._local_checkpointed_authority
                 if require_versioned_authorities else None
             )
-            if local is not None:
+            owner = (
+                self._source_owned_authority
+                if require_versioned_authorities else None
+            )
+            owned_before = None
+            if owner is not None:
+                # Each independent provider supplies typed data + its OWN
+                # persisted revision in the SAME source-owned observation.
+                owned_before = owner.observations(actor, ref, record.version)
+                if owned_before[2].snapshot is not True:
+                    return None
+                revisions_before = tuple(o.witness for o in owned_before)
+            elif local is not None:
                 local.checked_journal()
                 if local.snapshot(
                     ASSIGNMENT, actor, ref, record.version,
@@ -1137,8 +1163,9 @@ class SyntheticAgronomyWorkspace:
                     )
                     try:
                         snapshot = (
-                            local.snapshot(SCIENCE, actor, ref, record.version)[0]
-                            if local is not None else self._trusted_scientific_sources()
+                            owned_before[0].snapshot if owner is not None
+                            else (local.snapshot(SCIENCE, actor, ref, record.version)[0]
+                                  if local is not None else self._trusted_scientific_sources())
                         )
                         inspect_scientific_basis_structure(
                             basis,
@@ -1180,7 +1207,9 @@ class SyntheticAgronomyWorkspace:
                 "WHERE ref=? ORDER BY audit_sequence", (ref,),
             ))
 
-            if local is not None:
+            if owner is not None:
+                registry = owned_before[1].snapshot
+            elif local is not None:
                 registry = local.snapshot(
                     SPECIALIST, actor, ref, record.version,
                 )[0]
@@ -1240,8 +1269,9 @@ class SyntheticAgronomyWorkspace:
             if source_at_start is not None:
                 try:
                     latest_sources = (
-                        local.snapshot(SCIENCE, actor, ref, record.version)[0]
-                        if local is not None else self._trusted_scientific_sources()
+                        owned_before[0].snapshot if owner is not None
+                        else (local.snapshot(SCIENCE, actor, ref, record.version)[0]
+                              if local is not None else self._trusted_scientific_sources())
                     )
                     inspect_scientific_basis_structure(
                         basis,
@@ -1261,13 +1291,14 @@ class SyntheticAgronomyWorkspace:
                     raise LedgerIntegrityError(
                         "independent synthetic scientific source changed"
                     ) from exc
-            if (local is not None
+            if (owner is not None or local is not None
                     or self._trusted_specialist_governance_snapshot is not None):
                 try:
                     after = (
-                        local.snapshot(SPECIALIST, actor, ref, record.version)[0]
-                        if local is not None
-                        else self._trusted_specialist_governance_snapshot()
+                        owned_before[1].snapshot if owner is not None
+                        else (local.snapshot(SPECIALIST, actor, ref, record.version)[0]
+                              if local is not None
+                              else self._trusted_specialist_governance_snapshot())
                     )
                     if not isinstance(after, SyntheticSpecialistEvidenceRegistry):
                         raise ValueError("invalid specialist registry")
@@ -1295,13 +1326,26 @@ class SyntheticAgronomyWorkspace:
                     "local case assignment revoked during versioned read"
                 )
             if require_versioned_authorities:
-                revisions_after = (
-                    local.vector(actor, ref, record.version)
-                    if local is not None else
-                    self._read_independent_authority_revisions(
-                        actor, ref, record.version,
+                owned_after = None
+                if owner is not None:
+                    owned_after = owner.observations(actor, ref, record.version)
+                    compare_owned_observations(
+                        owned_before, owned_after,
+                        subject=actor, case_ref=ref, case_version=record.version,
                     )
-                )
+                    if owned_after[2].snapshot is not True:
+                        raise LedgerIntegrityError(
+                            "source-owned candidate assignment revoked"
+                        )
+                    revisions_after = tuple(o.witness for o in owned_after)
+                else:
+                    revisions_after = (
+                        local.vector(actor, ref, record.version)
+                        if local is not None else
+                        self._read_independent_authority_revisions(
+                            actor, ref, record.version,
+                        )
+                    )
                 try:
                     compare_authority_vectors(
                         revisions_before,revisions_after,
@@ -1315,6 +1359,11 @@ class SyntheticAgronomyWorkspace:
                     raise LedgerIntegrityError(
                         "in-flight authority ABA or revision drift"
                     ) from exc
+                if owner is not None:
+                    protected_fingerprint = source_owned_context_fingerprint(
+                        versioned_fingerprint=protected_fingerprint,
+                        observations=owned_after,
+                    )
                 enforce_synthetic_context_precondition(
                     current_fingerprint=protected_fingerprint,
                     expected_fingerprint=expected_context_fingerprint)
@@ -1333,6 +1382,10 @@ class SyntheticAgronomyWorkspace:
                 # Final fail-closed check immediately before success audit.
                 # It does not claim cross-file atomicity or external proof.
                 local.checked_journal()
+            if owner is not None and not self._allowed(actor, ref, record.version):
+                raise LedgerIntegrityError(
+                    "live assignment revoked after provider observations"
+                )
             self.ledger._append(
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                 actor=actor, mode="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT",

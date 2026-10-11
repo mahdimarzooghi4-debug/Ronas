@@ -1965,6 +1965,203 @@ class LocalExpertQuestionTests(unittest.TestCase):
             url,headers=self.headers(),json={}).status_code,405)
         self.assertEqual(TestClient(create_app(self.config)).get(
             url,headers=self.headers()).status_code,404)
+    def setup_source_owned_case(self):
+        from ronas_api.internal_authority_source_owned_read import (
+            SourceOwnedCandidateAuthorityRead, SourceOwnedCandidateObservation,
+        )
+        from ronas_api.internal_authority_revision_journal_sqlite import (
+            snapshot_digest,
+        )
+        from ronas_api.internal_authority_revision_witness import (
+            SCIENCE, SPECIALIST, ASSIGNMENT, SyntheticAuthorityWitness,
+        )
+        from ronas_api.internal_specialist_scope_contract import (
+            SyntheticSpecialistEvidenceRegistry,
+        )
+        state = {
+            "snapshots": {
+                SCIENCE: tuple(),
+                SPECIALIST: SyntheticSpecialistEvidenceRegistry(),
+                ASSIGNMENT: True,
+            },
+            "generations": {k: 1 for k in (SCIENCE, SPECIALIST, ASSIGNMENT)},
+            "calls": {k: 0 for k in (SCIENCE, SPECIALIST, ASSIGNMENT)},
+            "mutate_after_first": None,
+        }
+        def callback(kind):
+            def read(actor, ref, version):
+                state["calls"][kind] += 1
+                if (state["mutate_after_first"] == kind
+                        and state["calls"][kind] == 2):
+                    state["generations"][kind] += 1
+                snapshot = state["snapshots"][kind]
+                return SourceOwnedCandidateObservation(
+                    witness=SyntheticAuthorityWitness(
+                        kind, actor, ref, version, state["generations"][kind],
+                    ),
+                    snapshot=snapshot,
+                    snapshot_digest_sha256=snapshot_digest(
+                        kind, actor, ref, version, snapshot,
+                    ),
+                )
+            return read
+        self.workspace._source_owned_authority=SourceOwnedCandidateAuthorityRead(
+            *(callback(k) for k in (SCIENCE, SPECIALIST, ASSIGNMENT))
+        )
+        self.seed_input()
+        return state
+
+    def test_source_owned_signed_read_binds_three_typed_snapshots(self):
+        state = self.setup_source_owned_case()
+        response = self.client.get(
+            self.versioned_review_context_url(), headers=self.headers())
+        self.assertEqual(response.status_code, 200, response.text)
+        from ronas_api.internal_authority_revision_witness import KINDS
+        self.assertEqual(state["calls"], {k: 2 for k in KINDS})
+        self.assertFalse(response.json()["cross_provider_atomicity_verified"])
+        self.assertFalse(response.json()["plan_accepted"])
+        self.assertTrue(all(x["review_outcome"] == "NOT_REVIEWED"
+                            for x in response.json()["tracks"]))
+        self.assertNotIn("snapshot_digest_sha256", response.text)
+        self.assertEqual(sum(
+            e.access_mode == "AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for e in self.ledger.audit_snapshot()), 1)
+
+    def test_source_owned_generation_aba_rejected_after_prior_read(self):
+        from ronas_api.internal_authority_revision_witness import SCIENCE
+        state = self.setup_source_owned_case()
+        url = self.versioned_review_context_url()
+        initial = self.client.get(url, headers=self.headers())
+        self.assertEqual(initial.status_code, 200, initial.text)
+        token = initial.json()["synthetic_versioned_context_fingerprint_sha256"]
+        state["generations"][SCIENCE] += 2
+        stale = self.client.get(
+            url + "&expected_context_fingerprint=" + token,
+            headers=self.headers(),
+        )
+        self.assertEqual(stale.status_code, 409, stale.text)
+        self.assertEqual(stale.json()["detail"],
+                         "SYNTHETIC_REVIEW_CONTEXT_CHANGED")
+        self.assertFalse(stale.json().get("plan_accepted", False))
+
+    def test_source_owned_inflight_generation_change_has_no_success_audit(self):
+        from ronas_api.internal_authority_revision_witness import SPECIALIST
+        state = self.setup_source_owned_case()
+        state["mutate_after_first"] = SPECIALIST
+        response = self.client.get(
+            self.versioned_review_context_url(), headers=self.headers())
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertEqual(response.json()["detail"],
+                         "SYNTHETIC_AGRONOMY_UNAVAILABLE")
+        self.assertFalse(any(
+            e.access_mode == "AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for e in self.ledger.audit_snapshot()))
+
+    def test_source_owned_digest_mismatch_fails_without_success_audit(self):
+        from ronas_api.internal_authority_source_owned_read import (
+            SourceOwnedCandidateObservation, SourceOwnedCandidateAuthorityRead,
+        )
+        from ronas_api.internal_authority_revision_witness import (
+            SCIENCE, SyntheticAuthorityWitness,
+        )
+        state = self.setup_source_owned_case()
+        current = self.workspace._source_owned_authority
+        def corrupt(actor, ref, version):
+            return SourceOwnedCandidateObservation(
+                witness=SyntheticAuthorityWitness(
+                    SCIENCE, actor, ref, version, 1),
+                snapshot=tuple(),
+                snapshot_digest_sha256="0" * 64,
+            )
+        self.workspace._source_owned_authority = SourceOwnedCandidateAuthorityRead(
+            corrupt, current.specialist_evidence, current.current_assignment,
+        )
+        response = self.client.get(
+            self.versioned_review_context_url(), headers=self.headers())
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertFalse(any(
+            e.access_mode == "AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for e in self.ledger.audit_snapshot()))
+
+    def test_source_owned_wrong_case_witness_cannot_cross_scope(self):
+        from ronas_api.internal_authority_source_owned_read import (
+            SourceOwnedCandidateObservation, SourceOwnedCandidateAuthorityRead,
+        )
+        from ronas_api.internal_authority_revision_witness import (
+            ASSIGNMENT, SyntheticAuthorityWitness,
+        )
+        from ronas_api.internal_authority_revision_journal_sqlite import (
+            snapshot_digest,
+        )
+        self.setup_source_owned_case()
+        current = self.workspace._source_owned_authority
+        def wrong_case(actor, ref, version):
+            other = "DEMO-D-2"
+            return SourceOwnedCandidateObservation(
+                witness=SyntheticAuthorityWitness(
+                    ASSIGNMENT, actor, other, version, 1),
+                snapshot=True,
+                snapshot_digest_sha256=snapshot_digest(
+                    ASSIGNMENT, actor, other, version, True,
+                ),
+            )
+        self.workspace._source_owned_authority = SourceOwnedCandidateAuthorityRead(
+            current.scientific_source, current.specialist_evidence, wrong_case,
+        )
+        response = self.client.get(
+            self.versioned_review_context_url(), headers=self.headers())
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertFalse(any(
+            e.access_mode == "AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for e in self.ledger.audit_snapshot()))
+
+    def test_source_owned_revocation_requires_live_grant_and_role(self):
+        from ronas_api.internal_authority_revision_witness import ASSIGNMENT
+        state = self.setup_source_owned_case()
+        url = self.versioned_review_context_url()
+        state["snapshots"][ASSIGNMENT] = False
+        self.assertEqual(self.client.get(
+            url, headers=self.headers()).status_code, 404)
+        state["snapshots"][ASSIGNMENT] = True
+        self.assertEqual(self.client.get(url).status_code, 401)
+        self.assertEqual(self.client.get(
+            url, headers=self.headers(OWNER, ("household",))).status_code, 404)
+        self.active = False
+        self.assertEqual(self.client.get(
+            url, headers=self.headers()).status_code, 404)
+        self.assertFalse(any(
+            e.access_mode == "AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for e in self.ledger.audit_snapshot()))
+
+    def test_source_owned_excludes_counter_callbacks_and_local_checkpoint(self):
+        from ronas_api.internal_authority_revision_witness import (
+            SCIENCE, SPECIALIST, ASSIGNMENT,
+        )
+        from ronas_api.internal_authority_checkpointed_read import (
+            LocalCheckpointedAuthorityRead,
+        )
+        self.setup_source_owned_case()
+        source = self.workspace._source_owned_authority
+        base = dict(
+            ledger=self.ledger,
+            assignments=(SyntheticAgronomyAssignment("DEMO-D-1", EXPERT, 3),),
+            trusted_assignment_active=lambda *_: True,
+            source_owned_authority=source,
+        )
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            SyntheticAgronomyWorkspace(
+                **base, trusted_science_authority_version=lambda *_: None,
+            )
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            SyntheticAgronomyWorkspace(
+                **base, local_checkpointed_authority=(
+                    LocalCheckpointedAuthorityRead(
+                        self.path.parent / "separate-a.db",
+                        self.path.parent / "separate-b.db",
+                    )
+                ),
+            )
+
     def evidence_index_url(self):
         return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-index"
 

@@ -17,6 +17,17 @@ from .expert_review_questions_sqlite import (
 )
 
 
+class SyntheticQuestionCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: StrictStr
+    track: StrictStr
+    expected_case_version: StrictInt
+    expected_input_revision: StrictInt
+    expected_question_revision: StrictInt
+    reason_ref: StrictStr
+    evidence_ref: StrictStr
+
+
 def build_agronomy_workspace_router(
     workspace: SyntheticAgronomyWorkspace,
     verified_principal: Callable[..., Principal],
@@ -28,16 +39,6 @@ def build_agronomy_workspace_router(
 
     # Explicit opt-in ONLY. No POST route on the existing/default workspace.
     if isinstance(workspace.ledger, SqliteSyntheticExpertQuestionLedger):
-        class SyntheticQuestionCommand(BaseModel):
-            model_config = ConfigDict(extra="forbid", strict=True)
-            action_id: StrictStr
-            track: StrictStr
-            expected_case_version: StrictInt
-            expected_input_revision: StrictInt
-            expected_question_revision: StrictInt
-            reason_ref: StrictStr
-            evidence_ref: StrictStr
-
         @router.get("/api/v1/agronomy/assigned-drafts/{ref}/review-questions")
         def assigned_review_questions(
             ref: str, p: Principal = Depends(verified_principal),

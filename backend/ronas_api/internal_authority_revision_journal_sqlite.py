@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import sqlite3
 import stat
+from uuid import uuid4, UUID
 from typing import Callable, Iterator
 
 from .grant_ledger_sqlite import LedgerIntegrityError
@@ -234,6 +235,10 @@ class SqliteSyntheticAuthorityRevisionJournal:
                 "INSERT OR IGNORE INTO authority_metadata(key,value) "
                 "VALUES('head_digest',?)", (GENESIS,),
             )
+            db.execute(
+                "INSERT OR IGNORE INTO authority_metadata(key,value) "
+                "VALUES('journal_instance_id',?)", (uuid4().hex,),
+            )
         with self._transaction() as db:
             self._verify(db)
 
@@ -268,8 +273,15 @@ class SqliteSyntheticAuthorityRevisionJournal:
         metadata = dict(db.execute(
             "SELECT key,value FROM authority_metadata"
         ))
-        if set(metadata) != {"head_digest"}:
+        if set(metadata) != {"head_digest","journal_instance_id"}:
             raise LedgerIntegrityError("authority journal metadata malformed")
+        try:
+            instance_id = metadata["journal_instance_id"]
+            if (type(instance_id) is not str or len(instance_id) != 32
+                    or UUID(hex=instance_id).hex != instance_id):
+                raise ValueError("invalid journal instance ID")
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise LedgerIntegrityError("authority journal identity invalid") from exc
         previous = GENESIS
         state: dict[tuple, tuple[int, str]] = {}
         actions = set()

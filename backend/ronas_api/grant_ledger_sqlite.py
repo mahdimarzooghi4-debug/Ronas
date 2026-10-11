@@ -169,6 +169,14 @@ class SqliteSyntheticGrantLedger(ScopedSyntheticDraftRegistry):
                 db.execute("ROLLBACK")
                 raise
 
+    def _extended_audit_kinds(self) -> frozenset[str]:
+        """Default-deny additional local ledger event types.
+
+        Only an explicit subclass with its own paired-entry verification may
+        opt into a new event kind; base ledgers never ignore foreign writes.
+        """
+        return frozenset()
+
     def _verify(self, db: sqlite3.Connection) -> None:
         metadata = dict(db.execute("SELECT key, value FROM metadata"))
         if (set(metadata) != {"fingerprint", "head_digest"}
@@ -224,7 +232,8 @@ class SqliteSyntheticGrantLedger(ScopedSyntheticDraftRegistry):
                 # coupled review-history consistency verifier.
                 if type(self) is SqliteSyntheticGrantLedger:
                     raise LedgerIntegrityError("review events require review-aware ledger")
-            elif event.kind not in ("READ_ALLOWED", "READ_DENIED"):
+            elif (event.kind not in ("READ_ALLOWED", "READ_DENIED")
+                  and event.kind not in self._extended_audit_kinds()):
                 raise LedgerIntegrityError("unsupported audit event")
             previous = digest
         if metadata["head_digest"] != previous:

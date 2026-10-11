@@ -52,10 +52,13 @@ def science(**changed):
 def dossier(*, current_input=(1, "1" * 64), plan=None, current_science=None,
             questions=None, bindings=None):
     q = questions if questions is not None else []
-    p = proposal() if plan is None else plan
+    p = proposal() if plan is None else (None if plan is False else plan)
+    source = science() if current_science is None else (
+        None if current_science is False else current_science
+    )
     return project_expert_provenance_dossier(
         case_ref="DEMO-D-1", case_version=3, current_input=current_input,
-        proposal=p, science_trace=science() if current_science is None else current_science,
+        proposal=p, science_trace=source,
         evidence_index=project_synthetic_review_evidence_index(
             case_ref="DEMO-D-1", case_version=3,
             input_revision=current_input[0] if current_input else None,

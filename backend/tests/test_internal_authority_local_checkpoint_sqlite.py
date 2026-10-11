@@ -172,6 +172,8 @@ class LocalAuthorityCheckpointTests(unittest.TestCase):
         incomplete_c=temp/"partialcheckpoint.db"
         sqlite3.connect(incomplete_j).close()
         sqlite3.connect(incomplete_c).close()
+        incomplete_j.chmod(0o600)
+        incomplete_c.chmod(0o600)
         with self.assertRaises((LedgerIntegrityError,sqlite3.DatabaseError)):
             SqliteSyntheticAuthorityRevisionJournal.open_existing(incomplete_j)
         with self.assertRaises((LocalCheckpointMismatch,sqlite3.DatabaseError)):

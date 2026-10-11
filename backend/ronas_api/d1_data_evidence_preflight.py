@@ -100,7 +100,9 @@ def evidence_preflight(
         "snapshot_digest": sha256(manifest.encode("utf-8")).hexdigest(),
         "inventory_state": "INTERNAL_PREPARATION_NOT_ADMITTED",
         "provided_pointer_count": len(keyed),
-        "required_slots": len(D1_EVIDENCE_IDS) * len(PURPOSES),
+        # Candidate inventory slots, NOT legally/operationally required
+        # document counts. Business E01..E07 have no approved field schema.
+        "candidate_review_slots": len(D1_EVIDENCE_IDS) * len(PURPOSES),
         "evidence_items": items,
         "source_rights_verified": False,
         "service_purpose_consent_verified": False,

@@ -22,7 +22,7 @@ from ronas_api.internal_cultivation_plan_contract import (
 from ronas_api.auth import Principal
 from ronas_api.grant_ledger_sqlite import LedgerIntegrityError
 from ronas_api.household_input_ledger_sqlite import (
-    SqliteSyntheticHouseholdInputLedger, InputRevisionConflict,
+    SqliteSyntheticHouseholdInputLedger, InputRevisionConflict, EVENT_KIND, MODE,
 )
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
@@ -337,7 +337,7 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         ).status_code, 404)
 
 
-    def specialist(self, *, revision=1, digest=DIGEST1):
+    def specialist(self, *, revision=1, digest=DIGEST1, input_snapshot=None):
         proposal = InternalCultivationProposal(
             household_case_ref="DEMO-D-1",
             household_case_version=3,
@@ -361,12 +361,55 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
                 and ref == "DEMO-D-1" and version == 3
             ),
             proposal_fixtures=(proposal,),
+            trusted_input_snapshot=input_snapshot,
         )
         return TestClient(create_app(
             self.config, self.flow, scoped_registry=self.ledger,
             technical_review_ledger=self.ledger,
             agronomy_workspace=workspace,
         ), base_url=ORIGIN)
+
+    def test_orphan_mutation_audit_kind_fails_closed_even_without_mode_prefix(self):
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            self.ledger._append(
+                db, kind=EVENT_KIND, engine="DOMESTIC", ref="DEMO-D-1",
+                actor=OWNER, action_id="DEMO-ORPHAN-INPUT",
+                mode="SPOOFED_UNRELATED_MODE",
+            )
+        response = self.client.get(ROOT, headers=self.headers())
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn("DEMO-D-1", response.text)
+        with self.assertRaises(LedgerIntegrityError):
+            self.reopen()
+
+    def test_forged_input_mode_on_unpaired_read_event_fails_closed(self):
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            self.ledger._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC",
+                ref="DEMO-D-1", actor=OWNER,
+                mode=MODE + "0" * 64,
+            )
+        response = self.client.get(ROOT, headers=self.headers())
+        self.assertEqual(response.status_code, 503)
+        with self.assertRaises(LedgerIntegrityError):
+            self.reopen()
+
+    def test_same_ledger_forbids_override_of_household_current_revision(self):
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(), headers=self.headers(),
+        ).status_code, 201)
+        with self.assertRaises(ValueError) as err:
+            self.specialist(input_snapshot=lambda *_: (1, DIGEST1))
+        self.assertIn("conflicting household input authorities", str(err.exception))
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(1, DIGEST2, "DEMO-INPUT-B"),
+            headers=self.headers(),
+        ).status_code, 201)
+        with self.assertRaises(ValueError):
+            self.specialist(input_snapshot=lambda *_: (1, DIGEST1))
+        self.assertTrue(self.ledger.verify_integrity())
 
     def test_persisted_owner_revision_drives_expert_proposal_staleness(self):
         specialist = self.specialist()

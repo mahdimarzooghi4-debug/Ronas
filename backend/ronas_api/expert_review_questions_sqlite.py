@@ -71,7 +71,7 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
         return super()._extended_audit_kinds() | frozenset({EVENT})
 
     @staticmethod
-    def _receipt(data: dict) -> str:
+    def _question_digest(data: dict) -> str:
         return _hash(_json(data))
 
     @staticmethod
@@ -135,7 +135,7 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
                     or not all(_digest(x) for x in (
                         input_digest, science_digest, proposal_digest))
                     or previous != prior.get(key, GENESIS)
-                    or receipt != self._receipt(self._binding_from_row(row))
+                    or receipt != self._question_digest(self._binding_from_row(row))
                     or linked is None or sequence in paired
                     or linked.get("kind") != EVENT
                     or linked.get("engine") != "DOMESTIC"
@@ -213,7 +213,7 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
             "proposal_digest": proposal_digest, "reason_ref": reason_ref,
             "evidence_ref": evidence_ref, "previous_receipt": prior,
         }
-        receipt = self._receipt(binding)
+        receipt = self._question_digest(binding)
         audit = self._append(
             db, kind=EVENT, engine="DOMESTIC", ref=ref,
             actor=actor, target=receipt, action_id=action_id,

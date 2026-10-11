@@ -1919,11 +1919,11 @@ class LocalExpertQuestionTests(unittest.TestCase):
         # The first specialist owned-snapshot read is after the first
         # source-scoped/versioned witness. Advance without pinning while
         # another callback executes inside the same signed HTTP request.
-        original=self.workspace._local_checkpointed_authority
-        class MutatingLocal:
-            pass
-        # Use the actual typed guard; inject mutation through separately
-        # validated current live permission callback.
+        from ronas_api.internal_authority_local_checkpoint_sqlite import (
+            LocalCheckpointMismatch,
+        )
+        # Inject a journal update from the independently checked live
+        # assignment callback, between the two versioned observations.
         real=self.workspace._live_authority
         calls=[0]
         def live(actor,ref,version):
@@ -1946,8 +1946,8 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertFalse(any(
             e.access_mode=="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
             for e in self.ledger.audit_snapshot()))
-        self.assertFalse(checkpoint.assert_current(journal)
-                         if False else False)
+        with self.assertRaises(LocalCheckpointMismatch):
+            checkpoint.assert_current(journal)
 
     def test_checkpointed_wrong_actor_and_default_app_still_denied(self):
         journal,checkpoint,jpath,cpath,scope=(

@@ -13,6 +13,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from ronas_api.app import create_app
+from ronas_api.agronomy_workspace import (
+    SyntheticAgronomyAssignment, SyntheticAgronomyWorkspace,
+)
+from ronas_api.internal_cultivation_plan_contract import (
+    InternalCultivationProposal, ProposedCultivationStage,
+)
 from ronas_api.auth import Principal
 from ronas_api.grant_ledger_sqlite import LedgerIntegrityError
 from ronas_api.household_input_ledger_sqlite import (
@@ -318,6 +324,99 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         self.assertEqual(missing_browser.get(
             ROOT, headers=self.headers(),
         ).status_code, 404)
+
+
+    def specialist(self, *, revision=1, digest=DIGEST1):
+        proposal = InternalCultivationProposal(
+            household_case_ref="DEMO-D-1",
+            household_case_version=3,
+            household_input_revision=revision,
+            household_input_snapshot_digest=digest,
+            scientific_basis_manifest_digest="3" * 64,
+            internal_model_artifact_digest="4" * 64,
+            internal_run_ref="DEMO-RUN-ONE",
+            proposal_content_digest="5" * 64,
+            proposed_stages=(ProposedCultivationStage(
+                "DEMO-STEP-ONE", "6" * 64, "7" * 64,
+            ),),
+        )
+        workspace = SyntheticAgronomyWorkspace(
+            self.ledger,
+            (SyntheticAgronomyAssignment(
+                "DEMO-D-1", "synthetic-agronomist-one", 3,
+            ),),
+            trusted_assignment_active=lambda actor, ref, version: (
+                actor == "synthetic-agronomist-one"
+                and ref == "DEMO-D-1" and version == 3
+            ),
+            proposal_fixtures=(proposal,),
+        )
+        return TestClient(create_app(
+            self.config, self.flow, scoped_registry=self.ledger,
+            technical_review_ledger=self.ledger,
+            agronomy_workspace=workspace,
+        ), base_url=ORIGIN)
+
+    def test_persisted_owner_revision_drives_expert_proposal_staleness(self):
+        specialist = self.specialist()
+        url = "/api/v1/agronomy/assigned-drafts/DEMO-D-1/internal-plan-proposal"
+        expert = self.headers("synthetic-agronomist-one", ("agronomy_expert",))
+        missing = specialist.get(url, headers=expert)
+        self.assertEqual(missing.status_code, 503)
+        self.assertNotIn("DEMO-STEP-ONE", missing.text)
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(), headers=self.headers(),
+        ).status_code, 201)
+        ready = specialist.get(url, headers=expert)
+        self.assertEqual(ready.status_code, 200, ready.text)
+        self.assertEqual(ready.json()["proposal_status"],
+                         "STRUCTURE_ONLY_UNREVIEWED")
+        self.assertEqual(ready.json()["input_revision"], 1)
+        self.assertEqual(ready.json()["proposed_stage_refs"], ["DEMO-STEP-ONE"])
+        self.assertIs(ready.json()["plan_accepted"], False)
+        self.assertIs(ready.json()["advice_enabled"], False)
+        self.assertNotIn(DIGEST1, ready.text)
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(1, DIGEST2, "DEMO-INPUT-B"),
+            headers=self.headers(),
+        ).status_code, 201)
+        stale = specialist.get(url, headers=expert)
+        self.assertEqual(stale.status_code, 503)
+        self.assertEqual(stale.json(), {
+            "detail": "SYNTHETIC_AGRONOMY_UNAVAILABLE",
+        })
+        self.assertNotIn("DEMO-STEP-ONE", stale.text)
+        new_specialist = self.specialist(revision=2, digest=DIGEST2)
+        revised = new_specialist.get(url, headers=expert)
+        self.assertEqual(revised.status_code, 200)
+        self.assertEqual(revised.json()["input_revision"], 2)
+        self.assertIs(revised.json()["plan_accepted"], False)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_persisted_household_revision_cannot_grant_expert_role_or_approval(self):
+        self.client.post(ROOT, json=self.command(), headers=self.headers())
+        specialist = self.specialist()
+        url = "/api/v1/agronomy/assigned-drafts/DEMO-D-1/internal-plan-proposal"
+        for subject, roles in (
+            (OWNER, ("household",)),
+            ("synthetic-agronomist-one", ("household",)),
+            ("synthetic-household-other", ("agronomy_expert",)),
+            ("synthetic-domestic-ops", ("domestic_ops",)),
+        ):
+            with self.subTest(subject=subject, roles=roles):
+                denied = specialist.get(
+                    url, headers=self.headers(subject, roles),
+                )
+                self.assertEqual(denied.status_code, 404)
+                self.assertNotIn("DEMO-STEP-ONE", denied.text)
+        ordinary = self.client.get(
+            "/api/v1/domestic/household-intake/my-drafts/DEMO-D-1/technical-status",
+            headers=self.headers(),
+        )
+        self.assertEqual(ordinary.status_code, 200)
+        self.assertEqual(ordinary.json()["status"], "DRAFT_ONLY")
+        self.assertFalse(ordinary.json()["plan_accepted"])
+        self.assertFalse(ordinary.json()["purpose_consent_verified"])
 
 
 if __name__ == "__main__":

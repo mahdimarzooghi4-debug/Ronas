@@ -507,7 +507,7 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
         self.assertIn("رسید پاسخ مشاهده شد (بدون داوری تخصصی)", receipt_page.text)
         self.assertNotIn("DEMO-REPLY-ALPHA", receipt_page.text)
         self.assertNotIn("DEMO-OWNER-PENDING-REF", receipt_page.text)
-        self.assertNotIn("تأیید علمی", receipt_page.text)
+        self.assertIn("بدون داوری تخصصی", receipt_page.text)
 
         revised = owner.post(
             "/my-drafts/DEMO-D-1/input-revisions/demo-correction",

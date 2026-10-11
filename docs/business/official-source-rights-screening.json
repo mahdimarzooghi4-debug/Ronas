@@ -1,0 +1,133 @@
+{
+  "contract_version": "ronas.source-rights.screening.v1",
+  "checked_on": "2026-10-11",
+  "overall_status": "SOURCE_TERMS_SCREENED_NOT_DATASET_AUTHORIZED",
+  "domestic_gate": 2,
+  "export_gate": 3,
+  "finance_gate": 4,
+  "all_gates_open": true,
+  "legal_authority_assigned": false,
+  "selected_actual_product_destination": false,
+  "source_use_approved": false,
+  "model_training_approved": false,
+  "external_data_downloaded": false,
+  "candidates": [
+    {
+      "id": "DOM-AGROVOC",
+      "domain": "DOMESTIC",
+      "source_name": "FAO AGROVOC",
+      "source_kind": "CONTROLLED_VOCABULARY_NOT_AGRONOMIC_RECOMMENDATION",
+      "official_terms_urls": [
+        "https://aims.fao.org/standards/agrovoc/faq",
+        "https://aims.fao.org/standards/agrovoc/access-agrovoc",
+        "https://www.fao.org/agrovoc/index.php/maintenance"
+      ],
+      "rights_observation": "FAO official pages mention CC-BY-IGO-3.0 and CC-BY-4.0 on different pages; FAO-language vocabulary content vs contributor-owned other languages must be distinguished.",
+      "review_flags": [
+        "OFFICIAL_PAGES_LICENSE_VERSION_DIFFER",
+        "LANGUAGE_AND_THIRD_PARTY_OWNERSHIP",
+        "ATTRIBUTION_REQUIRED",
+        "THESAURUS_NOT_SCIENTIFIC_PLAN_SOURCE"
+      ],
+      "proposed_usage": "Candidate crop terminology only, NOT crop-specific scientific advice.",
+      "actual_dataset_version": null,
+      "reviewed_by_authority": null,
+      "rights_for_ronas_verified": false,
+      "training_rights_verified": false,
+      "source_data_ingested": false
+    },
+    {
+      "id": "DOM-FAO-PUBLICATIONS",
+      "domain": "DOMESTIC",
+      "source_name": "FAO publication repository rights",
+      "source_kind": "PUBLICATIONS_NOT_DATASET_LICENSE",
+      "official_terms_urls": [
+        "https://www.fao.org/publications/about-fao-publishing/permissions/",
+        "https://www.fao.org/contact-us/terms/"
+      ],
+      "rights_observation": "FAO publication default reuse is commonly framed around private study/research/teaching/noncommercial uses; specific publication, commercial adaptation/translation and third-party rights require checking.",
+      "review_flags": [
+        "NONCOMMERCIAL_DEFAULT_DOES_NOT_AUTHORIZE_RONAS_COMMERCIAL_REUSE",
+        "THIRD_PARTY_CONTENT_CHECK",
+        "VERSION_AND_PUBLICATION_SPECIFIC_LICENSE",
+        "REVIEW_SCIENTIFIC_SUITABILITY_SEPARATELY"
+      ],
+      "proposed_usage": "Candidate scientific literature discovery, not a verified cultivation procedure or approved model training corpus.",
+      "actual_dataset_version": null,
+      "reviewed_by_authority": null,
+      "rights_for_ronas_verified": false,
+      "training_rights_verified": false,
+      "source_data_ingested": false
+    },
+    {
+      "id": "EXP-FAOSTAT",
+      "domain": "EXPORT",
+      "source_name": "FAO corporate statistical databases",
+      "source_kind": "STATISTICAL_DATABASE",
+      "official_terms_urls": [
+        "https://www.fao.org/contact-us/terms/db-terms-of-use/en"
+      ],
+      "rights_observation": "Default CC BY 4.0 where dataset metadata does not specify otherwise, with additional terms including attribution, third-party exceptions and a prohibition on enterprise/product promotion using FAO datasets.",
+      "review_flags": [
+        "DATABASE_ADDITIONAL_RESTRICTIONS",
+        "NO_FAO_COMMERCIAL_PROMOTION_OR_ENDORSEMENT",
+        "DATASET_METADATA_AND_THIRD_PARTY_EXCEPTIONS",
+        "ATTRIBUTION_FORMAT_CHECK"
+      ],
+      "proposed_usage": "Candidate macro-statistical source to review after an owner-selected product–destination research question; not a lead, buyer, deal or redistribution permission.",
+      "actual_dataset_version": null,
+      "reviewed_by_authority": null,
+      "rights_for_ronas_verified": false,
+      "training_rights_verified": false,
+      "source_data_ingested": false
+    },
+    {
+      "id": "EXP-WORLD-BANK",
+      "domain": "EXPORT",
+      "source_name": "World Bank datasets",
+      "source_kind": "DATASET_CATALOG",
+      "official_terms_urls": [
+        "https://datacatalog.worldbank.org/public-licenses",
+        "https://www.worldbank.org/ext/en/legal/terms-conditions/datasets",
+        "https://datacatalog.worldbank.org/faq"
+      ],
+      "rights_observation": "World Bank-origin open datasets commonly use CC BY 4.0 by default with attribution, but other datasets/third-party providers have dataset-specific license restrictions; the exact dataset is not selected.",
+      "review_flags": [
+        "DATASET_BY_DATASET_LICENSE",
+        "THIRD_PARTY_RESTRICTIONS",
+        "ATTRIBUTION_AND_CHANGE_NOTICE",
+        "COUNTRY_PRODUCT_DATASET_NOT_SELECTED"
+      ],
+      "proposed_usage": "Candidate statistical context for E0 only if actual question and chosen dataset rights are reviewed.",
+      "actual_dataset_version": null,
+      "reviewed_by_authority": null,
+      "rights_for_ronas_verified": false,
+      "training_rights_verified": false,
+      "source_data_ingested": false
+    },
+    {
+      "id": "EXP-COMTRADE",
+      "domain": "EXPORT",
+      "source_name": "UN Comtrade",
+      "source_kind": "TRADE_STATISTICS",
+      "official_terms_urls": [
+        "https://uncomtrade.org/docs/policy-on-comtrade-data-use/",
+        "https://uncomtrade.org/docs/re-dissemination-of-data/",
+        "https://comtradeplus.un.org/LicenseAgreement"
+      ],
+      "rights_observation": "General UN Comtrade terms restrict redistribution and commercial use; published policy describes internal use and different redistribution exceptions or possible licenses. The combined official terms require use-case-specific legal review, not blanket permission.",
+      "review_flags": [
+        "INTERNAL_USE_NOT_PUBLIC_REDISTRIBUTION",
+        "RE-DISSEMINATION_EXCEPTION_NOT_AUTOMATIC",
+        "COMMERCIAL_USE_REQUIRES_SPECIFIC_TERMS_REVIEW",
+        "API_FAIR_USAGE_AND_NO_UI_SCRAPING"
+      ],
+      "proposed_usage": "Candidate trade-statistics context for E0, never buyer/offer evidence; no API fetch or public product embedding authorized.",
+      "actual_dataset_version": null,
+      "reviewed_by_authority": null,
+      "rights_for_ronas_verified": false,
+      "training_rights_verified": false,
+      "source_data_ingested": false
+    }
+  ]
+}

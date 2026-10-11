@@ -1,0 +1,81 @@
+{
+  "contract_version": "ronas.business.three-gate-review-integrity.v1",
+  "snapshot_status": "DRAFT_NOT_ADMITTED",
+  "review_date": "2026-10-11",
+  "admission_authorized": false,
+  "live_data_processing_authorized": false,
+  "commercial_actions_authorized": false,
+  "final_business_signatures_verified": false,
+  "source_record_only": true,
+  "dossiers": [
+    {
+      "domain": "DOMESTIC",
+      "issue": 2,
+      "state": "OPEN",
+      "source": "docs/business/75-operational-three-gate-decision-docket.md",
+      "scope_candidacies": [
+        "CORE-D1-A",
+        "CORE-D1-B",
+        "CORE-D2"
+      ],
+      "required_evidence": [
+        "real_audience_region_crop",
+        "purpose_specific_consent_and_data_rights",
+        "qualified_expert_and_science",
+        "versioned_review_and_supervision",
+        "seller_QC_and_publication_when_applicable"
+      ],
+      "prohibitions": [
+        "NO_REAL_HOUSEHOLD_INTAKE_WITHOUT_CONSENT",
+        "NO_AUTOMATIC_PLAN_APPROVAL",
+        "NO_NEW_ADVICE_FROM_STALE_INPUT",
+        "NO_PUBLIC_OFFER_WITHOUT_PRODUCER_AND_QC",
+        "PRODUCER_CONTROLS_FINAL_PRICE"
+      ]
+    },
+    {
+      "domain": "EXPORT",
+      "issue": 3,
+      "state": "OPEN",
+      "source": "docs/business/75-operational-three-gate-decision-docket.md",
+      "scope_candidacies": [
+        "CORE-E0-A"
+      ],
+      "required_evidence": [
+        "owner_selected_real_product_destination",
+        "source_date_unit_and_usage_rights",
+        "human_report_review_authority",
+        "separate_actual_contract_for_trade"
+      ],
+      "prohibitions": [
+        "RESEARCH_NOT_BUYER_OR_SALE",
+        "NO_SOURCE_USE_WITHOUT_RIGHTS",
+        "NO_AUTO_TRANSFER_DOMESTIC_DATA",
+        "NO_TRADE_WITHOUT_CONTRACT"
+      ]
+    },
+    {
+      "domain": "FINANCE",
+      "issue": 4,
+      "state": "OPEN",
+      "source": "docs/business/76-finance-source-arithmetic-and-evidence.md",
+      "scope_candidacies": [],
+      "required_evidence": [
+        "source_and_uses_with_classification",
+        "domestic_separate_PL_and_cashflow",
+        "each_export_contract_separate_PL_and_cashflow",
+        "gross_net_and_double_count_review",
+        "rates_sources_and_dates",
+        "verified_receivables_payables_and_tax",
+        "unit_economics_and_approver"
+      ],
+      "prohibitions": [
+        "NO_FINANCE_GATE_FROM_ARITHMETIC",
+        "NO_CAPITAL_RECLASSIFICATION_FROM_COINCIDENCE",
+        "NO_PROFIT_EQUALS_CASH",
+        "NO_UNAPPROVED_PRICE_RATE_OR_PAYMENT",
+        "NO_CONSOLIDATION_WITHOUT_APPROVED_ACCOUNTING"
+      ]
+    }
+  ]
+}

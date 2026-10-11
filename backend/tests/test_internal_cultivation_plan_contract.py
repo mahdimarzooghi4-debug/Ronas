@@ -42,6 +42,7 @@ def envelope(**changes):
 
 def inspect(value, **changes):
     expected = dict(
+        expected_case_engine="DOMESTIC",
         expected_case_ref=CASE,
         expected_case_version=2,
         expected_input_revision=3,
@@ -149,6 +150,8 @@ class RonasInternalCultivationProposalContractTests(unittest.TestCase):
     def test_case_and_input_binding_must_match_current_separate_authority(self):
         proposal = envelope()
         for options in (
+            {"expected_case_engine": "EXPORT"},
+            {"expected_case_engine": ""},
             {"expected_case_ref": "DEMO-OTHER"},
             {"expected_case_version": 1},
             {"expected_case_version": 3},

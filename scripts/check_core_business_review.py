@@ -12,6 +12,30 @@ from pathlib import Path
 import re
 
 MANIFEST = "docs/business/core-three-gate-review-controls.json"
+SOURCE_SCREEN_REGISTRY = "docs/business/official-source-rights-screening.json"
+SOURCE_SCREEN_DOC = "docs/business/77-official-source-rights-screening.md"
+EXPECTED_SOURCE_URLS = {
+    "DOM-AGROVOC": "https://aims.fao.org/standards/agrovoc/faq",
+    "DOM-FAO-PUBLICATIONS": "https://www.fao.org/publications/about-fao-publishing/permissions/",
+    "EXP-FAOSTAT": "https://www.fao.org/contact-us/terms/db-terms-of-use/en",
+    "EXP-WORLD-BANK": "https://datacatalog.worldbank.org/public-licenses",
+    "EXP-COMTRADE": "https://uncomtrade.org/docs/policy-on-comtrade-data-use/",
+}
+REQUIRED_SOURCE_FLAGS = {
+    "DOM-AGROVOC": {"OFFICIAL_PAGES_LICENSE_VERSION_DIFFER",
+                    "LANGUAGE_AND_THIRD_PARTY_OWNERSHIP",
+                    "THESAURUS_NOT_SCIENTIFIC_PLAN_SOURCE"},
+    "DOM-FAO-PUBLICATIONS": {"NONCOMMERCIAL_DEFAULT_DOES_NOT_AUTHORIZE_RONAS_COMMERCIAL_REUSE",
+                             "THIRD_PARTY_CONTENT_CHECK"},
+    "EXP-FAOSTAT": {"DATABASE_ADDITIONAL_RESTRICTIONS",
+                     "NO_FAO_COMMERCIAL_PROMOTION_OR_ENDORSEMENT",
+                     "DATASET_METADATA_AND_THIRD_PARTY_EXCEPTIONS"},
+    "EXP-WORLD-BANK": {"DATASET_BY_DATASET_LICENSE",
+                       "THIRD_PARTY_RESTRICTIONS"},
+    "EXP-COMTRADE": {"INTERNAL_USE_NOT_PUBLIC_REDISTRIBUTION",
+                     "RE-DISSEMINATION_EXCEPTION_NOT_AUTOMATIC",
+                     "COMMERCIAL_USE_REQUIRES_SPECIFIC_TERMS_REVIEW"},
+}
 BUSINESS_SOURCES = (
     "docs/business/03-financial-assumptions-and-gaps.md",
     "docs/business/55-finance-macro-business-decision-package.md",
@@ -153,6 +177,65 @@ def validate_business_review(root: Path | None = None) -> dict:
     if (6760 + 750 != 7510
             or 18915 - 7510 != 11405):
         raise ReviewContractError("source arithmetic not reproducible")
+    src_body, src_hash = _read(base, SOURCE_SCREEN_REGISTRY)
+    doc_body, doc_hash = _read(base, SOURCE_SCREEN_DOC)
+    try:
+        screened = json.loads(src_body)
+    except json.JSONDecodeError as exc:
+        raise ReviewContractError("malformed source screening") from exc
+    if (screened.get("contract_version") != "ronas.source-rights.screening.v1"
+            or screened.get("overall_status")
+            != "SOURCE_TERMS_SCREENED_NOT_DATASET_AUTHORIZED"
+            or screened.get("checked_on") != "2026-10-11"
+            or screened.get("all_gates_open") is not True
+            or (screened.get("domestic_gate"), screened.get("export_gate"),
+                screened.get("finance_gate")) != (2, 3, 4)
+            or any(screened.get(k) is not False for k in (
+                "legal_authority_assigned", "selected_actual_product_destination",
+                "source_use_approved", "model_training_approved",
+                "external_data_downloaded"))):
+        raise ReviewContractError("source rights cannot be approved by a screen")
+    sources_checked = screened.get("candidates")
+    if (not isinstance(sources_checked, list) or len(sources_checked) != 5
+            or {s.get("id") for s in sources_checked if isinstance(s, dict)}
+            != set(EXPECTED_SOURCE_URLS)):
+        raise ReviewContractError("screening requires five distinct candidates")
+    count = {"DOMESTIC": 0, "EXPORT": 0}
+    for s in sources_checked:
+        ident = s["id"]
+        expected_domain = "DOMESTIC" if ident.startswith("DOM-") else "EXPORT"
+        count[expected_domain] += 1
+        urls = s.get("official_terms_urls")
+        flags = s.get("review_flags")
+        if (s.get("domain") != expected_domain
+                or not isinstance(urls, list)
+                or EXPECTED_SOURCE_URLS[ident] not in urls
+                or not all(isinstance(url, str) and url.startswith(
+                    ("https://www.fao.org/", "https://aims.fao.org/",
+                     "https://datacatalog.worldbank.org/",
+                     "https://www.worldbank.org/",
+                     "https://uncomtrade.org/",
+                     "https://comtradeplus.un.org/")
+                ) for url in urls)
+                or not isinstance(flags, list)
+                or not REQUIRED_SOURCE_FLAGS[ident].issubset(set(flags))
+                or any(s.get(f) is not False for f in (
+                    "rights_for_ronas_verified", "training_rights_verified",
+                    "source_data_ingested"))
+                or s.get("actual_dataset_version") is not None
+                or s.get("reviewed_by_authority") is not None
+                or not s.get("rights_observation")
+                or not s.get("proposed_usage")
+                or s.get("source_name") not in doc_body):
+            raise ReviewContractError("source screen is not rights authorization")
+    if count != {"DOMESTIC": 2, "EXPORT": 3}:
+        raise ReviewContractError("source rights engine boundary changed")
+    for official in EXPECTED_SOURCE_URLS.values():
+        if official not in doc_body:
+            raise ReviewContractError("source claims not traceable to official terms")
+    if ("NO INGESTION" not in doc_body[:450]
+            or "NO LEGAL SIGNOFF" not in doc_body[:450]):
+        raise ReviewContractError("screening is no longer explicitly unapproved")
     return {
         "status": "DRAFT_REVIEW_CONTRACT_CHECKED_NOT_GATE_PASSED",
         "gate_states_at_source": {name: "OPEN" for name in GATES},
@@ -163,6 +246,15 @@ def validate_business_review(root: Path | None = None) -> dict:
         "technical_ci_is_not_human_approval": True,
         "source_sha256": {p: digest for p, (_, digest) in sources.items()},
         "manifest_sha256": manifest_sha,
+        "source_screening": {
+            "number_of_candidates": len(sources_checked),
+            "domestic_sources": count["DOMESTIC"],
+            "export_sources": count["EXPORT"],
+            "authorized_for_ingestion": False,
+            "authorized_for_training": False,
+            "screened_sources_sha256": src_hash,
+            "rights_document_sha256": doc_hash,
+        },
         "financial_source_arithmetic": {
             "unit": "million_toman",
             "quoted_initial_capital": 18915,

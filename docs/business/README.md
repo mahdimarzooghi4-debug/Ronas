@@ -14,6 +14,8 @@
 
 **کنترل خودکار پیش‌نویس Business:** [مانيفست سه گیت](core-three-gate-review-controls.json) و `python scripts/check_core_business_review.py --json` همراه با تست‌های سناریوی منفی در `scripts/tests`. این CI فقط سازگاری اسناد و شواهد نقل‌شده را بررسی می‌کند؛ حتی سبز بودن آن هیچ گیتی را تصویب نمی‌کند.
 
+**مرور اولیه شرایط منابع واقعی:** [77 — منابع رسمی و محدودیت حقوق استفاده Domestic/Export](77-official-source-rights-screening.md) و [فهرست ماشینی بررسی اولیه](official-source-rights-screening.json)؛ این بررسی نه مجوز مصرف تجاری/آموزش AI است و نه پذیرش محصول–مقصد خاص.
+
 ## ترتیب مطالعه
 
 1. [Business Foundation](00-business-foundation.md): چشم‌انداز، دامنه، نقش‌ها، قابلیت‌های مشترک و مرز دو موتور.

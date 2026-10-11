@@ -24,7 +24,11 @@ informed consent. Do not pass real data into this local test interface.
 `SqliteSyntheticHouseholdInputLedger` extends the **same**
 `SqliteSyntheticHumanReviewLedger` used for immutable case/grant history.
 It adds only the `household_input_revision` append-only table and its
-associated, digest-bound auditable events. The case version is pinned to an
+associated, digest-bound auditable events with **distinct**
+`SYNTHETIC_INPUT_MANIFEST_REVISION_RECORDED` kind (never a misleading
+`READ_ALLOWED` event). The base ledger rejects unowned kinds; the
+revision-aware subclass checks every event against its immutable table.
+The case version is pinned to an
 immutable DOMESTIC catalogue record, role must be signed `household`, and the
 subject must exactly own the requested case. Export, staff, buyers,
 other households and unassigned actors cannot view or modify the record.

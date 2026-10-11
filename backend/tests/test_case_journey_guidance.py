@@ -18,7 +18,7 @@ class CaseJourneyGuidanceTests(unittest.TestCase):
             "questions": [{"question_revision": 1, "bound_input_revision": 1,
                            "is_current_input_version": current,
                            "response_state": (
-                               "RESPONSE_RECORDED" if received
+                               "HISTORICAL_RESPONSE_ONLY_NOT_REVIEWED" if received
                                else "MISSING_RESPONSE")}],
         }
 
@@ -36,7 +36,8 @@ class CaseJourneyGuidanceTests(unittest.TestCase):
 
     def proposal(self):
         return {"case_ref": "DEMO-D-1", "input_revision": 1,
-                "proposal_status": "STRUCTURE_ONLY_UNREVIEWED"}
+                "proposal_status": "STRUCTURE_ONLY_UNREVIEWED",
+                "plan_accepted": False, "real_data": False}
 
     def export(self, version=0):
         data = {"engine": "EXPORT", "ref": "DEMO-E-001",

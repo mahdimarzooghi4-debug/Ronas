@@ -16,6 +16,8 @@ def owner_next_action(input_data: Mapping, notes: Mapping | None) -> str:
             or type(input_data.get("case_version")) is not int):
         raise JourneyEvidenceMismatch("invalid owner input projection")
     revision = input_data.get("current_input_revision")
+    if revision is None:
+        revision = 0
     if type(revision) is not int or revision < 0:
         raise JourneyEvidenceMismatch("invalid input revision")
     if notes is not None:
@@ -33,7 +35,7 @@ def owner_next_action(input_data: Mapping, notes: Mapping | None) -> str:
                     or type(q.get("bound_input_revision")) is not int
                     or q["bound_input_revision"] != revision
                     or q.get("response_state") not in (
-                        "MISSING_RESPONSE", "RESPONSE_RECORDED")):
+                        "MISSING_RESPONSE", "HISTORICAL_RESPONSE_ONLY_NOT_REVIEWED")):
                 raise JourneyEvidenceMismatch("invalid current owner question")
         if current:
             last = max(current, key=lambda q: q["question_revision"])
@@ -52,8 +54,13 @@ def expert_next_action(notes: Mapping, proposal: Mapping | None) -> str:
         raise JourneyEvidenceMismatch("invalid expert evidence")
     if proposal is None:
         return "SOURCE_OR_INPUT_CHANGED_HISTORY_ONLY"
+    if (proposal.get("case_ref") != notes.get("case_ref")
+            or proposal.get("plan_accepted") is not False
+            or proposal.get("real_data") is not False):
+        raise JourneyEvidenceMismatch("proposal case mismatch")
+    if proposal.get("proposal_status") == "NO_INTERNAL_PROPOSAL_FIXTURE":
+        return "SOURCE_OR_INPUT_CHANGED_HISTORY_ONLY"
     if (proposal.get("proposal_status") != "STRUCTURE_ONLY_UNREVIEWED"
-            or proposal.get("case_ref") != notes.get("case_ref")
             or type(proposal.get("input_revision")) is not int
             or proposal["input_revision"] < 1):
         raise JourneyEvidenceMismatch("stale or inconsistent proposal")

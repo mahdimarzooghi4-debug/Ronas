@@ -3,6 +3,7 @@
 No real expert certification, household consent, crop advice or plan creation.
 All identities and data are test fixtures; signed role alone grants nothing.
 """
+from dataclasses import replace
 import json
 import secrets
 from pathlib import Path
@@ -25,6 +26,9 @@ from ronas_api.internal_cultivation_plan_contract import (
     InternalCultivationProposal, ProposedCultivationStage,
 )
 from ronas_api.human_review_sqlite import SqliteSyntheticHumanReviewLedger
+from ronas_api.internal_scientific_basis_contract import (
+    ScientificBasisCandidate, ScientificSourceCandidate,
+)
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
@@ -900,7 +904,10 @@ class AgronomyWorkspaceTests(unittest.TestCase):
         self.assertNotIn("DEMO-D-001", ui.text)
 
 
-    def internal_proposal_workspace(self, *, proposal=None, snapshot=None):
+    def internal_proposal_workspace(
+        self, *, proposal=None, snapshot=None, science_bases=(),
+        source_snapshot=None,
+    ):
         if proposal is None:
             proposal = InternalCultivationProposal(
                 household_case_ref="DEMO-D-001",
@@ -935,6 +942,8 @@ class AgronomyWorkspaceTests(unittest.TestCase):
             ),
             proposal_fixtures=(proposal,),
             trusted_input_snapshot=snapshot,
+            scientific_basis_fixtures=science_bases,
+            trusted_scientific_source_snapshot=source_snapshot,
         )
 
     def test_unseeded_specialist_handoff_never_invents_internal_ai_execution(self):
@@ -1125,6 +1134,114 @@ class AgronomyWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.client.get(
             "/agronomy/assigned-drafts/DEMO-D-001/internal-plan-proposal"
         ).status_code, 401)
+
+
+    def synthetic_science(self):
+        source = ScientificSourceCandidate(
+            ref="DEMO-SCI-SOURCE", version=1, content_sha256="a" * 64,
+            rights_document_ref="DEMO-SCI-RIGHTS",
+            rights_document_sha256="b" * 64,
+            science_review_request_ref="DEMO-SCI-REVIEW",
+            science_review_material_sha256="c" * 64,
+        )
+        basis = ScientificBasisCandidate(
+            ref="DEMO-SCI-BASIS", version=1, sources=(source,),
+        )
+        original = self.internal_proposal_workspace()._proposal_fixtures["DEMO-D-001"]
+        proposal = replace(
+            original, scientific_basis_manifest_digest=basis.manifest_digest,
+        )
+        return source, basis, proposal
+
+    def test_assigned_specialist_requires_current_scientific_source_lineage(self):
+        source, basis, proposal = self.synthetic_science()
+        latest = [source]
+        self.workspace = self.internal_proposal_workspace(
+            proposal=proposal, science_bases=(basis,),
+            source_snapshot=lambda: tuple(latest),
+        )
+        self.client = self.client_for()
+        path = ROOT + "/DEMO-D-001/internal-plan-proposal"
+        ok = self.client.get(path, headers=self.headers())
+        self.assertEqual(ok.status_code, 200, ok.text)
+        self.assertEqual(
+            ok.json()["scientific_basis_state"],
+            "PROVENANCE_PINNED_UNVERIFIED",
+        )
+        self.assertFalse(ok.json()["scientific_review_approved"])
+        for secret in ("DEMO-SCI-SOURCE", "DEMO-SCI-RIGHTS", "DEMO-SCI-REVIEW",
+                       basis.manifest_digest, "b" * 64, "c" * 64):
+            self.assertNotIn(secret, ok.text)
+        latest[0] = replace(source, version=2)
+        stale = self.client.get(path, headers=self.headers())
+        self.assertEqual(stale.status_code, 503)
+        self.assertEqual(stale.json(), {
+            "detail": "SYNTHETIC_AGRONOMY_UNAVAILABLE",
+        })
+        self.assertNotIn("DEMO-STAGE-A", stale.text)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_revised_rights_or_science_review_source_disables_old_proposal(self):
+        source, basis, proposal = self.synthetic_science()
+        latest = [source]
+        self.workspace = self.internal_proposal_workspace(
+            proposal=proposal, science_bases=(basis,),
+            source_snapshot=lambda: tuple(latest),
+        )
+        self.client = self.client_for()
+        path = ROOT + "/DEMO-D-001/internal-plan-proposal"
+        for updated in (
+            replace(source, rights_document_sha256="d" * 64),
+            replace(source, science_review_material_sha256="e" * 64),
+            replace(source, content_sha256="f" * 64),
+        ):
+            with self.subTest(updated=updated):
+                latest[0] = updated
+                denied = self.client.get(path, headers=self.headers())
+                self.assertEqual(denied.status_code, 503)
+                self.assertNotIn("DEMO-STAGE-A", denied.text)
+        latest[0] = source
+        self.assertEqual(
+            self.client.get(path, headers=self.headers()).status_code, 200,
+        )
+
+    def test_no_source_authority_or_wrong_basis_ref_fails_construction(self):
+        source, basis, proposal = self.synthetic_science()
+        with self.assertRaises(ValueError):
+            self.internal_proposal_workspace(
+                proposal=proposal, science_bases=(basis,),
+            )
+        with self.assertRaises(ValueError):
+            self.internal_proposal_workspace(
+                proposal=proposal,
+                science_bases=(replace(basis, version=2),),
+                source_snapshot=lambda: (source,),
+            )
+        with self.assertRaises(ValueError):
+            self.internal_proposal_workspace(
+                proposal=proposal,
+                science_bases=(basis, basis),
+                source_snapshot=lambda: (source,),
+            )
+
+    def test_missing_scientific_authority_and_wrong_expert_fail_closed(self):
+        source, basis, proposal = self.synthetic_science()
+        self.workspace = self.internal_proposal_workspace(
+            proposal=proposal, science_bases=(basis,),
+            source_snapshot=lambda: (_ for _ in ()).throw(
+                RuntimeError("SCIENCE SOURCE INTERNAL FAILURE")
+            ),
+        )
+        self.client = self.client_for()
+        path = ROOT + "/DEMO-D-001/internal-plan-proposal"
+        expert = self.client.get(path, headers=self.headers())
+        self.assertEqual(expert.status_code, 503)
+        self.assertNotIn("SCIENCE SOURCE INTERNAL FAILURE", expert.text)
+        denied = self.client.get(
+            path, headers=self.headers(roles=("household",)),
+        )
+        self.assertEqual(denied.status_code, 404)
+        self.assertNotIn("DEMO-STAGE-A", denied.text)
 
 
 if __name__ == "__main__":

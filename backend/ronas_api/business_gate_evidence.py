@@ -211,4 +211,40 @@ def build_business_gate_evidence_router(
         verify_pinned_business_sources()
         return dossier_detail(allowed)
 
+    @router.get("/api/v1/admin/operational-readiness")
+    def operational_list(p: Principal = Depends(verified_principal)) -> dict:
+        allowed = visible_dossiers(p)
+        if not allowed:
+            raise HTTPException(403, detail="ADMIN_ROLE_REQUIRED")
+        from .operational_readiness import (
+            SNAPSHOT as DECISION_SNAPSHOT, SOURCE_HEAD_AT_REVIEW,
+            verify_decision_sources,
+        )
+        gates, _ = verify_decision_sources()
+        return {
+            "snapshot_state": DECISION_SNAPSHOT,
+            "source_head_at_review": SOURCE_HEAD_AT_REVIEW,
+            "items": [
+                {
+                    "domain": d.domain, "gate_issue": d.gate_issue,
+                    "gate_status_at_source": "OPEN",
+                    "pending_evidence_count": len(next(
+                        item["required_evidence"] for item in gates["dossiers"]
+                        if item["domain"] == d.domain
+                    )),
+                    "actions_enabled": False,
+                }
+                for d in allowed
+            ],
+        }
+
+    @router.get("/api/v1/admin/operational-readiness/{domain}")
+    def operational_detail(
+        domain: str, p: Principal = Depends(verified_principal),
+    ) -> dict:
+        if not any(d.domain == domain for d in visible_dossiers(p)):
+            raise HTTPException(404, detail="READINESS_NOT_FOUND")
+        from .operational_readiness import readiness
+        return readiness(domain)
+
     return router

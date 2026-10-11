@@ -491,6 +491,12 @@ class SyntheticAgronomyWorkspace:
             if not self._allowed(actor, ref, record.version):
                 return None
             rows = self.ledger._history(db, ref)
+            # Only a receipt-present marker crosses into the expert view;
+            # the owner's synthetic response/evidence refs remain private.
+            answered = set(db.execute(
+                "SELECT track,question_revision FROM household_question_response "
+                "WHERE ref=?", (ref,),
+            ))
             self.ledger._append(
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                 actor=actor, mode="AGRONOMY_SYNTHETIC_QUESTION_HISTORY",
@@ -504,7 +510,11 @@ class SyntheticAgronomyWorkspace:
                     {"track": track, "question_revision": rev,
                      "bound_input_revision": bound_input_revision,
                      "draft_reason_ref": reason, "draft_evidence_ref": evidence,
-                     "record_state": "HISTORICAL_QUESTION_ONLY_NOT_REVIEWED"}
+                     "record_state": "HISTORICAL_QUESTION_ONLY_NOT_REVIEWED",
+                     "synthetic_household_response_received": (
+                         track, rev
+                     ) in answered,
+                     "response_is_expert_approval": False}
                     for track, rev, bound_input_revision, reason, evidence in rows
                 ],
                 "qualification_verified": False,

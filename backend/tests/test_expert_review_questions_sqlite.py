@@ -434,6 +434,318 @@ class LocalExpertQuestionTests(unittest.TestCase):
             self.client.get(ROOT, headers=self.headers()).json()["questions"], [],
         )
 
+    def owner_reply_url(self):
+        return "/api/v1/domestic/household-intake/my-drafts/DEMO-D-1/question-responses"
+
+    def owner_reply_command(self, *, question_revision=1, action="DEMO-REPLY-A",
+                            input_revision=1, track=TRACKS[0], **changes):
+        payload = {
+            "action_id": action, "track": track,
+            "expected_question_revision": question_revision,
+            "expected_case_version": 3,
+            "expected_input_revision": input_revision,
+            "answer_ref": "DEMO-ANSWER-A", "evidence_ref": "DEMO-OWNER-EVIDENCE",
+        }
+        payload.update(changes)
+        return payload
+
+    def owner_reply(self, **changes):
+        return self.client.post(
+            self.owner_reply_url(),
+            headers=self.headers(OWNER, ("household",)),
+            json=self.owner_reply_command(**changes),
+        )
+
+    def test_owner_response_requires_exact_existing_input_question(self):
+        self.seed_input()
+        self.assertEqual(self.owner_reply().status_code, 409)
+        self.assertEqual(self.post().status_code, 201)
+        created = self.owner_reply()
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.json()["record_state"],
+                         "SYNTHETIC_RESPONSE_RECEIVED_NOT_REVIEWED")
+        for k in ("purpose_consent_verified", "household_input_adequacy_verified",
+                  "science_rights_verified", "qualified_expert_decision_recorded",
+                  "plan_accepted", "real_data"):
+            self.assertIs(created.json()[k], False)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_idempotent_household_answer_and_owner_history(self):
+        self.seed_input()
+        self.assertEqual(self.post().status_code, 201)
+        self.assertEqual(self.owner_reply().status_code, 201)
+        replay = self.owner_reply()
+        self.assertEqual(replay.status_code, 201)
+        self.assertIs(replay.json()["idempotent_replay"], True)
+        history = self.client.get(
+            self.owner_reply_url(), headers=self.headers(OWNER, ("household",)),
+        )
+        self.assertEqual(history.status_code, 200, history.text)
+        questions = history.json()["questions"]
+        self.assertEqual(len(questions), 1)
+        self.assertEqual(questions[0]["response_state"],
+                         "HISTORICAL_RESPONSE_ONLY_NOT_REVIEWED")
+        self.assertEqual(questions[0]["response_ref"], "DEMO-ANSWER-A")
+        self.assertTrue(questions[0]["is_current_input_version"])
+        self.assertNotIn("DEMO-REASON-A", history.text)
+        self.assertNotIn("1" * 64, history.text)
+        self.assertFalse(history.json()["expert_review_recorded"])
+        self.assertFalse(history.json()["plan_accepted"])
+        self.ledger = self.reopen()
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_assigned_specialist_sees_only_response_presence_not_owner_refs(self):
+        self.seed_input()
+        self.post()
+        before = self.client.get(ROOT, headers=self.headers()).json()
+        self.assertFalse(before["questions"][0]["synthetic_household_response_received"])
+        self.owner_reply()
+        after = self.client.get(ROOT, headers=self.headers())
+        self.assertEqual(after.status_code, 200)
+        self.assertTrue(after.json()["questions"][0]["synthetic_household_response_received"])
+        self.assertIs(after.json()["questions"][0]["response_is_expert_approval"], False)
+        self.assertNotIn("DEMO-ANSWER-A", after.text)
+        self.assertNotIn("DEMO-OWNER-EVIDENCE", after.text)
+        self.assertIs(after.json()["plan_accepted"], False)
+
+    def test_training_science_and_plan_questions_cannot_take_household_reply(self):
+        self.seed_input()
+        for ix, track in enumerate(TRACKS):
+            self.assertEqual(self.post(
+                track=track, action=f"DEMO-Q-{ix}",
+            ).status_code, 201)
+        for track in TRACKS[1:]:
+            with self.subTest(track=track):
+                result = self.owner_reply(track=track)
+                self.assertEqual(result.status_code, 422)
+        self.assertEqual(
+            self.client.get(self.owner_reply_url(),
+                            headers=self.headers(OWNER, ("household",))).json()
+            ["questions"][0]["response_state"], "MISSING_RESPONSE",
+        )
+
+    def test_changed_answer_payload_and_second_response_denied(self):
+        self.seed_input()
+        self.post()
+        self.assertEqual(self.owner_reply().status_code, 201)
+        for payload in (
+            {"answer_ref": "DEMO-ANSWER-CHANGED"},
+            {"evidence_ref": "DEMO-EVIDENCE-CHANGED"},
+            {"action_id": "DEMO-SECOND"},
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.owner_reply(**payload).status_code, 409)
+        with sqlite3.connect(self.path) as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM household_question_response",
+            ).fetchone()[0], 1)
+
+    def test_owner_input_revision_change_keeps_answer_history_but_blocks_reuse(self):
+        self.seed_input()
+        self.post()
+        self.assertEqual(self.owner_reply().status_code, 201)
+        self.seed_input(revision=1, digest="7" * 64, action="DEMO-INPUT-B")
+        stale = self.owner_reply()
+        self.assertEqual(stale.status_code, 409)
+        old = self.client.get(
+            self.owner_reply_url(), headers=self.headers(OWNER, ("household",)),
+        )
+        self.assertEqual(old.status_code, 200, old.text)
+        self.assertFalse(old.json()["questions"][0]["is_current_input_version"])
+        self.assertEqual(old.json()["questions"][0]["response_state"],
+                         "HISTORICAL_RESPONSE_ONLY_NOT_REVIEWED")
+        self.assertFalse(old.json()["new_advice_enabled"])
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_next_question_supersedes_old_answer_and_needs_fresh_reference(self):
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        self.assertEqual(self.post(
+            revision=1, action="DEMO-Q-B",
+        ).status_code, 201)
+        self.assertEqual(self.owner_reply().status_code, 409)
+        newer = self.owner_reply(question_revision=2, action="DEMO-REPLY-B")
+        self.assertEqual(newer.status_code, 201, newer.text)
+        history = self.client.get(
+            self.owner_reply_url(), headers=self.headers(OWNER, ("household",)),
+        ).json()["questions"]
+        self.assertEqual([x["question_revision"] for x in history], [1, 2])
+        self.assertTrue(all(
+            x["response_state"] == "HISTORICAL_RESPONSE_ONLY_NOT_REVIEWED"
+            for x in history
+        ))
+
+    def test_only_exact_signed_household_owner_may_reply_or_read(self):
+        self.seed_input()
+        self.post()
+        for subject, roles in (
+            (EXPERT, ("agronomy_expert",)),
+            (OWNER, ("domestic_ops",)),
+            ("synthetic-other-household", ("household",)),
+            ("synthetic-export-owner", ("household",)),
+        ):
+            with self.subTest(subject=subject, roles=roles):
+                self.assertEqual(self.client.post(
+                    self.owner_reply_url(),
+                    headers=self.headers(subject, roles),
+                    json=self.owner_reply_command(),
+                ).status_code, 404)
+                self.assertEqual(self.client.get(
+                    self.owner_reply_url(),
+                    headers=self.headers(subject, roles),
+                ).status_code, 404)
+        self.assertEqual(self.client.post(
+            self.owner_reply_url().replace("DEMO-D-1", "DEMO-E-1"),
+            headers=self.headers(OWNER, ("household",)),
+            json=self.owner_reply_command(),
+        ).status_code, 404)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_unsigned_cookie_or_invalid_jwt_cannot_write_answer(self):
+        self.seed_input()
+        self.post()
+        self.assertEqual(self.client.post(
+            self.owner_reply_url(), json=self.owner_reply_command(),
+        ).status_code, 401)
+        for headers in (
+            {"Authorization": "Bearer fake"},
+            self.headers(OWNER, ("household",), expired=True),
+        ):
+            self.assertEqual(self.client.post(
+                self.owner_reply_url(), headers=headers,
+                json=self.owner_reply_command(),
+            ).status_code, 401)
+        self.assertEqual(self.client.get(
+            self.owner_reply_url(),
+            headers=self.headers(OWNER, ("household",)),
+        ).json()["questions"][0]["response_state"], "MISSING_RESPONSE")
+
+    def test_reject_extra_real_personal_fields_or_forged_consent(self):
+        self.seed_input()
+        self.post()
+        for changed in (
+            {"consent_verified": True}, {"approve_program": True},
+            {"real_crop_data": "fiction"}, {"answer_ref": "a raw answer"},
+            {"evidence_ref": "https://private.example"},
+            {"action_id": "REAL-REPLY"},
+            {"expected_question_revision": True},
+            {"expected_input_revision": "1"},
+            {"expected_case_version": 4},
+        ):
+            with self.subTest(changed=changed):
+                result = self.owner_reply(**changed)
+                self.assertIn(result.status_code, (409, 422))
+        self.assertEqual(self.client.get(
+            self.owner_reply_url(),
+            headers=self.headers(OWNER, ("household",)),
+        ).json()["questions"][0]["response_state"], "MISSING_RESPONSE")
+
+    def test_modified_response_row_fails_closed_and_restart_rejects(self):
+        self.seed_input()
+        self.post()
+        self.assertEqual(self.owner_reply().status_code, 201)
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER household_response_no_update")
+            db.execute(
+                "UPDATE household_question_response "
+                "SET answer_ref='DEMO-FORGED'",
+            )
+        bad = self.client.get(
+            self.owner_reply_url(), headers=self.headers(OWNER, ("household",)),
+        )
+        self.assertEqual(bad.status_code, 503)
+        with self.assertRaises(LedgerIntegrityError):
+            self.reopen()
+
+    def test_orphan_household_response_event_fails_closed(self):
+        from ronas_api.expert_review_questions_sqlite import ANSWER_EVENT
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            self.ledger._append(
+                db, kind=ANSWER_EVENT, engine="DOMESTIC", ref="DEMO-D-1",
+                actor=OWNER, action_id="DEMO-ORPHAN",
+                mode="UNEXPECTED_MODE",
+            )
+        self.assertEqual(self.client.get(
+            self.owner_reply_url(), headers=self.headers(OWNER, ("household",)),
+        ).status_code, 503)
+        with self.assertRaises(LedgerIntegrityError):
+            self.reopen()
+
+    def test_audit_insertion_failure_rolls_back_response_record(self):
+        self.seed_input()
+        self.post()
+        with sqlite3.connect(self.path) as db:
+            db.execute("""
+                CREATE TRIGGER block_answer_audit BEFORE INSERT ON audit_event
+                WHEN NEW.payload LIKE '%SYNTHETIC_HOUSEHOLD_QUESTION_RESPONSE_RECORDED%'
+                BEGIN SELECT RAISE(ABORT, 'response audit blocked'); END;
+            """)
+        self.assertEqual(self.owner_reply().status_code, 503)
+        with sqlite3.connect(self.path) as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM household_question_response",
+            ).fetchone()[0], 0)
+
+    def test_concurrent_two_household_response_actions_one_wins(self):
+        self.seed_input()
+        self.post()
+        def send(action):
+            return self.owner_reply(action=action).status_code
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(send, ("DEMO-R-A", "DEMO-R-B")))
+        self.assertEqual(sorted(results), [201, 409])
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_owner_persian_question_response_history_and_logout(self):
+        from ronas_api.oidc_browser import BrowserSession
+        import secrets
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        sid = secrets.token_urlsafe(32)
+        self.sessions[sid] = BrowserSession(
+            OWNER, frozenset({"household"}),
+            self.headers(OWNER, ("household",))["Authorization"][7:],
+            secrets.token_urlsafe(32), int(time.time()) + 200,
+        )
+        self.client.cookies.set("__Host-ronas_session", sid)
+        path = "/my-drafts/DEMO-D-1/question-responses"
+        self.assertIn(path, self.client.get(
+            "/my-drafts/DEMO-D-1/input-revisions",
+        ).text)
+        page = self.client.get(path)
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("تاریخچه پاسخ‌های ساختاری خانوار", page.text)
+        self.assertIn("DEMO-ANSWER-A", page.text)
+        self.assertIn("بدون", page.text)
+        self.assertNotIn("1" * 64, page.text)
+        self.assertEqual(page.headers["cache-control"], "no-store")
+        self.assertIn("frame-ancestors 'none'",
+                      page.headers["content-security-policy"])
+        for method in ("post", "patch", "put", "delete"):
+            self.assertEqual(
+                getattr(self.client, method)(path).status_code, 405,
+            )
+        self.sessions.pop(sid)
+        self.assertEqual(self.client.get(path).status_code, 401)
+        sid2 = secrets.token_urlsafe(32)
+        self.sessions[sid2] = BrowserSession(
+            "synthetic-other-household", frozenset({"household"}),
+            self.headers("synthetic-other-household", ("household",))["Authorization"][7:],
+            secrets.token_urlsafe(32), int(time.time()) + 200,
+        )
+        self.client.cookies.set("__Host-ronas_session", sid2)
+        self.assertEqual(self.client.get(path).status_code, 404)
+
+    def test_default_app_cannot_accept_or_read_household_question_responses(self):
+        other = TestClient(create_app(self.config), base_url="https://ronas.example.test")
+        self.assertEqual(other.post(
+            self.owner_reply_url(), json=self.owner_reply_command(),
+        ).status_code, 404)
+        self.assertEqual(other.get(self.owner_reply_url()).status_code, 404)
+
     def test_default_app_does_not_expose_question_writer(self):
         other = TestClient(create_app(self.config), base_url="https://ronas.example.test")
         self.assertEqual(other.post(ROOT, json=self.command()).status_code, 404)

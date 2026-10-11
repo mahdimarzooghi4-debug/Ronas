@@ -769,6 +769,241 @@ class LocalExpertQuestionTests(unittest.TestCase):
         ).status_code, 404)
         self.assertEqual(other.get(self.owner_reply_url()).status_code, 404)
 
+    def inspect_url(self):
+        return ("/api/v1/agronomy/assigned-drafts/DEMO-D-1/"
+                "response-receipt-inspections")
+
+    def inspect_command(self, *, action="DEMO-INSPECT-A",
+                        question_revision=1, input_revision=1, **overrides):
+        values = {
+            "action_id": action, "expected_case_version": 3,
+            "expected_input_revision": input_revision,
+            "expected_question_revision": question_revision,
+        }
+        values.update(overrides)
+        return values
+
+    def inspect(self, **values):
+        return self.client.post(
+            self.inspect_url(), json=self.inspect_command(**values),
+            headers=self.headers(),
+        )
+
+    def test_inspection_requires_a_genuine_prior_owner_response(self):
+        self.seed_input()
+        self.assertEqual(self.inspect().status_code, 409)
+        self.assertEqual(self.post().status_code, 201)
+        self.assertEqual(self.inspect().status_code, 409)
+        self.assertEqual(self.owner_reply().status_code, 201)
+        result = self.inspect()
+        self.assertEqual(result.status_code, 201, result.text)
+        self.assertEqual(result.json()["state"],
+                         "SYNTHETIC_RECEIPT_SEEN_NOT_REVIEWED")
+        for key in (
+            "household_input_adequacy_verified", "source_rights_verified",
+            "scientific_validity_verified", "professional_qualification_verified",
+            "expert_decision_recorded", "plan_accepted", "new_advice_enabled",
+            "real_data",
+        ):
+            self.assertIs(result.json()[key], False)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_inspection_exact_replay_is_idempotent_and_history_is_private(self):
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        self.assertEqual(self.inspect().status_code, 201)
+        again = self.inspect()
+        self.assertEqual(again.status_code, 201)
+        self.assertIs(again.json()["idempotent_replay"], True)
+        history = self.client.get(ROOT, headers=self.headers())
+        self.assertTrue(history.json()["questions"][0]
+                        ["synthetic_receipt_inspected_not_reviewed"])
+        self.assertIs(history.json()["questions"][0]
+                      ["inspection_is_expert_decision"], False)
+        self.assertNotIn("DEMO-ANSWER-A", history.text)
+        self.assertNotIn("DEMO-OWNER-EVIDENCE", history.text)
+        self.assertEqual(self.ledger.audit_snapshot()[-2].kind,
+                         "SYNTHETIC_EXPERT_RESPONSE_RECEIPT_INSPECTED")
+        self.ledger = self.reopen()
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_inspection_wrong_role_assignee_or_cross_engine_is_denied(self):
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        for actor, roles in (
+            (OWNER, ("household",)),
+            (EXPERT, ("domestic_ops",)),
+            ("synthetic-other-expert", ("agronomy_expert",)),
+        ):
+            bad = self.client.post(
+                self.inspect_url(), json=self.inspect_command(),
+                headers=self.headers(actor, roles),
+            )
+            self.assertEqual(bad.status_code, 404)
+        self.active = False
+        self.assertEqual(self.inspect().status_code, 404)
+        self.active = True
+        self.assertEqual(self.client.post(
+            self.inspect_url().replace("DEMO-D-1", "DEMO-E-1"),
+            json=self.inspect_command(), headers=self.headers(),
+        ).status_code, 404)
+
+    def test_inspection_token_and_strict_no_approval_payload(self):
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        self.assertEqual(self.client.post(
+            self.inspect_url(), json=self.inspect_command(),
+        ).status_code, 401)
+        for headers in (
+            {"Authorization": "Bearer fake"},
+            self.headers(expired=True),
+        ):
+            self.assertEqual(self.client.post(
+                self.inspect_url(), json=self.inspect_command(),
+                headers=headers,
+            ).status_code, 401)
+        for bad in (
+            {"approve": True}, {"review_outcome": "APPROVED"},
+            {"answer_ref": "DEMO-OWNER-EVIDENCE"},
+            {"actual_expert_certificate": "real"},
+            {"expected_case_version": 2},
+            {"expected_input_revision": True},
+            {"expected_question_revision": "1"},
+            {"action_id": "REAL-INSPECTION"},
+        ):
+            with self.subTest(bad=bad):
+                self.assertIn(self.inspect(**bad).status_code, (409, 422))
+        self.assertEqual(self.inspect().status_code, 201)
+
+    def test_inspection_reuse_and_same_question_conflicts(self):
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        self.assertEqual(self.inspect().status_code, 201)
+        for changed in (
+            {"action": "DEMO-INSPECT-B"},
+            {"question_revision": 2},
+        ):
+            with self.subTest(changed=changed):
+                self.assertEqual(self.inspect(**changed).status_code, 409)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_new_question_or_owner_revision_stales_uninspected_answer(self):
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        self.assertEqual(
+            self.post(action="DEMO-Q-B", revision=1).status_code, 201,
+        )
+        self.assertEqual(self.inspect().status_code, 409)
+        self.owner_reply(question_revision=2, action="DEMO-REPLY-B")
+        self.assertEqual(self.inspect(
+            question_revision=2, action="DEMO-INSPECT-B",
+        ).status_code, 201)
+        self.seed_input(revision=1, digest="7" * 64, action="DEMO-INPUT-B")
+        self.assertEqual(self.inspect(
+            question_revision=2, action="DEMO-INSPECT-B",
+        ).status_code, 409)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_changed_science_rights_blocks_inspection_of_old_receipt(self):
+        src = ScientificSourceCandidate(
+            ref="DEMO-SCI-01", version=1, content_sha256="a" * 64,
+            rights_document_ref="DEMO-RIGHTS-01",
+            rights_document_sha256="b" * 64,
+            science_review_request_ref="DEMO-SCI-REVIEW",
+            science_review_material_sha256="c" * 64,
+        )
+        basis = ScientificBasisCandidate(
+            ref="DEMO-BASIS-01", version=1, sources=(src,),
+        )
+        self.science_current[:] = [src]
+        self.workspace = self.specialist(
+            proposal=self.proposal(science=basis.manifest_digest),
+            science_basis=basis,
+        )
+        self.client = self.make_client()
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        self.science_current[0] = replace(
+            src, rights_document_sha256="d" * 64,
+        )
+        self.assertEqual(self.inspect().status_code, 409)
+        self.assertEqual(self.client.get(
+            ROOT, headers=self.headers()).status_code, 200)
+        self.assertEqual(self.client.get(
+            self.owner_reply_url(),
+            headers=self.headers(OWNER, ("household",)),
+        ).status_code, 200)
+
+    def test_concurrent_inspections_have_exactly_one_winner(self):
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(
+                lambda action: self.inspect(action=action).status_code,
+                ("DEMO-I-ONE", "DEMO-I-TWO"),
+            ))
+        self.assertEqual(sorted(results), [201, 409])
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_modified_inspection_row_fails_closed_on_read_and_reopen(self):
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        self.inspect()
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER response_inspection_no_update")
+            db.execute(
+                "UPDATE expert_response_receipt_inspection "
+                "SET actor_digest=?", ("f" * 64,),
+            )
+        self.assertEqual(self.client.get(
+            ROOT, headers=self.headers()).status_code, 503)
+        with self.assertRaises(LedgerIntegrityError):
+            self.reopen()
+
+    def test_orphan_inspection_event_and_failed_audit_are_detected(self):
+        from ronas_api.expert_review_questions_sqlite import INSPECTION_EVENT
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            self.ledger._append(
+                db, kind=INSPECTION_EVENT, engine="DOMESTIC", ref="DEMO-D-1",
+                actor=EXPERT, action_id="DEMO-FAKE-EVENT", mode="WRONG_MODE",
+            )
+        self.assertEqual(self.client.get(
+            ROOT, headers=self.headers()).status_code, 503)
+        with self.assertRaises(LedgerIntegrityError):
+            self.reopen()
+
+    def test_inspection_audit_failure_does_not_commit_record(self):
+        self.seed_input()
+        self.post()
+        self.owner_reply()
+        with sqlite3.connect(self.path) as db:
+            db.execute("""
+                CREATE TRIGGER deny_inspection_audit BEFORE INSERT ON audit_event
+                WHEN NEW.payload LIKE '%SYNTHETIC_EXPERT_RESPONSE_RECEIPT_INSPECTED%'
+                BEGIN SELECT RAISE(ABORT, 'inspection audit blocked'); END;
+            """)
+        self.assertEqual(self.inspect().status_code, 503)
+        with sqlite3.connect(self.path) as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM expert_response_receipt_inspection",
+            ).fetchone()[0], 0)
+
+    def test_default_app_does_not_mount_inspection_command(self):
+        other = TestClient(create_app(self.config),
+                           base_url="https://ronas.example.test")
+        self.assertEqual(other.post(
+            self.inspect_url(), json=self.inspect_command(),
+        ).status_code, 404)
+
     def test_default_app_does_not_expose_question_writer(self):
         other = TestClient(create_app(self.config), base_url="https://ronas.example.test")
         self.assertEqual(other.post(ROOT, json=self.command()).status_code, 404)

@@ -473,6 +473,31 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             source_ref=row[1], product_ref=row[2], destination_ref=row[3],
         )
 
+    def _export_question_history(self, db, ref: str) -> list[dict]:
+        """Already verified append-only DEMO question revisions, no audit internals.
+
+        This must be called ONLY from the same grant-checked and integrity-
+        verified transaction as the authorized Export workspace read.
+        """
+        rows = list(db.execute(
+            "SELECT revision,product_ref,destination_ref "
+            "FROM export_research_question_draft WHERE ref=? "
+            "ORDER BY revision", (ref,),
+        ))
+        if any(row[0] != position for position, row in enumerate(rows, 1)):
+            raise LedgerIntegrityError("Export draft revision history mismatch")
+        latest = rows[-1][0] if rows else None
+        return [
+            {
+                "question_revision": revision,
+                "product_ref": product,
+                "destination_ref": destination,
+                "is_current": revision == latest,
+                "question_state": "UNVERIFIED_LOCAL_TEST_DRAFT",
+            }
+            for revision, product, destination in rows
+        ]
+
     def record_export_research_question(
         self, ref: str, principal: Principal, *,
         expected_case_version: int, expected_question_revision: int,
@@ -588,6 +613,9 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                     # verified market fields into known research results.
                     "local_test_draft_question": (
                         self._current_export_question(db, ref)
+                    ),
+                    "local_test_question_history": (
+                        self._export_question_history(db, ref)
                     ),
                     "review_revision": len(steps),
                     "technical_review_state": STATES[len(steps)],

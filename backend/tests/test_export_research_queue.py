@@ -882,5 +882,59 @@ class ExportResearchQueueTests(unittest.TestCase):
             headers=self.headers(),
         ).json()["local_test_draft_question"], None)
 
+    def test_export_question_revision_history_is_real_persisted_sequence(self):
+        first = self.post_question()
+        self.assertEqual(first.status_code, 201, first.text)
+        next_one = self.post_question(payload=self.question_payload(
+            action="DEMO-REV-SECOND", rev=1,
+            product="DEMO-PRODUCT-BETA", destination="DEMO-DEST-BETA",
+        ))
+        self.assertEqual(next_one.status_code, 201, next_one.text)
+        url = "/api/v1/admin/export/research/drafts/DEMO-E-001/workspace"
+        result = self.client.get(url, headers=self.headers())
+        self.assertEqual(result.status_code, 200, result.text)
+        history = result.json()["local_test_question_history"]
+        self.assertEqual(
+            [(q["question_revision"], q["is_current"]) for q in history],
+            [(1, False), (2, True)],
+        )
+        self.assertEqual(
+            [x["product_ref"] for x in history],
+            ["DEMO-PRODUCT-ALPHA", "DEMO-PRODUCT-BETA"],
+        )
+        self.assertNotIn("DEMO-Q-ONE", result.text)
+        self.assertNotIn("DEMO-REV-SECOND", result.text)
+        self.assertNotIn("command_digest", result.text)
+        self.assertFalse(result.json()["source_rights_verified"])
+        self.assertFalse(result.json()["research_report_approved"])
+        self.login()
+        ui = self.client.get("/admin/export/research/drafts/DEMO-E-001")
+        self.assertEqual(ui.status_code, 200, ui.text)
+        self.assertIn("تاریخچه اصلاح پرسش‌های DEMO", ui.text)
+        self.assertIn("نسخه پرسش 1", ui.text)
+        self.assertIn("نسخه پرسش 2", ui.text)
+        self.assertIn("DEMO-PRODUCT-BETA", ui.text)
+        self.assertNotIn("DEMO-REV-SECOND", ui.text)
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_export_question_history_is_case_grant_scoped_and_revocable(self):
+        self.post_question()
+        url = "/api/v1/admin/export/research/drafts/DEMO-E-001/workspace"
+        other = self.client.get(
+            url, headers=self.headers("synthetic-export-other"),
+        )
+        self.assertEqual(other.status_code, 404)
+        self.assertNotIn("DEMO-PRODUCT-ALPHA", other.text)
+        self.ledger.revoke_grant(
+            engine="EXPORT", ref="DEMO-E-001",
+            subject="synthetic-export-001", role="export_ops",
+            actor="synthetic-controller", expected_grant_revision=0,
+            action_id="DEMO-REVOKE-HISTORY", reason_ref="DEMO-REVOKE-HIST-REASON",
+        )
+        now = self.client.get(url, headers=self.headers())
+        self.assertEqual(now.status_code, 404)
+        self.assertNotIn("DEMO-PRODUCT-ALPHA", now.text)
+        self.assertTrue(self.reopen().verify_integrity())
+
 if __name__ == "__main__":
     unittest.main()

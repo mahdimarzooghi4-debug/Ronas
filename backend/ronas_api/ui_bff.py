@@ -1709,6 +1709,21 @@ def build_authenticated_ui_router(
                 if question is not None else
                 '<p>هنوز هیچ پرسش DEMO نسخه‌داری ثبت نشده است.</p>'
             )
+            previous_demo_questions = data["local_test_question_history"]
+            history_section = (
+                '<section aria-label="تاریخچه پرسش‌های DEMO">'
+                '<h3>تاریخچه اصلاح پرسش‌های DEMO</h3>'
+                '<ol>' + ''.join(
+                    '<li>نسخه پرسش ' + str(item["question_revision"])
+                    + (' (نسخه جاری)' if item["is_current"] else ' (تاریخی)')
+                    + ' · مرجع محصول ' + escape(item["product_ref"])
+                    + ' · مرجع مقصد ' + escape(item["destination_ref"])
+                    + ' · حقوق و یافته‌ها تأییدنشده</li>'
+                    for item in previous_demo_questions
+                ) + '</ol></section>'
+                if previous_demo_questions else
+                '<p>سابقه‌ای از اصلاح پرسش‌های DEMO ثبت نشده است.</p>'
+            )
             version = (
                 question["question_revision"] if question is not None else 0
             )
@@ -1768,6 +1783,7 @@ def build_authenticated_ui_router(
                 '· HS: تعیین نشده</p>'
                 '<p>محصول و مقصد واقعی همچنان تعیین و اعتبارسنجی نشده‌اند.</p>'
                 + demo_question
+                + history_section
                 + demo_form
                 + '<p>مرجع منبع صرفاً آزمایشی: '
                 + escape(data["source_ref"]) + '</p>'

@@ -21,3 +21,7 @@ A question is NOT an agronomy review or plan, a household reply is NOT data-adeq
 - **FINANCE #4:** separate Domestic/Export ledgers and economic flow assumptions, source-file reconciliation of capital/working cash vs expenses, real PSP/bank and per-contract settlement/tax policy. None is approved by this demo path.
 
 These are **decision evidence checklists**, not invented values, choices, legal rulings or Gate PASS. Advance each by authoritative evidence before operational admission, in parallel with approved technical work.
+
+## Parallel Export E0 read-model extension in this work package
+
+The independently authorized Export admin case GET now shows **the actual full append-only history** of that case's previously stored LOCAL/TEST draft product/destination reference questions, instead of only the latest revision. The existing current-grant, `BEGIN IMMEDIATE` whole-ledger verification, immutable row audit and same-transaction read audit apply. Every historical row contains only its ordered question revision and two `DEMO-*` references, explicitly marked `UNVERIFIED_LOCAL_TEST_DRAFT`; no action IDs, actor hashes, audit sequence, source rights, real products/countries or findings are disclosed. The Persian Export case page retains both current question editing and historical revision visualization within the same one-admin environment. Revocation or unrelated assignment prevents the entire history read; it does not leak a hidden case or count. This read surface is not Export Trade, Finance or research approval.

@@ -730,6 +730,115 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertEqual(bad.status_code, 503)
         self.assertNotIn("DEMO-FORGED", bad.text)
 
+
+    def test_synthetic_catalogue_current_callback_invalidates_withheld_source(self):
+        from ronas_api.internal_scientific_catalogue import (
+            SyntheticScientificCatalogue, SyntheticSourceCatalogueEvent,
+            RECORDED, WITHHELD,
+        )
+        src = ScientificSourceCandidate(
+            ref="DEMO-SCI-CATALOG", version=1, content_sha256="a" * 64,
+            rights_document_ref="DEMO-RIGHTS-CATALOG",
+            rights_document_sha256="b" * 64,
+            science_review_request_ref="DEMO-REVIEW-CATALOG",
+            science_review_material_sha256="c" * 64,
+        )
+        basis = ScientificBasisCandidate(
+            ref="DEMO-BASIS-CATALOG", version=1, sources=(src,),
+        )
+        source_history = {
+            "current": SyntheticScientificCatalogue().with_event(
+                SyntheticSourceCatalogueEvent(
+                    action_ref="DEMO-SRC-A", source_ref=src.ref,
+                    source_revision=1, operation=RECORDED, candidate=src,
+                ),
+            ),
+        }
+        self.workspace = self.specialist(
+            proposal=self.proposal(science=basis.manifest_digest),
+            science_basis=basis,
+        )
+        self.workspace._trusted_scientific_sources = (
+            lambda: source_history["current"].current_sources()
+        )
+        self.client = self.make_client()
+        self.seed_input()
+        self.assertEqual(self.client.get(
+            self.provenance_dossier_url(), headers=self.headers(),
+        ).status_code, 200)
+        self.assertEqual(self.client.get(
+            self.handoff_fingerprint_url(), headers=self.headers(),
+        ).status_code, 200)
+        source_history["current"] = source_history["current"].with_event(
+            SyntheticSourceCatalogueEvent(
+                action_ref="DEMO-SRC-WITHHELD", source_ref=src.ref,
+                source_revision=2, operation=WITHHELD,
+                reason_ref="DEMO-REASON-WITHHELD",
+            ),
+        )
+        self.assertEqual(self.client.get(
+            self.provenance_dossier_url(), headers=self.headers(),
+        ).status_code, 503)
+        self.assertEqual(self.client.get(
+            self.handoff_fingerprint_url(), headers=self.headers(),
+        ).status_code, 503)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_synthetic_catalogue_new_rights_version_blocks_prior_proposal(self):
+        from ronas_api.internal_scientific_catalogue import (
+            SyntheticScientificCatalogue, SyntheticSourceCatalogueEvent,
+            RECORDED,
+        )
+        src = ScientificSourceCandidate(
+            ref="DEMO-SCI-CATALOG", version=1, content_sha256="a" * 64,
+            rights_document_ref="DEMO-RIGHTS-CATALOG",
+            rights_document_sha256="b" * 64,
+            science_review_request_ref="DEMO-REVIEW-CATALOG",
+            science_review_material_sha256="c" * 64,
+        )
+        basis = ScientificBasisCandidate(
+            ref="DEMO-BASIS-CATALOG", version=1, sources=(src,),
+        )
+        first = SyntheticScientificCatalogue().with_event(
+            SyntheticSourceCatalogueEvent(
+                action_ref="DEMO-ADD-A", source_ref=src.ref,
+                source_revision=1, operation=RECORDED, candidate=src,
+            ),
+        )
+        state = {"current": first}
+        self.workspace = self.specialist(
+            proposal=self.proposal(science=basis.manifest_digest),
+            science_basis=basis,
+        )
+        self.workspace._trusted_scientific_sources = (
+            lambda: state["current"].current_sources()
+        )
+        self.client = self.make_client()
+        self.seed_input()
+        self.assertEqual(self.client.get(
+            self.provenance_dossier_url(), headers=self.headers(),
+        ).status_code, 200)
+        state["current"] = first.with_event(
+            SyntheticSourceCatalogueEvent(
+                action_ref="DEMO-ADD-B", source_ref=src.ref,
+                source_revision=2, operation=RECORDED,
+                candidate=replace(
+                    src, version=2, rights_document_sha256="d" * 64,
+                ),
+            ),
+        )
+        self.assertEqual(state["current"].compare(1, 2)[
+            "changed_service_rights_document_pointer_count"], 1)
+        self.assertEqual(self.client.get(
+            self.provenance_dossier_url(), headers=self.headers(),
+        ).status_code, 503)
+        # Historical question and response evidence is still readable;
+        # a source revision alone never deletes it or approves it.
+        self.assertEqual(self.client.get(
+            ROOT, headers=self.headers(),
+        ).status_code, 200)
+        self.assertTrue(self.ledger.verify_integrity())
+
     def evidence_index_url(self):
         return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-index"
 

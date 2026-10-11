@@ -155,6 +155,17 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         self.assertNotIn(DIGEST2, str(current))
         self.assertEqual(self.ledger.internal_input_snapshot("DEMO-D-1", 3),
                          (2, DIGEST2))
+        events = self.ledger.audit_snapshot()
+        mutations = [
+            event for event in events
+            if event.kind == "SYNTHETIC_INPUT_MANIFEST_REVISION_RECORDED"
+        ]
+        self.assertEqual(len(mutations), 2)
+        self.assertEqual([event.action_id for event in mutations],
+                         ["DEMO-INPUT-A", "DEMO-INPUT-B"])
+        self.assertNotIn(
+            "READ_ALLOWED", [event.kind for event in mutations],
+        )
         self.assertTrue(self.ledger.verify_integrity())
         self.ledger = self.reopen()
         self.client = self.client_for()

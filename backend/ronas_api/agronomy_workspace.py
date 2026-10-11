@@ -19,6 +19,9 @@ from .internal_cultivation_plan_contract import (
 )
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES
 from .internal_expert_review_preparation import project_expert_review_preparation
+from .expert_review_questions_sqlite import (
+    SqliteSyntheticExpertQuestionLedger, ReviewQuestionConflict, TRACKS,
+)
 from .scoped_drafts import _synthetic_ref, _synthetic_subject
 from .internal_scientific_basis_contract import (
     ScientificBasisCandidate, ScientificSourceCandidate,
@@ -390,3 +393,122 @@ class SyntheticAgronomyWorkspace:
             raise LedgerIntegrityError(
                 "untrusted synthetic expert review preparation source"
             ) from exc
+
+    def record_assigned_synthetic_review_question(
+        self, ref: str, principal: Principal, *, action_id: str,
+        track: str, expected_case_version: int, expected_input_revision: int,
+        expected_question_revision: int, reason_ref: str, evidence_ref: str,
+    ) -> dict | None:
+        """Record a missing-evidence QUESTION, never a review finding.
+
+        Caller supplies a signature-verified principal; on every request we
+        recheck live assignment, owner input and any independently pinned
+        science source. The same SQLite transaction writes the question
+        and the existing append-only audit chain, without stale TOCTOU.
+        """
+        if not isinstance(self.ledger, SqliteSyntheticExpertQuestionLedger):
+            raise ValueError("synthetic question journal not installed")
+        if not _synthetic_ref(ref):
+            return None
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            record = self.ledger._catalogue.get(("DOMESTIC", ref))
+            actor = self._actor(principal)
+            if record is None or actor is None:
+                return None
+            if not self._allowed(actor, ref, record.version):
+                return None
+            if (type(expected_case_version) is not int
+                    or expected_case_version != record.version):
+                raise ReviewQuestionConflict("case version changed")
+            if track not in TRACKS:
+                raise ValueError("unrecognized expert question track")
+            proposal = self._proposal_fixtures.get(ref)
+            if proposal is None:
+                # No fake model proposal or technical-response event can be
+                # substituted for a reviewable snapshot.
+                raise ReviewQuestionConflict("no pinned synthetic proposal")
+            snapshot = self.ledger._input_snapshot_from_verified_transaction(
+                db, ref, record.version,
+            )
+            if (snapshot is None or type(expected_input_revision) is not int
+                    or snapshot[0] != expected_input_revision):
+                raise ReviewQuestionConflict("current household input differs")
+            try:
+                inspect_proposal_structure(
+                    proposal, expected_case_engine="DOMESTIC",
+                    expected_case_ref=ref, expected_case_version=record.version,
+                    expected_input_revision=snapshot[0],
+                    expected_input_snapshot_digest=snapshot[1],
+                )
+            except ValueError as exc:
+                raise ReviewQuestionConflict(
+                    "stale synthetic model proposal input"
+                ) from exc
+            if self._scientific_basis_fixtures:
+                basis = self._scientific_basis_fixtures.get(
+                    proposal.scientific_basis_manifest_digest
+                )
+                try:
+                    latest = self._trusted_scientific_sources()
+                    inspect_scientific_basis_structure(
+                        basis,
+                        expected_manifest_digest=proposal.scientific_basis_manifest_digest,
+                        current_sources=latest,
+                    )
+                except Exception as exc:
+                    raise ReviewQuestionConflict(
+                        "stale/unavailable scientific reference"
+                    ) from exc
+            return self.ledger._append_verified_question(
+                db, ref=ref, case_version=record.version, actor=actor,
+                track=track, action_id=action_id,
+                expected_revision=expected_question_revision,
+                input_revision=snapshot[0], input_digest=snapshot[1],
+                science_digest=proposal.scientific_basis_manifest_digest,
+                proposal_digest=proposal.proposal_content_digest,
+                reason_ref=reason_ref, evidence_ref=evidence_ref,
+            )
+
+    def read_assigned_synthetic_review_questions(
+        self, ref: str, principal: Principal,
+    ) -> dict | None:
+        """Read historical questions independently of current plan validity.
+
+        A changed input/source must not delete original evidence. No
+        historical question becomes a current expert approval or action.
+        """
+        if not isinstance(self.ledger, SqliteSyntheticExpertQuestionLedger):
+            raise ValueError("synthetic question journal not installed")
+        if not _synthetic_ref(ref):
+            return None
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            record = self.ledger._catalogue.get(("DOMESTIC", ref))
+            actor = self._actor(principal)
+            if record is None or actor is None:
+                return None
+            if not self._allowed(actor, ref, record.version):
+                return None
+            rows = self.ledger._history(db, ref)
+            self.ledger._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=actor, mode="AGRONOMY_SYNTHETIC_QUESTION_HISTORY",
+            )
+            return {
+                "contract_version":
+                    "ronas.domestic.synthetic-expert-question-history.v0",
+                "engine": "DOMESTIC", "case_ref": ref,
+                "case_version": record.version,
+                "questions": [
+                    {"track": track, "question_revision": rev,
+                     "bound_input_revision": bound_input_revision,
+                     "draft_reason_ref": reason, "draft_evidence_ref": evidence,
+                     "record_state": "HISTORICAL_QUESTION_ONLY_NOT_REVIEWED"}
+                    for track, rev, bound_input_revision, reason, evidence in rows
+                ],
+                "qualification_verified": False,
+                "questions_are_review_decisions": False,
+                "plan_accepted": False, "new_advice_enabled": False,
+                "real_data": False,
+            }

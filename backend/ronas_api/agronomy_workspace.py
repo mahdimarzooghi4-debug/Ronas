@@ -12,6 +12,7 @@ from typing import Callable, Iterable
 
 from .auth import Principal
 from .grant_ledger_sqlite import LedgerIntegrityError
+from .household_input_ledger_sqlite import SqliteSyntheticHouseholdInputLedger
 from .domestic_preparation_preview import domestic_preparation_preview
 from .internal_cultivation_plan_contract import (
     InternalCultivationProposal, _digest, inspect_proposal_structure,
@@ -69,7 +70,8 @@ class SyntheticAgronomyWorkspace:
                     or fixture.household_case_ref in catalog):
                 raise ValueError("proposal fixture case/version not pinned")
             catalog[fixture.household_case_ref] = fixture
-        if (catalog and not callable(trusted_input_snapshot)
+        if (catalog and not (callable(trusted_input_snapshot)
+                             or isinstance(ledger, SqliteSyntheticHouseholdInputLedger))
                 or trusted_input_snapshot is not None
                    and not callable(trusted_input_snapshot)):
             raise ValueError("independent input snapshot authority required")
@@ -247,10 +249,17 @@ class SyntheticAgronomyWorkspace:
                     }
                 else:
                     authority = self._trusted_input_snapshot
-                    if authority is None:
-                        raise LedgerIntegrityError("input authority not configured")
                     try:
-                        snapshot = authority(ref, record.version)
+                        if authority is not None:
+                            snapshot = authority(ref, record.version)
+                        elif isinstance(self.ledger, SqliteSyntheticHouseholdInputLedger):
+                            # Same transaction and verified independent owner
+                            # input journal; no nested SQLite transaction.
+                            snapshot = self.ledger._input_snapshot_from_verified_transaction(
+                                db, ref, record.version,
+                            )
+                        else:
+                            raise LedgerIntegrityError("input authority not configured")
                     except Exception as exc:
                         raise LedgerIntegrityError(
                             "synthetic input snapshot source unavailable"

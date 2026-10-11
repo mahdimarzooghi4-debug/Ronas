@@ -19,6 +19,9 @@ EVENT = "SYNTHETIC_EXPERT_REVIEW_QUESTION_RECORDED"
 ANSWER_EVENT = "SYNTHETIC_HOUSEHOLD_QUESTION_RESPONSE_RECORDED"
 ANSWER_MODE = "SYNTHETIC_HOUSEHOLD_QUESTION_RESPONSE_SHA256:"
 ANSWER_VERSION = "ronas.domestic.synthetic-household-question-response.v0"
+INSPECTION_EVENT = "SYNTHETIC_EXPERT_RESPONSE_RECEIPT_INSPECTED"
+INSPECTION_MODE = "SYNTHETIC_EXPERT_RESPONSE_RECEIPT_SHA256:"
+INSPECTION_VERSION = "ronas.domestic.synthetic-response-receipt-inspection.v0"
 MODE = "SYNTHETIC_EXPERT_REVIEW_QUESTION_SHA256:"
 TRACKS = (
     "HOUSEHOLD_INPUT_ADEQUACY",
@@ -38,6 +41,7 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
     def __init__(self, *args, **kwargs):
         self._question_ready = False
         self._answer_ready = False
+        self._inspection_ready = False
         super().__init__(*args, **kwargs)
         with self._db() as db:
             db.executescript("""
@@ -93,13 +97,43 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
                 BEFORE DELETE ON household_question_response
                 BEGIN SELECT RAISE(ABORT, 'household response history immutable'); END;
             """)
+        with self._db() as db:
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS expert_response_receipt_inspection (
+                    action_id TEXT PRIMARY KEY,
+                    ref TEXT NOT NULL,
+                    case_version INTEGER NOT NULL,
+                    track TEXT NOT NULL,
+                    question_revision INTEGER NOT NULL,
+                    question_receipt TEXT NOT NULL,
+                    response_receipt TEXT NOT NULL,
+                    input_revision INTEGER NOT NULL,
+                    input_digest TEXT NOT NULL,
+                    science_digest TEXT NOT NULL,
+                    proposal_digest TEXT NOT NULL,
+                    actor_digest TEXT NOT NULL,
+                    inspection_receipt TEXT NOT NULL UNIQUE,
+                    audit_sequence INTEGER NOT NULL UNIQUE,
+                    UNIQUE(ref,track,question_revision),
+                    FOREIGN KEY(audit_sequence) REFERENCES audit_event(sequence)
+                );
+                CREATE TRIGGER IF NOT EXISTS response_inspection_no_update
+                BEFORE UPDATE ON expert_response_receipt_inspection
+                BEGIN SELECT RAISE(ABORT, 'inspection history immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS response_inspection_no_delete
+                BEFORE DELETE ON expert_response_receipt_inspection
+                BEGIN SELECT RAISE(ABORT, 'inspection history immutable'); END;
+            """)
         self._question_ready = True
         self._answer_ready = True
+        self._inspection_ready = True
         with self._transaction() as db:
             self._verify(db)
 
     def _extended_audit_kinds(self) -> frozenset[str]:
-        return super()._extended_audit_kinds() | frozenset({EVENT, ANSWER_EVENT})
+        return super()._extended_audit_kinds() | frozenset({
+            EVENT, ANSWER_EVENT, INSPECTION_EVENT,
+        })
 
     @staticmethod
     def _question_digest(data: dict) -> str:
@@ -350,6 +384,8 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
             used.add(seq)
         if used != set(expected):
             raise LedgerIntegrityError("orphan synthetic household response event")
+        if self._inspection_ready:
+            self._verify_response_inspections(db)
 
     def append_owned_question_response(
         self, ref: str, principal, *, action_id: str,
@@ -497,3 +533,171 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
                 "plan_accepted": False, "new_advice_enabled": False,
                 "real_data": False,
             }
+
+    @staticmethod
+    def _inspection_binding(row: tuple) -> dict:
+        (action, ref, version, track, qrev, question_receipt, response_receipt,
+         input_revision, input_digest, science_digest, proposal_digest,
+         actor_digest, receipt, sequence) = row
+        return {
+            "action_id": action, "ref": ref, "engine": "DOMESTIC",
+            "case_version": version, "track": track,
+            "question_revision": qrev, "question_receipt": question_receipt,
+            "response_receipt": response_receipt,
+            "input_revision": input_revision, "input_digest": input_digest,
+            "science_digest": science_digest, "proposal_digest": proposal_digest,
+            "actor_digest": actor_digest,
+        }
+
+    def _verify_response_inspections(self, db: sqlite3.Connection) -> None:
+        linked = {}
+        for sequence, payload in db.execute(
+            "SELECT sequence,payload FROM audit_event ORDER BY sequence"
+        ):
+            event = json.loads(payload)
+            mode = event.get("access_mode")
+            if (event.get("kind") == INSPECTION_EVENT
+                    or isinstance(mode, str)
+                    and mode.startswith(INSPECTION_MODE)):
+                linked[sequence] = event
+        seen = set()
+        for row in db.execute(
+            "SELECT action_id,ref,case_version,track,question_revision,"
+            "question_receipt,response_receipt,input_revision,input_digest,"
+            "science_digest,proposal_digest,actor_digest,inspection_receipt,"
+            "audit_sequence FROM expert_response_receipt_inspection "
+            "ORDER BY audit_sequence"
+        ):
+            (action, ref, version, track, qrev, q_receipt, r_receipt,
+             irev, idigest, sdigest, pdigest, actor_hash, receipt, sequence) = row
+            case = self._catalogue.get(("DOMESTIC", ref))
+            q = db.execute(
+                "SELECT receipt,input_revision,input_digest,science_digest,"
+                "proposal_digest,audit_sequence FROM expert_review_question "
+                "WHERE ref=? AND track=? AND revision=?",
+                (ref, track, qrev),
+            ).fetchone()
+            answer = db.execute(
+                "SELECT response_receipt,question_receipt,input_revision,"
+                "input_digest,audit_sequence FROM household_question_response "
+                "WHERE ref=? AND track=? AND question_revision=?",
+                (ref, track, qrev),
+            ).fetchone()
+            event = linked.get(sequence)
+            if (case is None or case.version != version
+                    or track != "HOUSEHOLD_INPUT_ADEQUACY"
+                    or type(qrev) is not int or qrev < 1
+                    or type(irev) is not int or irev < 1
+                    or not _synthetic_ref(action)
+                    or not all(_digest(x) for x in (
+                        q_receipt, r_receipt, idigest, sdigest, pdigest,
+                        actor_hash, receipt))
+                    or q is None or q[:5] != (
+                        q_receipt, irev, idigest, sdigest, pdigest)
+                    or answer is None
+                    or answer[:4] != (r_receipt, q_receipt, irev, idigest)
+                    or not q[5] < answer[4] < sequence
+                    or receipt != self._question_digest(
+                        self._inspection_binding(row))
+                    or event is None or sequence in seen
+                    or event.get("kind") != INSPECTION_EVENT
+                    or event.get("engine") != "DOMESTIC"
+                    or event.get("ref") != ref
+                    or event.get("case_version") != version
+                    or event.get("actor_digest") != actor_hash
+                    or event.get("action_id") != action
+                    or event.get("reason_ref") != "DEMO-RESPONSE-RECEIPT"
+                    or event.get("target_digest") != _hash(receipt)
+                    or event.get("access_mode") != INSPECTION_MODE + receipt):
+                raise LedgerIntegrityError(
+                    "synthetic expert inspection/audit lineage mismatch")
+            seen.add(sequence)
+        if seen != set(linked):
+            raise LedgerIntegrityError("orphan expert response inspection event")
+
+    def _append_verified_response_receipt_inspection(
+        self, db: sqlite3.Connection, *, ref: str, case_version: int,
+        actor: str, action_id: str, question_revision: int,
+        input_revision: int, input_digest: str, science_digest: str,
+        proposal_digest: str,
+    ) -> dict:
+        """Caller must verify role, live case assignment, current source/input."""
+        if (not _synthetic_ref(action_id)
+                or type(question_revision) is not int or question_revision < 1
+                or type(case_version) is not int or case_version < 1
+                or type(input_revision) is not int or input_revision < 1
+                or not all(_digest(x) for x in (
+                    input_digest, science_digest, proposal_digest))):
+            raise ValueError("invalid synthetic receipt inspection")
+        track = "HOUSEHOLD_INPUT_ADEQUACY"
+        q = db.execute(
+            "SELECT receipt,input_revision,input_digest,science_digest,"
+            "proposal_digest FROM expert_review_question "
+            "WHERE ref=? AND track=? AND revision=?",
+            (ref, track, question_revision),
+        ).fetchone()
+        answer = db.execute(
+            "SELECT response_receipt FROM household_question_response "
+            "WHERE ref=? AND track=? AND question_revision=?",
+            (ref, track, question_revision),
+        ).fetchone()
+        if (q is None or answer is None
+                or q != (
+                    q[0], input_revision, input_digest,
+                    science_digest, proposal_digest)
+                or self._revision(db, ref, track)[0] != question_revision):
+            raise ReviewQuestionConflict("unanswered/stale question or proposal")
+        binding = {
+            "action_id": action_id, "ref": ref, "engine": "DOMESTIC",
+            "case_version": case_version, "track": track,
+            "question_revision": question_revision, "question_receipt": q[0],
+            "response_receipt": answer[0], "input_revision": input_revision,
+            "input_digest": input_digest, "science_digest": science_digest,
+            "proposal_digest": proposal_digest, "actor_digest": _hash(actor),
+        }
+        receipt = self._question_digest(binding)
+        existing = db.execute(
+            "SELECT action_id,inspection_receipt "
+            "FROM expert_response_receipt_inspection "
+            "WHERE ref=? AND track=? AND question_revision=?",
+            (ref, track, question_revision),
+        ).fetchone()
+        if existing is not None:
+            if existing == (action_id, receipt):
+                return self._inspection_ack(ref, question_revision, True)
+            raise ReviewQuestionConflict("receipt inspection already recorded")
+        if db.execute(
+            "SELECT 1 FROM expert_response_receipt_inspection WHERE action_id=?",
+            (action_id,),
+        ).fetchone():
+            raise ReviewQuestionConflict("inspection action reused")
+        audit = self._append(
+            db, kind=INSPECTION_EVENT, engine="DOMESTIC", ref=ref,
+            actor=actor, target=receipt, action_id=action_id,
+            reason_ref="DEMO-RESPONSE-RECEIPT", mode=INSPECTION_MODE + receipt,
+        )
+        db.execute(
+            "INSERT INTO expert_response_receipt_inspection VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (action_id, ref, case_version, track, question_revision,
+             q[0], answer[0], input_revision, input_digest, science_digest,
+             proposal_digest, _hash(actor), receipt, audit.sequence),
+        )
+        return self._inspection_ack(ref, question_revision, False)
+
+    @staticmethod
+    def _inspection_ack(ref: str, qrev: int, replay: bool) -> dict:
+        return {
+            "contract_version": INSPECTION_VERSION, "engine": "DOMESTIC",
+            "case_ref": ref, "track": "HOUSEHOLD_INPUT_ADEQUACY",
+            "question_revision": qrev,
+            "state": "SYNTHETIC_RECEIPT_SEEN_NOT_REVIEWED",
+            "idempotent_replay": replay,
+            "household_input_adequacy_verified": False,
+            "source_rights_verified": False,
+            "scientific_validity_verified": False,
+            "professional_qualification_verified": False,
+            "expert_decision_recorded": False,
+            "plan_accepted": False, "new_advice_enabled": False,
+            "real_data": False,
+        }

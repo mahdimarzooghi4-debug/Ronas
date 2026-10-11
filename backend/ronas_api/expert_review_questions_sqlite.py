@@ -16,6 +16,9 @@ from .internal_cultivation_plan_contract import _digest
 from .scoped_drafts import _synthetic_ref
 
 EVENT = "SYNTHETIC_EXPERT_REVIEW_QUESTION_RECORDED"
+ANSWER_EVENT = "SYNTHETIC_HOUSEHOLD_QUESTION_RESPONSE_RECORDED"
+ANSWER_MODE = "SYNTHETIC_HOUSEHOLD_QUESTION_RESPONSE_SHA256:"
+ANSWER_VERSION = "ronas.domestic.synthetic-household-question-response.v0"
 MODE = "SYNTHETIC_EXPERT_REVIEW_QUESTION_SHA256:"
 TRACKS = (
     "HOUSEHOLD_INPUT_ADEQUACY",
@@ -34,6 +37,7 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
 
     def __init__(self, *args, **kwargs):
         self._question_ready = False
+        self._answer_ready = False
         super().__init__(*args, **kwargs)
         with self._db() as db:
             db.executescript("""
@@ -63,12 +67,39 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
                 BEFORE DELETE ON expert_review_question
                 BEGIN SELECT RAISE(ABORT, 'expert question history immutable'); END;
             """)
+        with self._db() as db:
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS household_question_response (
+                    action_id TEXT PRIMARY KEY,
+                    ref TEXT NOT NULL,
+                    case_version INTEGER NOT NULL,
+                    track TEXT NOT NULL,
+                    question_revision INTEGER NOT NULL,
+                    question_receipt TEXT NOT NULL,
+                    input_revision INTEGER NOT NULL,
+                    input_digest TEXT NOT NULL,
+                    owner_digest TEXT NOT NULL,
+                    answer_ref TEXT NOT NULL,
+                    evidence_ref TEXT NOT NULL,
+                    response_receipt TEXT NOT NULL UNIQUE,
+                    audit_sequence INTEGER NOT NULL UNIQUE,
+                    UNIQUE(ref,track,question_revision),
+                    FOREIGN KEY(audit_sequence) REFERENCES audit_event(sequence)
+                );
+                CREATE TRIGGER IF NOT EXISTS household_response_no_update
+                BEFORE UPDATE ON household_question_response
+                BEGIN SELECT RAISE(ABORT, 'household response history immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS household_response_no_delete
+                BEFORE DELETE ON household_question_response
+                BEGIN SELECT RAISE(ABORT, 'household response history immutable'); END;
+            """)
         self._question_ready = True
+        self._answer_ready = True
         with self._transaction() as db:
             self._verify(db)
 
     def _extended_audit_kinds(self) -> frozenset[str]:
-        return super()._extended_audit_kinds() | frozenset({EVENT})
+        return super()._extended_audit_kinds() | frozenset({EVENT, ANSWER_EVENT})
 
     @staticmethod
     def _question_digest(data: dict) -> str:
@@ -152,6 +183,8 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
             prior[key] = receipt
         if paired != set(event_map):
             raise LedgerIntegrityError("orphan synthetic expert-question audit")
+        if self._answer_ready:
+            self._verify_household_responses(db)
 
     @staticmethod
     def _history(db: sqlite3.Connection, ref: str) -> list[tuple]:
@@ -240,3 +273,227 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
             "science_rights_approved": False,
             "plan_approved": False, "real_data": False,
         }
+
+    @staticmethod
+    def _answer_binding(row: tuple) -> dict:
+        (action, ref, case_version, track, q_revision, q_receipt,
+         input_revision, input_digest, owner_digest, answer_ref, evidence_ref,
+         response_receipt, audit_sequence) = row
+        return {
+            "action_id": action, "ref": ref, "engine": "DOMESTIC",
+            "case_version": case_version, "track": track,
+            "question_revision": q_revision, "question_receipt": q_receipt,
+            "input_revision": input_revision, "input_digest": input_digest,
+            "owner_digest": owner_digest, "answer_ref": answer_ref,
+            "evidence_ref": evidence_ref,
+        }
+
+    def _verify_household_responses(self, db: sqlite3.Connection) -> None:
+        expected = {}
+        for seq, payload in db.execute(
+            "SELECT sequence,payload FROM audit_event ORDER BY sequence"
+        ):
+            event = json.loads(payload)
+            mode = event.get("access_mode")
+            if (event.get("kind") == ANSWER_EVENT
+                    or isinstance(mode, str) and mode.startswith(ANSWER_MODE)):
+                expected[seq] = event
+        used = set()
+        for row in db.execute(
+            "SELECT action_id,ref,case_version,track,question_revision,"
+            "question_receipt,input_revision,input_digest,owner_digest,"
+            "answer_ref,evidence_ref,response_receipt,audit_sequence "
+            "FROM household_question_response ORDER BY audit_sequence"
+        ):
+            (action, ref, version, track, q_revision, q_receipt,
+             input_revision, input_digest, owner_hash, answer, evidence,
+             receipt, seq) = row
+            record = self._catalogue.get(("DOMESTIC", ref))
+            question = db.execute(
+                "SELECT receipt,input_revision,input_digest,audit_sequence "
+                "FROM expert_review_question WHERE ref=? AND track=? "
+                "AND revision=?", (ref, track, q_revision),
+            ).fetchone()
+            inp = db.execute(
+                "SELECT manifest_digest,audit_sequence FROM household_input_revision "
+                "WHERE ref=? AND revision=?", (ref, input_revision),
+            ).fetchone()
+            event = expected.get(seq)
+            if (record is None or version != record.version
+                    or track != "HOUSEHOLD_INPUT_ADEQUACY"
+                    or type(q_revision) is not int or q_revision < 1
+                    or type(input_revision) is not int or input_revision < 1
+                    or not all(_synthetic_ref(x) for x in (
+                        action, answer, evidence))
+                    or not all(_digest(x) for x in (
+                        q_receipt, input_digest, owner_hash, receipt))
+                    or owner_hash != _hash(record.owner_subject)
+                    or question is None
+                    or question[0] != q_receipt
+                    or question[1] != input_revision
+                    or question[2] != input_digest
+                    or question[3] >= seq
+                    or inp is None or inp[0] != input_digest
+                    or inp[1] >= question[3]
+                    or receipt != self._question_digest(self._answer_binding(row))
+                    or event is None or seq in used
+                    or event.get("kind") != ANSWER_EVENT
+                    or event.get("engine") != "DOMESTIC"
+                    or event.get("ref") != ref
+                    or event.get("case_version") != version
+                    or event.get("actor_digest") != owner_hash
+                    or event.get("action_id") != action
+                    or event.get("reason_ref") != answer
+                    or event.get("target_digest") != _hash(receipt)
+                    or event.get("access_mode") != ANSWER_MODE + receipt):
+                raise LedgerIntegrityError("household response and audit mismatch")
+            used.add(seq)
+        if used != set(expected):
+            raise LedgerIntegrityError("orphan synthetic household response event")
+
+    def append_owned_question_response(
+        self, ref: str, principal, *, action_id: str,
+        track: str, expected_question_revision: int,
+        expected_case_version: int, expected_input_revision: int,
+        answer_ref: str, evidence_ref: str,
+    ) -> dict | None:
+        """Household can answer only its own *input* question, never approve."""
+        if (track != "HOUSEHOLD_INPUT_ADEQUACY"
+                or not all(_synthetic_ref(x) for x in (
+                    action_id, answer_ref, evidence_ref))
+                or type(expected_question_revision) is not int
+                or expected_question_revision < 1
+                or type(expected_case_version) is not int
+                or expected_case_version < 1
+                or type(expected_input_revision) is not int
+                or expected_input_revision < 1):
+            raise ValueError("invalid DEMO household response command")
+        with self._transaction() as db:
+            self._verify(db)
+            if not self._owner(ref, principal):
+                return None
+            record = self._catalogue[("DOMESTIC", ref)]
+            if record.version != expected_case_version:
+                raise ReviewQuestionConflict("case version differs")
+            question = db.execute(
+                "SELECT receipt,input_revision,input_digest,audit_sequence "
+                "FROM expert_review_question WHERE ref=? AND track=? "
+                "AND revision=?", (ref, track, expected_question_revision),
+            ).fetchone()
+            if question is None:
+                raise ReviewQuestionConflict("question not present")
+            latest_revision, _ = self._revision(db, ref, track)
+            current_input = self._input_snapshot_from_verified_transaction(
+                db, ref, record.version,
+            )
+            if (latest_revision != expected_question_revision
+                    or current_input is None
+                    or current_input[0] != expected_input_revision
+                    or question[1] != current_input[0]
+                    or question[2] != current_input[1]):
+                raise ReviewQuestionConflict("stale question or input")
+            binding = {
+                "action_id": action_id, "ref": ref, "engine": "DOMESTIC",
+                "case_version": record.version, "track": track,
+                "question_revision": expected_question_revision,
+                "question_receipt": question[0],
+                "input_revision": current_input[0],
+                "input_digest": current_input[1],
+                "owner_digest": _hash(principal.subject),
+                "answer_ref": answer_ref, "evidence_ref": evidence_ref,
+            }
+            receipt = self._question_digest(binding)
+            prior = db.execute(
+                "SELECT action_id,response_receipt FROM household_question_response "
+                "WHERE ref=? AND track=? AND question_revision=?",
+                (ref, track, expected_question_revision),
+            ).fetchone()
+            if prior is not None:
+                if prior == (action_id, receipt):
+                    return self._answer_ack(ref, expected_question_revision, True)
+                raise ReviewQuestionConflict("question already answered in DEMO")
+            action = db.execute(
+                "SELECT response_receipt FROM household_question_response "
+                "WHERE action_id=?", (action_id,),
+            ).fetchone()
+            if action is not None:
+                raise ReviewQuestionConflict("response action reused")
+            audit = self._append(
+                db, kind=ANSWER_EVENT, engine="DOMESTIC", ref=ref,
+                actor=principal.subject, target=receipt,
+                action_id=action_id, reason_ref=answer_ref,
+                mode=ANSWER_MODE + receipt,
+            )
+            db.execute(
+                "INSERT INTO household_question_response VALUES "
+                "(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (action_id, ref, record.version, track,
+                 expected_question_revision, question[0], current_input[0],
+                 current_input[1], _hash(principal.subject), answer_ref,
+                 evidence_ref, receipt, audit.sequence),
+            )
+            return self._answer_ack(ref, expected_question_revision, False)
+
+    @staticmethod
+    def _answer_ack(ref: str, question_revision: int, replay: bool) -> dict:
+        return {
+            "contract_version": ANSWER_VERSION, "engine": "DOMESTIC",
+            "case_ref": ref, "track": "HOUSEHOLD_INPUT_ADEQUACY",
+            "question_revision": question_revision,
+            "record_state": "SYNTHETIC_RESPONSE_RECEIVED_NOT_REVIEWED",
+            "idempotent_replay": replay,
+            "purpose_consent_verified": False,
+            "household_input_adequacy_verified": False,
+            "science_rights_verified": False,
+            "qualified_expert_decision_recorded": False,
+            "plan_accepted": False, "real_data": False,
+        }
+
+    def read_owned_question_responses(self, ref: str, principal) -> dict | None:
+        """Owner-only private DE​MO history; no expert approval or real data."""
+        with self._transaction() as db:
+            self._verify(db)
+            if not self._owner(ref, principal):
+                return None
+            record = self._catalogue[("DOMESTIC", ref)]
+            latest = self._input_snapshot_from_verified_transaction(
+                db, ref, record.version,
+            )
+            questions = list(db.execute(
+                "SELECT q.revision,q.input_revision,r.action_id,r.answer_ref,"
+                "r.evidence_ref FROM expert_review_question q "
+                "LEFT JOIN household_question_response r "
+                "ON r.ref=q.ref AND r.track=q.track AND r.question_revision=q.revision "
+                "WHERE q.ref=? AND q.track='HOUSEHOLD_INPUT_ADEQUACY' "
+                "ORDER BY q.revision", (ref,),
+            ))
+            self._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=principal.subject,
+                mode="HOUSEHOLD_SYNTHETIC_QUESTION_RESPONSE_HISTORY",
+            )
+            return {
+                "contract_version": ANSWER_VERSION, "engine": "DOMESTIC",
+                "case_ref": ref, "case_version": record.version,
+                "questions": [
+                    {
+                        "question_revision": revision,
+                        "bound_input_revision": bound_input,
+                        "response_state": (
+                            "HISTORICAL_RESPONSE_ONLY_NOT_REVIEWED"
+                            if action else "MISSING_RESPONSE"
+                        ),
+                        "response_ref": answer,
+                        "evidence_ref": evidence,
+                        "is_current_input_version": (
+                            latest is not None and bound_input == latest[0]
+                        ),
+                    }
+                    for revision, bound_input, action, answer, evidence
+                    in questions
+                ],
+                "purpose_consent_verified": False,
+                "expert_review_recorded": False,
+                "plan_accepted": False, "new_advice_enabled": False,
+                "real_data": False,
+            }

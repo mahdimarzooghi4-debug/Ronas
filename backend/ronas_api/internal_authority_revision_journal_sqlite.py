@@ -143,10 +143,13 @@ class SqliteSyntheticAuthorityRevisionJournal:
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        with sqlite3.connect(self.path, timeout=15, isolation_level=None) as db:
+        db = sqlite3.connect(self.path, timeout=15, isolation_level=None)
+        try:
             db.execute("PRAGMA busy_timeout=15000")
             db.execute("PRAGMA foreign_keys=ON")
             yield db
+        finally:
+            db.close()
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:

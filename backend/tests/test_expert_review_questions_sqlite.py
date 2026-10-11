@@ -1551,6 +1551,153 @@ class LocalExpertQuestionTests(unittest.TestCase):
             url,json={},headers=self.headers()).status_code,405)
         self.assertEqual(TestClient(create_app(self.config)).get(
             url,headers=self.headers()).status_code,404)
+    def test_persisted_authority_witnesses_back_strict_context_and_detect_aba(self):
+        from ronas_api.internal_authority_revision_journal_sqlite import (
+            SqliteSyntheticAuthorityRevisionJournal,
+        )
+        from ronas_api.internal_authority_revision_witness import (
+            SCIENCE, SPECIALIST, ASSIGNMENT,
+        )
+        from ronas_api.internal_specialist_scope_contract import (
+            SyntheticSpecialistEvidenceRegistry,
+        )
+        journal=SqliteSyntheticAuthorityRevisionJournal(
+            self.path.parent/"authority-evidence.db"
+        )
+        state={
+            SCIENCE: tuple(),
+            SPECIALIST: SyntheticSpecialistEvidenceRegistry(),
+            ASSIGNMENT: True,
+        }
+        order=(SCIENCE,SPECIALIST,ASSIGNMENT)
+        for kind in order:
+            journal.record_snapshot(
+                kind=kind,subject=EXPERT,case_ref="DEMO-D-1",case_version=3,
+                snapshot=state[kind],action_ref=f"DEMO-INIT-{kind}",
+                expected_generation=0,
+            )
+        reopened=SqliteSyntheticAuthorityRevisionJournal(
+            self.path.parent/"authority-evidence.db"
+        )
+        self.workspace._trusted_specialist_governance_snapshot=(
+            lambda: state[SPECIALIST]
+        )
+        self.workspace._live_authority=(
+            lambda actor,ref,ver: (
+                self.active is True and actor==EXPERT and ref=="DEMO-D-1"
+                and ver==3 and state[ASSIGNMENT] is True
+            )
+        )
+        self.workspace._authority_version_callbacks=tuple(
+            reopened.callback(
+                kind,lambda actor,ref,ver,key=kind:state[key],
+            ) for kind in order
+        )
+        self.seed_input()
+        endpoint=self.versioned_review_context_url()
+        initial=self.client.get(endpoint,headers=self.headers())
+        self.assertEqual(initial.status_code,200,initial.text)
+        first=initial.json()
+        old_token=first["synthetic_versioned_context_fingerprint_sha256"]
+        self.assertFalse(first["cross_provider_atomicity_verified"])
+        self.assertFalse(first["plan_accepted"])
+        for kind in order:
+            if kind==SCIENCE:
+                value=(ScientificSourceCandidate(
+                    ref="DEMO-ABA-SOURCE",version=1,
+                    content_sha256="a"*64,
+                    rights_document_ref="DEMO-ABA-RIGHTS",
+                    rights_document_sha256="b"*64,
+                    science_review_request_ref="DEMO-ABA-REVIEW",
+                    science_review_material_sha256="c"*64,
+                ),)
+            elif kind==SPECIALIST:
+                value=self.specialist_governance_fixture()
+            else:
+                value=False
+            journal.record_snapshot(
+                kind=kind,subject=EXPERT,case_ref="DEMO-D-1",case_version=3,
+                snapshot=value,action_ref=f"DEMO-ABA-B-{kind}",
+                expected_generation=1,
+            )
+            state[kind]=value
+            journal.record_snapshot(
+                kind=kind,subject=EXPERT,case_ref="DEMO-D-1",case_version=3,
+                snapshot=(() if kind==SCIENCE else
+                          SyntheticSpecialistEvidenceRegistry() if kind==SPECIALIST
+                          else True),
+                action_ref=f"DEMO-ABA-A-{kind}",expected_generation=2,
+            )
+            state[kind]=(() if kind==SCIENCE else
+                         SyntheticSpecialistEvidenceRegistry() if kind==SPECIALIST
+                         else True)
+        self.assertTrue(reopened.verify_integrity())
+        stale=self.client.get(
+            endpoint+"&expected_context_fingerprint="+old_token,
+            headers=self.headers(),
+        )
+        self.assertEqual(stale.status_code,409,stale.text)
+        self.assertEqual(stale.json()["detail"],
+                         "SYNTHETIC_REVIEW_CONTEXT_CHANGED")
+        fresh=self.client.get(endpoint,headers=self.headers())
+        self.assertEqual(fresh.status_code,200,fresh.text)
+        self.assertEqual(first["synthetic_context_fingerprint_sha256"],
+                         fresh.json()["synthetic_context_fingerprint_sha256"])
+        self.assertNotEqual(old_token,
+                            fresh.json()["synthetic_versioned_context_fingerprint_sha256"])
+        self.assertEqual(sum(
+            x.access_mode=="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for x in self.ledger.audit_snapshot()),2)
+
+    def test_persisted_authority_witnesses_reject_unjournaled_change_and_tamper(self):
+        from ronas_api.internal_authority_revision_journal_sqlite import (
+            SqliteSyntheticAuthorityRevisionJournal,
+        )
+        from ronas_api.internal_authority_revision_witness import (
+            SCIENCE, SPECIALIST, ASSIGNMENT,
+        )
+        from ronas_api.internal_specialist_scope_contract import (
+            SyntheticSpecialistEvidenceRegistry,
+        )
+        filename=self.path.parent/"authority-evidence.db"
+        authority=SqliteSyntheticAuthorityRevisionJournal(filename)
+        state={SCIENCE:tuple(),SPECIALIST:SyntheticSpecialistEvidenceRegistry(),
+               ASSIGNMENT:True}
+        kinds=(SCIENCE,SPECIALIST,ASSIGNMENT)
+        for kind in kinds:
+            authority.record_snapshot(
+                kind=kind,subject=EXPERT,case_ref="DEMO-D-1",case_version=3,
+                snapshot=state[kind],action_ref=f"DEMO-INTEGRITY-{kind}",
+                expected_generation=0,
+            )
+        self.workspace._authority_version_callbacks=tuple(
+            authority.callback(
+                kind,lambda actor,ref,ver,key=kind:state[key],
+            ) for kind in kinds
+        )
+        self.seed_input()
+        url=self.versioned_review_context_url()
+        self.assertEqual(self.client.get(
+            url,headers=self.headers()).status_code,200)
+        state[ASSIGNMENT]=False
+        unchecked=self.client.get(url,headers=self.headers())
+        self.assertEqual(unchecked.status_code,503,unchecked.text)
+        self.assertNotIn("DEMO-INTEGRITY",unchecked.text)
+        self.assertEqual(sum(
+            e.access_mode=="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for e in self.ledger.audit_snapshot()),1)
+        state[ASSIGNMENT]=True
+        with sqlite3.connect(filename) as db:
+            db.execute("DROP TRIGGER authority_event_no_update")
+            db.execute(
+                "UPDATE authority_event SET generation=99 "
+                "WHERE kind=? AND generation=1",(ASSIGNMENT,),
+            )
+        self.assertFalse(authority.verify_integrity())
+        tampered=self.client.get(url,headers=self.headers())
+        self.assertEqual(tampered.status_code,503,tampered.text)
+        self.assertTrue(self.ledger.verify_integrity())
+
     def evidence_index_url(self):
         return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-index"
 

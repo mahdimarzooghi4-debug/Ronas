@@ -78,6 +78,24 @@ exposing stages; a separately supplied revision-2 fixture can be inspected
 but it remains unapproved. Test cases verify this end-to-end, plus that
 a household correction never grants expert rights or accepts a plan.
 
+### Pairing and authority-precedence review hardening
+
+- The input ledger verifies **all** recorded input mutation event kinds,
+  including events whose access-mode is forged/missing, and independently
+  detects a fake input-revision mode on a read event; either unmatched side
+  fails closed. Both negative cases are covered by regression tests.
+- When the input ledger also owns the agronomy specialist workspace, the
+  **persisted latest household revision is the only source**; a separately
+  injected callback that might revive an old proposal is forbidden. The
+  latest revision and proposal are checked in the same transaction.
+- Neither semantic readiness nor legal consent can be inferred from
+  structurally valid digests, event kind or synthetic owner write receipts.
+- The prospective **real** purpose notice/consent schema, withdrawal/retention
+  rights, allowed input fields, expert access/qualification and separate AI
+  Training use rights are deliberately not invented. See the review-only
+  [D1-DATA-01 Business evidence candidate](../docs/business/77-core-d1-household-data-consent-contract-candidate.md)
+  in Business Draft PR #1; no actual intake/consent route exists.
+
 ## Integrity and concurrency
 
 - Exact case/version/owner binding, strictly increasing per-case revisions,

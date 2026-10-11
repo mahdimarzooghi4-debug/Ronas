@@ -58,7 +58,10 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
             self._verify(db)
 
     def _extended_audit_kinds(self) -> frozenset[str]:
-        return frozenset({EVENT_KIND})
+        # Preserve all *independently verified* parent review/Export audit
+        # events. Replacing rather than extending this set caused a shared
+        # Domestic + Export ledger to reject valid Export question events.
+        return super()._extended_audit_kinds() | frozenset({EVENT_KIND})
 
     @staticmethod
     def _binding(action: str, ref: str, case_version: int, revision: int,

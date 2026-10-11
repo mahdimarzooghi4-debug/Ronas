@@ -534,7 +534,7 @@ class DomesticPartnerSelfPreviewTests(unittest.TestCase):
             "آماده‌سازی شخصی من", "خریدار محلی", "فروشنده تجهیزات",
             "DEMO-BUY-DUAL", "DEMO-EQP-DUAL",
             "/local-buyer/my-preview", "/equipment-seller/my-preview",
-            "ارزیابی", "هنوز داده‌ای ثبت نشده",
+            "آمادگی تجاری", "هنوز داده‌ای ثبت نشده",
             "ارتباط با خانوار", "تطبیق خریدار و فروشنده",
         ):
             self.assertIn(term, page.text)

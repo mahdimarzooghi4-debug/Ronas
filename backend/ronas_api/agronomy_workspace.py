@@ -42,6 +42,9 @@ from .internal_specialist_scope_change_impact import (
     project_assigned_specialist_scope_change_impact,
     SpecialistEvidenceRevisionConflict,
 )
+from .internal_specialist_review_context import (
+    project_synthetic_specialist_review_context,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1014,6 +1017,141 @@ class SyntheticAgronomyWorkspace:
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                 actor=actor,
                 mode="AGRONOMY_SYNTHETIC_SPECIALIST_SCOPE_CHANGE_IMPACT",
+            )
+            return result
+
+
+    def read_assigned_synthetic_review_context_impact(
+        self, ref: str, principal: Principal, *,
+        observed_specialist_revision: int,
+    ) -> dict | None:
+        """One verified/audited current context across independent domains.
+
+        Unlike three independent HTTP reads, household/science/specialist
+        candidates and immutable evidence are sampled in one transaction.
+        Historical specialist drift is diagnostic, never an access grant.
+        """
+        if not isinstance(self.ledger, SqliteSyntheticExpertQuestionLedger):
+            raise ValueError("synthetic expert ledger not configured")
+        if not _synthetic_ref(ref):
+            return None
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            record = self.ledger._catalogue.get(("DOMESTIC", ref))
+            actor = self._actor(principal)
+            if record is None or actor is None:
+                return None
+            if not self._allowed(actor, ref, record.version):
+                return None
+            current_input = self.ledger._input_snapshot_from_verified_transaction(
+                db, ref, record.version,
+            )
+            proposal = self._proposal_fixtures.get(ref)
+            source_state = SOURCE_NONE
+            if proposal is not None:
+                if current_input is None:
+                    raise LedgerIntegrityError("missing current synthetic owner input")
+                try:
+                    inspect_proposal_structure(
+                        proposal, expected_case_engine="DOMESTIC",
+                        expected_case_ref=ref,
+                        expected_case_version=record.version,
+                        expected_input_revision=current_input[0],
+                        expected_input_snapshot_digest=current_input[1],
+                    )
+                except ValueError as exc:
+                    raise LedgerIntegrityError(
+                        "stale synthetic proposal/input fixture"
+                    ) from exc
+                if self._scientific_basis_fixtures:
+                    basis = self._scientific_basis_fixtures.get(
+                        proposal.scientific_basis_manifest_digest,
+                    )
+                    try:
+                        inspect_scientific_basis_structure(
+                            basis,
+                            expected_manifest_digest=(
+                                proposal.scientific_basis_manifest_digest
+                            ),
+                            current_sources=self._trusted_scientific_sources(),
+                        )
+                    except Exception as exc:
+                        raise LedgerIntegrityError(
+                            "stale/unavailable current synthetic source candidates"
+                        ) from exc
+                    source_state = SOURCE_PINNED
+
+            inputs = list(db.execute(
+                "SELECT revision,manifest_digest,receipt_digest,audit_sequence "
+                "FROM household_input_revision WHERE ref=? ORDER BY audit_sequence",
+                (ref,),
+            ))
+            questions = list(db.execute(
+                "SELECT track,revision,input_revision,input_digest,"
+                "science_digest,proposal_digest,receipt,audit_sequence "
+                "FROM expert_review_question WHERE ref=? ORDER BY audit_sequence",
+                (ref,),
+            ))
+            responses = list(db.execute(
+                "SELECT track,question_revision,response_receipt,audit_sequence "
+                "FROM household_question_response WHERE ref=? ORDER BY audit_sequence",
+                (ref,),
+            ))
+            sightings = list(db.execute(
+                "SELECT track,question_revision,inspection_receipt,audit_sequence "
+                "FROM expert_response_receipt_inspection "
+                "WHERE ref=? ORDER BY audit_sequence", (ref,),
+            ))
+
+            if self._trusted_specialist_governance_snapshot is None:
+                registry = SyntheticSpecialistEvidenceRegistry()
+            else:
+                try:
+                    registry = self._trusted_specialist_governance_snapshot()
+                except Exception as exc:
+                    raise LedgerIntegrityError(
+                        "specialist evidence candidate source unavailable"
+                    ) from exc
+            if not isinstance(registry, SyntheticSpecialistEvidenceRegistry):
+                raise LedgerIntegrityError(
+                    "untrusted specialist evidence candidate source"
+                )
+            try:
+                handoff = prepare_synthetic_review_handoff(
+                    case_ref=ref, case_version=record.version,
+                    input_snapshot=current_input, proposal=proposal,
+                    source_state=source_state,
+                    question_rows=questions, response_rows=responses,
+                    sighting_rows=sightings,
+                )
+                historical = verified_synthetic_evidence_events(
+                    input_rows=inputs, question_rows=questions,
+                    response_rows=responses, sighting_rows=sightings,
+                )
+                timeline = synthetic_evidence_timeline(
+                    case_ref=ref, case_version=record.version,
+                    events=historical,
+                )
+                impact = project_assigned_specialist_scope_change_impact(
+                    registry=registry,
+                    subject=actor, case_ref=ref,
+                    case_version=record.version,
+                    observed_revision=observed_specialist_revision,
+                )
+                result = project_synthetic_specialist_review_context(
+                    case_ref=ref, case_version=record.version,
+                    handoff=handoff, evidence_timeline=timeline,
+                    specialist_impact=impact,
+                )
+            except SpecialistEvidenceRevisionConflict:
+                raise
+            except (ValueError, KeyError, TypeError) as exc:
+                raise LedgerIntegrityError(
+                    "invalid combined synthetic specialist review context"
+                ) from exc
+            self.ledger._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=actor, mode="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT",
             )
             return result
 

@@ -1121,6 +1121,211 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertEqual(result.status_code,503)
         self.assertNotIn("DEMO-FORGED",result.text)
 
+
+    def review_context_impact_url(self, observed=0):
+        return (
+            "/api/v1/agronomy/assigned-drafts/DEMO-D-1/"
+            f"review-context-impact?observed_specialist_revision={observed}"
+        )
+
+    def test_atomic_review_context_joins_current_all_domains_and_stable_read(self):
+        source = ScientificSourceCandidate(
+            ref="DEMO-SCI-ATOMIC", version=1, content_sha256="a"*64,
+            rights_document_ref="DEMO-RIGHTS-ATOMIC",
+            rights_document_sha256="b"*64,
+            science_review_request_ref="DEMO-SCI-REVIEW-ATOMIC",
+            science_review_material_sha256="c"*64,
+        )
+        basis = ScientificBasisCandidate(
+            ref="DEMO-BASIS-ATOMIC", version=1, sources=(source,),
+        )
+        self.science_current[:] = [source]
+        self.workspace = self.specialist(
+            proposal=self.proposal(science=basis.manifest_digest),
+            science_basis=basis,
+        )
+        self.workspace._trusted_specialist_governance_snapshot = (
+            self.specialist_governance_fixture
+        )
+        self.client = self.make_client()
+        self.seed_input()
+        for idx, track in enumerate(TRACKS):
+            self.assertEqual(self.post(
+                track=track, action=f"DEMO-ATOMIC-Q-{idx}",
+            ).status_code, 201)
+        self.owner_reply()
+        self.inspect()
+        endpoint = self.review_context_impact_url(1)
+        first = self.client.get(endpoint, headers=self.headers())
+        self.assertEqual(first.status_code, 200, first.text)
+        result = first.json()
+        self.assertEqual(result["household_input"]["current_revision"], 1)
+        self.assertEqual(result["household_input"][
+            "case_local_immutable_evidence_event_count"], 6)
+        self.assertEqual(result["scientific_source"][
+            "current_candidate_pointer_state"],
+            "SOURCE_CANDIDATE_POINTERS_PINNED_UNVERIFIED")
+        self.assertEqual(result["internal_ai_proposal"]["current_fixture_state"],
+                         "STRUCTURE_ONLY_UNREVIEWED")
+        self.assertEqual(result["specialist_evidence"]["current_revision"], 1)
+        self.assertEqual(result["specialist_evidence"]["current_conflict_diagnostic"],
+                         "POTENTIAL_CONFLICT_DISCLOSED_UNRESOLVED")
+        self.assertEqual([x["historical_question_count"] for x in result["tracks"]],
+                         [1, 1, 1])
+        self.assertEqual([x["current_declared_scope_candidate_present"]
+                          for x in result["tracks"]], [True, False, True])
+        self.assertTrue(all(x["latest_question_fixture_binding_matches"]
+                            for x in result["tracks"]))
+        self.assertTrue(all(not x["eligible_for_operational_reuse"]
+                            for x in result["tracks"]))
+        self.assertFalse(result["plan_accepted"])
+        self.assertFalse(result["real_specialist_decision_recorded"])
+        second = self.client.get(endpoint, headers=self.headers())
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(second.json()["synthetic_context_fingerprint_sha256"],
+                         result["synthetic_context_fingerprint_sha256"])
+        self.assertEqual(first.headers["cache-control"], "no-store")
+        for secret in ("DEMO-RIGHTS-ATOMIC", "DEMO-SCI-ATOMIC",
+                       "DEMO-QUAL-FIXTURE", "DEMO-APPT-FIXTURE",
+                       "DEMO-CONFLICT-FIXTURE", "DEMO-RUN-1",
+                       "DEMO-STAGE-A", EXPERT, "1"*64,
+                       basis.manifest_digest):
+            self.assertNotIn(secret, first.text)
+        self.assertEqual(sum(
+            x.access_mode == "AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for x in self.ledger.audit_snapshot()
+        ), 2)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_atomic_review_context_specialist_withholding_is_diagnostic_only(self):
+        from ronas_api.internal_specialist_scope_contract import (
+            SpecialistScopeEvidenceEvent, WITHHELD,
+        )
+        first = self.specialist_governance_fixture()
+        state = {"registry": first}
+        self.workspace._trusted_specialist_governance_snapshot = (
+            lambda: state["registry"]
+        )
+        self.seed_input()
+        baseline = self.client.get(
+            self.review_context_impact_url(1), headers=self.headers())
+        self.assertEqual(baseline.status_code, 200, baseline.text)
+        state["registry"] = first.with_event(SpecialistScopeEvidenceEvent(
+            action_ref="DEMO-ATOMIC-WITHHOLD", subject=EXPERT,
+            case_ref="DEMO-D-1", case_version=3,
+            evidence_revision=2, operation=WITHHELD,
+            reason_ref="DEMO-ATOMIC-REASON",
+        ))
+        result = self.client.get(
+            self.review_context_impact_url(1), headers=self.headers())
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertNotEqual(
+            baseline.json()["synthetic_context_fingerprint_sha256"],
+            result.json()["synthetic_context_fingerprint_sha256"],
+        )
+        self.assertEqual(result.json()["specialist_evidence"][
+            "structural_relationship"], "CURRENT_CANDIDATE_WITHHELD_NO_REUSE")
+        self.assertEqual(result.json()["specialist_evidence"][
+            "current_conflict_diagnostic"],
+            "NO_CURRENT_CANDIDATE_CONFLICT_UNKNOWN")
+        self.assertTrue(result.json()["specialist_evidence"][
+            "scope_candidate_withheld_since_observed"])
+        self.assertFalse(result.json()["plan_accepted"])
+
+    def test_atomic_review_context_current_input_drift_fails_closed(self):
+        self.seed_input()
+        self.post()
+        self.seed_input(revision=1, digest="7"*64, action="DEMO-ATOMIC-INPUT-B")
+        bad = self.client.get(
+            self.review_context_impact_url(0), headers=self.headers())
+        self.assertEqual(bad.status_code, 503)
+        self.assertFalse(any(
+            x.access_mode == "AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for x in self.ledger.audit_snapshot()
+        ))
+        self.assertEqual(self.client.get(
+            self.drift_url(), headers=self.headers()).status_code, 200)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_atomic_review_context_source_rights_change_fails_closed(self):
+        src = ScientificSourceCandidate(
+            ref="DEMO-SCI-ATOMIC", version=1, content_sha256="a"*64,
+            rights_document_ref="DEMO-RIGHTS-ATOMIC",
+            rights_document_sha256="b"*64,
+            science_review_request_ref="DEMO-SCI-REVIEW-ATOMIC",
+            science_review_material_sha256="c"*64,
+        )
+        basis = ScientificBasisCandidate(
+            ref="DEMO-BASIS-ATOMIC", version=1, sources=(src,),
+        )
+        self.science_current[:] = [src]
+        self.workspace = self.specialist(
+            proposal=self.proposal(science=basis.manifest_digest),
+            science_basis=basis,
+        )
+        self.client = self.make_client()
+        self.seed_input()
+        self.assertEqual(self.client.get(
+            self.review_context_impact_url(0),
+            headers=self.headers()).status_code, 200)
+        self.science_current[:] = [
+            replace(src, rights_document_sha256="d"*64)
+        ]
+        changed = self.client.get(
+            self.review_context_impact_url(0),
+            headers=self.headers())
+        self.assertEqual(changed.status_code, 503)
+        self.assertNotIn("DEMO-RIGHTS-ATOMIC", changed.text)
+        self.assertEqual(sum(
+            x.access_mode == "AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for x in self.ledger.audit_snapshot()
+        ), 1)
+
+    def test_atomic_review_context_role_revision_default_and_integrity(self):
+        endpoint = self.review_context_impact_url(0)
+        self.assertEqual(self.client.get(endpoint).status_code, 401)
+        self.assertEqual(self.client.get(
+            endpoint, headers=self.headers(OWNER, ("household",))
+        ).status_code, 404)
+        self.assertEqual(self.client.get(
+            endpoint.replace("DEMO-D-1","DEMO-E-1"),
+            headers=self.headers()).status_code, 404)
+        self.active = False
+        self.assertEqual(self.client.get(
+            endpoint, headers=self.headers()).status_code, 404)
+        self.active = True
+        self.assertEqual(self.client.post(
+            endpoint, headers=self.headers(), json={}).status_code, 405)
+        self.assertEqual(TestClient(create_app(self.config)).get(
+            endpoint, headers=self.headers()).status_code, 404)
+        self.workspace._trusted_specialist_governance_snapshot = (
+            self.specialist_governance_fixture
+        )
+        self.assertEqual(self.client.get(
+            self.review_context_impact_url(999),
+            headers=self.headers()).status_code, 409)
+        self.assertEqual(self.client.get(
+            self.review_context_impact_url(-1),
+            headers=self.headers()).status_code, 422)
+        self.workspace._trusted_specialist_governance_snapshot = (
+            lambda: (_ for _ in ()).throw(RuntimeError("offline"))
+        )
+        self.assertEqual(self.client.get(
+            endpoint, headers=self.headers()).status_code, 503)
+        self.assertTrue(self.ledger.verify_integrity())
+        self.workspace._trusted_specialist_governance_snapshot = None
+        self.seed_input()
+        self.post()
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER expert_question_no_update")
+            db.execute(
+                "UPDATE expert_review_question SET evidence_ref='DEMO-FORGED'"
+            )
+        forbidden = self.client.get(
+            endpoint, headers=self.headers())
+        self.assertEqual(forbidden.status_code, 503)
+        self.assertNotIn("DEMO-FORGED", forbidden.text)
+
     def evidence_index_url(self):
         return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-index"
 

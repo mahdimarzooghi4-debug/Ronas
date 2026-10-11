@@ -204,6 +204,32 @@ def build_agronomy_workspace_router(
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
             return result
 
+
+        @router.get(
+            "/api/v1/agronomy/assigned-drafts/{ref}/review-context-impact",
+        )
+        def assigned_review_context_impact(
+            ref: str,
+            observed_specialist_revision: int = Query(ge=0),
+            p: Principal = Depends(verified_principal),
+        ) -> dict:
+            try:
+                result = workspace.read_assigned_synthetic_review_context_impact(
+                    ref, p,
+                    observed_specialist_revision=observed_specialist_revision,
+                )
+            except SpecialistEvidenceRevisionConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_SPECIALIST_EVIDENCE_REVISION_CONFLICT",
+                ) from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return result
+
         @router.get("/api/v1/agronomy/assigned-drafts/{ref}/review-questions")
         def assigned_review_questions(
             ref: str, p: Principal = Depends(verified_principal),

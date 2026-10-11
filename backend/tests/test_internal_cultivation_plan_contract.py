@@ -177,7 +177,7 @@ class RonasInternalCultivationProposalContractTests(unittest.TestCase):
             inspect({})
         with self.assertRaises(ValueError):
             inspect(None)
-        with self.assertRaises((AttributeError, TypeError)):
+        with self.assertRaises(ValueError):
             replace(envelope(), proposed_stages=[stage()])
         self.assertEqual(
             inspect(envelope())["business_plan_state"], "NOT_ACCEPTED"

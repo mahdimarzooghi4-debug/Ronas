@@ -26,6 +26,7 @@ from .export_research_question import (
 )
 from .oidc_browser import BrowserOIDC
 from .financial_source_arithmetic import source_arithmetic
+from .operational_readiness import readiness, verify_decision_sources
 from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
                                      visible_dossiers, verify_pinned_business_sources,
                                      BusinessSourceSnapshotError, SOURCE_INTEGRITY_STATE)
@@ -2003,6 +2004,69 @@ def build_authenticated_ui_router(
         return page("مدیریت روناس — وضعیت نسخه‌بسته شواهد گیت",
                     body, logged_in=True)
 
+    @router.get("/admin/operational-readiness/{domain}")
+    def operational_readiness_page(
+        domain: str,
+        sid: str | None = Cookie(default=None, alias=cookie_name),
+    ) -> HTMLResponse:
+        try:
+            session = flow.session(sid)
+        except InvalidToken:
+            raise HTTPException(401, detail="INVALID_SESSION") from None
+        if not any(
+            d.domain == domain for d in visible_dossiers(
+                Principal(session.subject, session.roles)
+            )
+        ):
+            raise HTTPException(404, detail="READINESS_NOT_FOUND")
+        summary = readiness(domain)
+        needs = ''.join(
+            '<li>' + escape(item["label"]) +
+            ' — مدرک معتبر هنوز احراز نشده است.</li>'
+            for item in summary["pending_evidence"]
+        )
+        sources = ''.join(
+            '<li><strong>' + escape(item["name"]) + '</strong>'
+            ' — حق استفاده و آموزش AI احراز نشده؛ موانع: '
+            + escape("، ".join(item["review_flags"])) +
+            ' · <a href="' + escape(item["official_terms_urls"][0], quote=True)
+            + '">شرایط رسمی منبع</a></li>'
+            for item in summary["sources_not_licensed"]
+        )
+        source_box = (
+            '<h3>منابع غربال‌شده، نه دارای مجوز استفاده</h3><ul>'
+            + sources + '</ul>'
+            if sources else ''
+        )
+        finance = (
+            '<h3>ممیزی عددی منبع، نه بودجه</h3><p>اختلاف سرمایه نقل‌شده: '
+            + str(summary["source_arithmetic_not_budget"][
+                "arithmetic_unexplained_difference"
+            ]) + ' میلیون تومان؛ تفسیر حسابداری هنوز تصویب نشده است.</p>'
+            if domain == "FINANCE" else ''
+        )
+        issue = ("https://github.com/mahdimarzooghi4-debug/Ronas/issues/"
+                 + str(summary["gate_issue"]))
+        body = (
+            '<article class="panel"><h2>میزکار تصمیم عملیاتی — '
+            + escape(domain) + '</h2>'
+            '<p>وضعیت در نسخه پیش‌نویس: OPEN. این صفحه وضعیت '
+            'زنده GitHub یا تصویب مسئول را نشان نمی‌دهد.</p>'
+            '<h3>شواهد لازم برای تصمیم واقعی</h3><ul>'
+            + needs + '</ul>'
+            '<p>حوزه‌های پیشنهادی، نه مجوز اجرا: '
+            + escape("، ".join(summary["candidate_scopes_not_approved"])
+                     or "هنوز انتخاب نشده") + '</p>'
+            + source_box + finance +
+            '<p>دریافت داده واقعی، برنامه کشت، پژوهش تجاری تأییدشده، '
+            'آموزش مدل، پرداخت و قرارداد عملیاتی در این صفحه فعال نیست.</p>'
+            '<p><a href="' + escape(issue, quote=True) +
+            '">پیگیری مدارک و تصمیم گیت در GitHub</a></p>'
+            '<p><a href="/admin">بازگشت به مدیریت روناس</a></p></article>'
+        )
+        return page("روناس — شواهد لازم برای تصمیم عملیاتی",
+                    body, logged_in=True)
+
     @router.get("/admin/finance/source-arithmetic")
     def finance_source_review_page(
         sid: str | None = Cookie(default=None, alias=cookie_name),
@@ -2112,6 +2176,21 @@ def build_authenticated_ui_router(
             ) if gate_source_usable else
                 '<p>نسخه محلی اسناد شواهد معتبر نیست؛ '
                 'پیوندهای گیت موقتاً غیرفعال‌اند.</p>')
+            if gate_source_usable:
+                try:
+                    verify_decision_sources()
+                except BusinessSourceSnapshotError:
+                    gate_links += (
+                        '<p>اسناد تصمیم عملیاتی با نسخه تأییدنشده تغییر '
+                        'کرده‌اند؛ پیوندها غیرفعال هستند.</p>'
+                    )
+                else:
+                    gate_links += ''.join(
+                        '<p><a href="/admin/operational-readiness/'
+                        + key + '">شواهد لازم برای تصمیم عملیاتی — '
+                        + key + '</a></p>'
+                        for key in domains
+                    )
             if role == "finance" and gate_source_usable:
                 gate_links += (
                     '<p><a href="/admin/finance/source-arithmetic">'

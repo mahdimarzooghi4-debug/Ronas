@@ -412,5 +412,197 @@ class DomesticPartnerSelfPreviewTests(unittest.TestCase):
             self.assertNotIn("DEMO", denied.text)
 
 
+    def overview(self, *, subject="synthetic-dual-person",
+                 roles=("local_buyer", "equipment_seller"), client=None):
+        return (client or self.client).get(
+            "/api/v1/domestic-partners/my-preparation",
+            headers=self.bearer(subject, roles),
+        )
+
+    def test_personal_overview_shows_only_own_independently_authorized_roles(self):
+        response = self.overview()
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(
+            body["contract_version"],
+            "ronas.domestic-partner.preparation-overview.v1",
+        )
+        self.assertEqual(body["environment"], "SHARED_USER_PARTNER")
+        self.assertEqual(body["engine"], "DOMESTIC")
+        self.assertEqual(body["source"], "SYNTHETIC_ONLY")
+        self.assertEqual(body["business_readiness"], "NOT_EVALUATED")
+        self.assertIs(body["commercial_actions_enabled"], False)
+        self.assertIs(body["counterpart_matching_enabled"], False)
+        self.assertIs(body["data_submission_enabled"], False)
+        self.assertIs(body["real_data"], False)
+        self.assertEqual(
+            [(item["role"], item["profile_ref"], item["profile_version"])
+             for item in body["items"]],
+            [("local_buyer", "DEMO-BUY-DUAL", 1),
+             ("equipment_seller", "DEMO-EQP-DUAL", 2)],
+        )
+        for item in body["items"]:
+            self.assertEqual(item["business_readiness"], "NOT_EVALUATED")
+            self.assertEqual(item["profile_state"], "NOT_SUBMITTED_DEMO")
+            self.assertEqual(item["unknown_display_slots"],
+                             list(FIELDS[item["role"]]))
+            self.assertIs(item["commercial_actions_enabled"], False)
+        for forbidden in (
+            "DEMO-BUY-001", "DEMO-BUY-002", "DEMO-EQP-001", "DEMO-EQP-002",
+            "synthetic-dual-person", "synthetic-buyer", "synthetic-equipment",
+            "order_id", "counterpart_ref", "price",
+        ):
+            self.assertNotIn(forbidden, response.text)
+
+    def test_overview_single_role_cannot_observe_other_role_seed(self):
+        for role in API_ROUTES:
+            result = self.overview(subject=SUBJECTS[role], roles=(role,))
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual(len(result.json()["items"]), 1)
+            self.assertEqual(result.json()["items"][0]["profile_ref"], REFS[role])
+            other = "equipment_seller" if role == "local_buyer" else "local_buyer"
+            self.assertNotIn(REFS[other], result.text)
+        # Even if a user signs a second role, they need an independent seed.
+        response = self.overview(
+            subject="synthetic-buyer-001",
+            roles=("local_buyer", "equipment_seller"),
+        )
+        self.assertEqual(
+            [(item["role"], item["profile_ref"])
+             for item in response.json()["items"]],
+            [("local_buyer", "DEMO-BUY-001")],
+        )
+
+    def test_overview_current_revocation_hides_only_that_profile(self):
+        self.assertEqual(len(self.overview().json()["items"]), 2)
+        self.active.remove(("local_buyer", "DEMO-BUY-DUAL"))
+        response = self.overview()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [(item["role"], item["profile_ref"]) for item in response.json()["items"]],
+            [("equipment_seller", "DEMO-EQP-DUAL")],
+        )
+        self.assertNotIn("DEMO-BUY-DUAL", response.text)
+        self.active.remove(("equipment_seller", "DEMO-EQP-DUAL"))
+        empty = self.overview()
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual(empty.json()["items"], [])
+        self.assertNotIn("DEMO-EQP-DUAL", empty.text)
+
+    def test_overview_checker_exception_fails_closed_without_partial_profiles(self):
+        def check(role, subject, ref, version):
+            if role == "equipment_seller":
+                raise RuntimeError("private fixture authority failed")
+            return True
+        self.workspace._live_access = check
+        response = self.overview()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {
+            "detail": "DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE",
+        })
+        for secret in (
+            "DEMO-BUY-DUAL", "DEMO-EQP-DUAL", "private fixture authority",
+        ):
+            self.assertNotIn(secret, response.text)
+
+    def test_overview_signed_partner_role_required_even_for_empty_list(self):
+        for role in (
+            "domestic_ops", "household", "export_ops",
+            "agronomy_expert", "export_supplier", "governance",
+        ):
+            response = self.overview(
+                subject="synthetic-dual-person", roles=(role,),
+            )
+            self.assertEqual(response.status_code, 404)
+            self.assertEqual(response.json(), {"detail": "PREVIEW_NOT_FOUND"})
+        no_seed = self.overview(subject="synthetic-no-partner", roles=("local_buyer",))
+        self.assertEqual(no_seed.status_code, 200)
+        self.assertEqual(no_seed.json()["items"], [])
+        self.assertNotIn("DEMO", str(no_seed.json()["items"]))
+
+    def test_persian_unified_landing_for_dual_and_individual_roles(self):
+        sid = self.login("synthetic-dual-person",
+                         ("local_buyer", "equipment_seller"))
+        for role in API_ROUTES:
+            self.assertIn(
+                "/domestic-partners/my-preparation",
+                self.client.get("/workspace/" + role).text,
+            )
+        page = self.client.get("/domestic-partners/my-preparation")
+        self.assertEqual(page.status_code, 200, page.text)
+        for term in (
+            "آماده‌سازی شخصی من", "خریدار محلی", "فروشنده تجهیزات",
+            "DEMO-BUY-DUAL", "DEMO-EQP-DUAL",
+            "/local-buyer/my-preview", "/equipment-seller/my-preview",
+            "ارزیابی", "هنوز داده‌ای ثبت نشده",
+            "ارتباط با خانوار", "تطبیق خریدار و فروشنده",
+        ):
+            self.assertIn(term, page.text)
+        for fragment in (
+            "synthetic-dual-person", "DEMO-BUY-001", "DEMO-EQP-001",
+        ):
+            self.assertNotIn(fragment, page.text)
+        self.assertEqual(page.headers["cache-control"], "no-store")
+        self.assertIn("frame-ancestors 'none'",
+                      page.headers["content-security-policy"])
+        self.sessions.revoke_session(sid)
+        self.assertEqual(self.client.get(
+            "/domestic-partners/my-preparation"
+        ).status_code, 401)
+
+    def test_persian_overview_isolation_and_empty_revoked_state(self):
+        self.login("synthetic-buyer-001", ("local_buyer",))
+        page = self.client.get("/domestic-partners/my-preparation")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("DEMO-BUY-001", page.text)
+        self.assertNotIn("DEMO-EQP-001", page.text)
+        self.assertNotIn("/equipment-seller/my-preview", page.text)
+        self.active.remove(("local_buyer", "DEMO-BUY-001"))
+        revoked = self.client.get("/domestic-partners/my-preparation")
+        self.assertEqual(revoked.status_code, 200)
+        self.assertIn("هیچ پیش‌نمای مجاز", revoked.text)
+        self.assertNotIn("DEMO-BUY-001", revoked.text)
+
+    def test_persian_overview_role_and_authority_failure_no_disclosure(self):
+        self.login("synthetic-dual-person", ("finance",))
+        denied = self.client.get("/domestic-partners/my-preparation")
+        self.assertEqual(denied.status_code, 404)
+        self.assertNotIn("DEMO-", denied.text)
+        self.client.cookies.clear()
+        self.login("synthetic-dual-person",
+                   ("local_buyer", "equipment_seller"))
+        self.workspace._live_access = lambda role, *_: (
+            (_ for _ in ()).throw(RuntimeError("SECRET_PROVIDER_TRACE"))
+            if role == "equipment_seller" else True
+        )
+        failed = self.client.get("/domestic-partners/my-preparation")
+        self.assertEqual(failed.status_code, 503)
+        self.assertNotIn("DEMO-BUY-DUAL", failed.text)
+        self.assertNotIn("SECRET_PROVIDER_TRACE", failed.text)
+
+    def test_overview_default_off_and_no_http_mutations(self):
+        url = "/api/v1/domestic-partners/my-preparation"
+        html = "/domestic-partners/my-preparation"
+        disabled = self.make_client(enabled=False)
+        self.assertEqual(disabled.get(
+            url, headers=self.bearer("synthetic-buyer-001", ("local_buyer",)),
+        ).status_code, 404)
+        self.assertEqual(disabled.get(html).status_code, 404)
+        self.assertEqual(self.client.get(url).status_code, 401)
+        self.assertEqual(self.client.get(url, headers={
+            "Authorization": "Bearer forged",
+        }).status_code, 401)
+        for path in (url, html):
+            for method in ("post", "put", "patch", "delete"):
+                with self.subTest(path=path, method=method):
+                    self.assertEqual(getattr(self.client, method)(
+                        path, headers=self.bearer(
+                            "synthetic-dual-person",
+                            ("local_buyer", "equipment_seller"),
+                        ),
+                    ).status_code, 405)
+
+
+
 if __name__ == "__main__":
     unittest.main()

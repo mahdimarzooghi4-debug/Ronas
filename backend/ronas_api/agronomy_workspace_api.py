@@ -17,6 +17,7 @@ from .expert_review_questions_sqlite import (
 )
 from .internal_expert_evidence_comparison import EvidenceRevisionConflict
 from .internal_specialist_scope_change_impact import SpecialistEvidenceRevisionConflict
+from .internal_specialist_review_context import SyntheticContextFingerprintConflict
 
 
 class SyntheticQuestionCommand(BaseModel):
@@ -211,13 +212,22 @@ def build_agronomy_workspace_router(
         def assigned_review_context_impact(
             ref: str,
             observed_specialist_revision: int = Query(ge=0),
+            expected_context_fingerprint: str | None = Query(
+                default=None, min_length=64, max_length=64,
+                pattern=r"^[0-9a-f]{64}$",
+            ),
             p: Principal = Depends(verified_principal),
         ) -> dict:
             try:
                 result = workspace.read_assigned_synthetic_review_context_impact(
                     ref, p,
                     observed_specialist_revision=observed_specialist_revision,
+                    expected_context_fingerprint=expected_context_fingerprint,
                 )
+            except SyntheticContextFingerprintConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_REVIEW_CONTEXT_CHANGED",
+                ) from exc
             except SpecialistEvidenceRevisionConflict as exc:
                 raise HTTPException(
                     409, detail="SYNTHETIC_SPECIALIST_EVIDENCE_REVISION_CONFLICT",

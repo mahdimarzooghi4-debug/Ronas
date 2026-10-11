@@ -44,6 +44,7 @@ from .internal_specialist_scope_change_impact import (
 )
 from .internal_specialist_review_context import (
     project_synthetic_specialist_review_context,
+    enforce_synthetic_context_precondition,
 )
 
 
@@ -1024,6 +1025,7 @@ class SyntheticAgronomyWorkspace:
     def read_assigned_synthetic_review_context_impact(
         self, ref: str, principal: Principal, *,
         observed_specialist_revision: int,
+        expected_context_fingerprint: str | None = None,
     ) -> dict | None:
         """One verified/audited current context across independent domains.
 
@@ -1048,6 +1050,8 @@ class SyntheticAgronomyWorkspace:
             )
             proposal = self._proposal_fixtures.get(ref)
             source_state = SOURCE_NONE
+            source_at_start = None
+            basis = None
             if proposal is not None:
                 if current_input is None:
                     raise LedgerIntegrityError("missing current synthetic owner input")
@@ -1068,13 +1072,19 @@ class SyntheticAgronomyWorkspace:
                         proposal.scientific_basis_manifest_digest,
                     )
                     try:
+                        snapshot = self._trusted_scientific_sources()
                         inspect_scientific_basis_structure(
                             basis,
                             expected_manifest_digest=(
                                 proposal.scientific_basis_manifest_digest
                             ),
-                            current_sources=self._trusted_scientific_sources(),
+                            current_sources=snapshot,
                         )
+                        relevant = {s.ref for s in basis.sources}
+                        source_at_start = tuple(sorted(
+                            (s for s in snapshot if s.ref in relevant),
+                            key=lambda s: s.ref,
+                        ))
                     except Exception as exc:
                         raise LedgerIntegrityError(
                             "stale/unavailable current synthetic source candidates"
@@ -1116,6 +1126,10 @@ class SyntheticAgronomyWorkspace:
                 raise LedgerIntegrityError(
                     "untrusted specialist evidence candidate source"
                 )
+            scoped_at_start = tuple(
+                e for e in registry.events
+                if e.subject == actor and e.case_ref == ref
+            )
             try:
                 handoff = prepare_synthetic_review_handoff(
                     case_ref=ref, case_version=record.version,
@@ -1149,6 +1163,56 @@ class SyntheticAgronomyWorkspace:
                 raise LedgerIntegrityError(
                     "invalid combined synthetic specialist review context"
                 ) from exc
+            # BEGIN IMMEDIATE protects SQLite, not independent sources.
+            # Revalidate scope-limited external values and LIVE assignment
+            # before committing the successful read audit.
+            if source_at_start is not None:
+                try:
+                    latest_sources = self._trusted_scientific_sources()
+                    inspect_scientific_basis_structure(
+                        basis,
+                        expected_manifest_digest=(
+                            proposal.scientific_basis_manifest_digest
+                        ),
+                        current_sources=latest_sources,
+                    )
+                    relevant = {s.ref for s in basis.sources}
+                    source_at_end = tuple(sorted(
+                        (s for s in latest_sources if s.ref in relevant),
+                        key=lambda s: s.ref,
+                    ))
+                    if source_at_end != source_at_start:
+                        raise ValueError("source snapshot changed")
+                except Exception as exc:
+                    raise LedgerIntegrityError(
+                        "independent synthetic scientific source changed"
+                    ) from exc
+            if self._trusted_specialist_governance_snapshot is not None:
+                try:
+                    after = self._trusted_specialist_governance_snapshot()
+                    if not isinstance(after, SyntheticSpecialistEvidenceRegistry):
+                        raise ValueError("invalid specialist registry")
+                    after.project_assigned_case(
+                        subject=actor, case_ref=ref, case_version=record.version,
+                    )
+                    scoped_at_end = tuple(
+                        e for e in after.events
+                        if e.subject == actor and e.case_ref == ref
+                    )
+                    if scoped_at_end != scoped_at_start:
+                        raise ValueError("specialist evidence changed")
+                except Exception as exc:
+                    raise LedgerIntegrityError(
+                        "independent synthetic specialist evidence changed"
+                    ) from exc
+            if not self._allowed(actor, ref, record.version):
+                raise LedgerIntegrityError(
+                    "live specialist case assignment changed during read"
+                )
+            enforce_synthetic_context_precondition(
+                current_fingerprint=result["synthetic_context_fingerprint_sha256"],
+                expected_fingerprint=expected_context_fingerprint,
+            )
             self.ledger._append(
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                 actor=actor, mode="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT",

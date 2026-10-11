@@ -18,6 +18,31 @@ from .scoped_drafts import _synthetic_ref
 VERSION = "ronas.domestic.synthetic-specialist-review-context.v0"
 
 
+class SyntheticContextFingerprintConflict(ValueError):
+    """Current read-only context changed relative to a prior fingerprint."""
+
+
+def enforce_synthetic_context_precondition(
+    *, current_fingerprint: str, expected_fingerprint: str | None,
+) -> None:
+    """Synthetic optimistic stale-read check, not authorization."""
+    from hmac import compare_digest
+    def valid(value):
+        return (isinstance(value, str) and len(value) == 64
+                and all(c in "0123456789abcdef" for c in value))
+    if not valid(current_fingerprint):
+        raise ValueError("invalid current synthetic context identity")
+    if expected_fingerprint is None:
+        return
+    if not valid(expected_fingerprint):
+        raise ValueError("invalid expected synthetic context identity")
+    if not compare_digest(current_fingerprint, expected_fingerprint):
+        raise SyntheticContextFingerprintConflict(
+            "synthetic context changed since caller observed it"
+        )
+
+
+
 def project_synthetic_specialist_review_context(
     *, case_ref: str, case_version: int,
     handoff: dict, evidence_timeline: dict, specialist_impact: dict,

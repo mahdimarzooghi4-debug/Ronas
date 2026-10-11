@@ -17,6 +17,8 @@ from ronas_api.internal_specialist_scope_change_impact import (
 )
 from ronas_api.internal_specialist_review_context import (
     VERSION, project_synthetic_specialist_review_context,
+    enforce_synthetic_context_precondition,
+    SyntheticContextFingerprintConflict,
 )
 
 CASE, ACTOR = "DEMO-D-1", "synthetic-agronomy-one"
@@ -133,6 +135,26 @@ class SyntheticJoinedContextTests(unittest.TestCase):
         data["handoff"]["context_fingerprint_sha256"]="Z"*64
         with self.assertRaises(ValueError):
             project_synthetic_specialist_review_context(**data)
+
+
+    def test_optional_precondition_detects_stale_context(self):
+        digest=project_synthetic_specialist_review_context(
+            **sources())["synthetic_context_fingerprint_sha256"]
+        self.assertIsNone(enforce_synthetic_context_precondition(
+            current_fingerprint=digest, expected_fingerprint=None))
+        self.assertIsNone(enforce_synthetic_context_precondition(
+            current_fingerprint=digest, expected_fingerprint=digest))
+        with self.assertRaises(SyntheticContextFingerprintConflict):
+            enforce_synthetic_context_precondition(
+                current_fingerprint=digest, expected_fingerprint="a"*64)
+
+    def test_precondition_does_not_accept_malformed_or_boolean_identity(self):
+        digest=project_synthetic_specialist_review_context(
+            **sources())["synthetic_context_fingerprint_sha256"]
+        for bad in (True, "A"*64, "a"*63, "not-hash"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                enforce_synthetic_context_precondition(
+                    current_fingerprint=digest, expected_fingerprint=bad)
 
 
 if __name__=="__main__":

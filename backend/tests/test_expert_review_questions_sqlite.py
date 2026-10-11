@@ -1326,6 +1326,121 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertEqual(forbidden.status_code, 503)
         self.assertNotIn("DEMO-FORGED", forbidden.text)
 
+
+    def test_context_consistency_external_specialist_change_during_read(self):
+        from ronas_api.internal_specialist_scope_contract import (
+            SpecialistScopeEvidenceEvent, WITHHELD,
+        )
+        self.seed_input()
+        original=self.specialist_governance_fixture()
+        updated=original.with_event(SpecialistScopeEvidenceEvent(
+            action_ref="DEMO-MID-WITHHOLD",subject=EXPERT,case_ref="DEMO-D-1",
+            case_version=3,evidence_revision=2,operation=WITHHELD,
+            reason_ref="DEMO-MID-REASON",
+        ))
+        calls=[0]
+        def source():
+            calls[0]+=1
+            return original if calls[0]==1 else updated
+        self.workspace._trusted_specialist_governance_snapshot=source
+        response=self.client.get(
+            self.review_context_impact_url(1),headers=self.headers())
+        self.assertEqual(response.status_code,503,response.text)
+        self.assertEqual(calls,[2])
+        self.assertFalse(any(
+            x.access_mode=="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for x in self.ledger.audit_snapshot()))
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_context_consistency_current_source_drift_during_read(self):
+        src=ScientificSourceCandidate(
+            ref="DEMO-SCI-DOUBLE",version=1,content_sha256="a"*64,
+            rights_document_ref="DEMO-RIGHTS-DOUBLE",
+            rights_document_sha256="b"*64,
+            science_review_request_ref="DEMO-SCI-DOUBLE-REVIEW",
+            science_review_material_sha256="c"*64,
+        )
+        basis=ScientificBasisCandidate(
+            ref="DEMO-BASIS-DOUBLE",version=1,sources=(src,))
+        self.workspace=self.specialist(
+            proposal=self.proposal(science=basis.manifest_digest),
+            science_basis=basis,
+        )
+        counter=[0]
+        def current():
+            counter[0]+=1
+            if counter[0]==1:
+                return (src,)
+            return (replace(src,rights_document_sha256="d"*64),)
+        self.workspace._trusted_scientific_sources=current
+        self.client=self.make_client()
+        self.seed_input()
+        r=self.client.get(self.review_context_impact_url(0),
+                          headers=self.headers())
+        self.assertEqual(r.status_code,503,r.text)
+        self.assertEqual(counter,[2])
+        self.assertNotIn("DEMO-RIGHTS-DOUBLE",r.text)
+        self.assertFalse(any(
+            x.access_mode=="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for x in self.ledger.audit_snapshot()))
+
+    def test_context_consistency_revoke_live_assignment_mid_read(self):
+        self.seed_input()
+        def registry():
+            self.active=False
+            return self.specialist_governance_fixture()
+        self.workspace._trusted_specialist_governance_snapshot=registry
+        result=self.client.get(
+            self.review_context_impact_url(1),headers=self.headers())
+        self.assertEqual(result.status_code,503)
+        self.assertEqual(self.client.get(
+            self.review_context_impact_url(1),headers=self.headers()
+        ).status_code,404)
+        self.assertFalse(any(
+            x.access_mode=="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for x in self.ledger.audit_snapshot()))
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_context_consistency_stale_client_fingerprint_rejected(self):
+        self.seed_input()
+        url=self.review_context_impact_url(0)
+        initial=self.client.get(url,headers=self.headers())
+        self.assertEqual(initial.status_code,200,initial.text)
+        fingerprint=initial.json()["synthetic_context_fingerprint_sha256"]
+        self.assertEqual(self.client.get(
+            url+"&expected_context_fingerprint="+fingerprint,
+            headers=self.headers()).status_code,200)
+        self.assertEqual(self.post().status_code,201)
+        stale=self.client.get(
+            url+"&expected_context_fingerprint="+fingerprint,
+            headers=self.headers())
+        self.assertEqual(stale.status_code,409,stale.text)
+        self.assertEqual(stale.json()["detail"],"SYNTHETIC_REVIEW_CONTEXT_CHANGED")
+        self.assertEqual(self.client.get(
+            url+"&expected_context_fingerprint=invalid",
+            headers=self.headers()).status_code,422)
+        fresh=self.client.get(url,headers=self.headers())
+        self.assertEqual(fresh.status_code,200,fresh.text)
+        self.assertNotEqual(fresh.json()["synthetic_context_fingerprint_sha256"],
+                            fingerprint)
+        self.assertEqual(sum(
+            x.access_mode=="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for x in self.ledger.audit_snapshot()),3)
+
+    def test_context_consistency_stable_external_sources_double_checked(self):
+        self.seed_input()
+        calls=[0]
+        original=self.specialist_governance_fixture()
+        def source():
+            calls[0]+=1
+            return original
+        self.workspace._trusted_specialist_governance_snapshot=source
+        out=self.client.get(
+            self.review_context_impact_url(1),headers=self.headers())
+        self.assertEqual(out.status_code,200,out.text)
+        self.assertEqual(calls,[2])
+        self.assertFalse(out.json()["plan_accepted"])
+
     def evidence_index_url(self):
         return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-index"
 

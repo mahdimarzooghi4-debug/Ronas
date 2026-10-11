@@ -2057,6 +2057,63 @@ class LocalExpertQuestionTests(unittest.TestCase):
             e.access_mode == "AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
             for e in self.ledger.audit_snapshot()))
 
+    def test_source_owned_same_generation_content_drift_is_rejected(self):
+        from ronas_api.internal_authority_source_owned_read import (
+            SourceOwnedCandidateAuthorityRead,
+        )
+        from ronas_api.internal_authority_revision_witness import SPECIALIST
+        state = self.setup_source_owned_case()
+        original = self.workspace._source_owned_authority
+        def drift(actor, ref, version):
+            if state["calls"][SPECIALIST] == 1:
+                state["snapshots"][SPECIALIST] = (
+                    self.specialist_governance_fixture()
+                )
+            return original.specialist_evidence(actor, ref, version)
+        self.workspace._source_owned_authority = SourceOwnedCandidateAuthorityRead(
+            original.scientific_source, drift, original.current_assignment,
+        )
+        response = self.client.get(
+            self.versioned_review_context_url(), headers=self.headers())
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertEqual(state["generations"][SPECIALIST], 1)
+        self.assertFalse(any(
+            e.access_mode == "AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for e in self.ledger.audit_snapshot()))
+
+    def test_source_owned_fingerprint_tracks_unshown_science_snapshot(self):
+        from ronas_api.internal_authority_revision_witness import SCIENCE
+        state = self.setup_source_owned_case()
+        url = self.versioned_review_context_url()
+        initial = self.client.get(url, headers=self.headers())
+        self.assertEqual(initial.status_code, 200, initial.text)
+        token = initial.json()["synthetic_versioned_context_fingerprint_sha256"]
+        # No basis is configured: this candidate does NOT change the
+        # redacted structural projection, only the source-owned digest.
+        state["snapshots"][SCIENCE] = (ScientificSourceCandidate(
+            ref="DEMO-SOURCE-NEW", version=1, content_sha256="a" * 64,
+            rights_document_ref="DEMO-RIGHTS-NEW",
+            rights_document_sha256="b" * 64,
+            science_review_request_ref="DEMO-REVIEW-NEW",
+            science_review_material_sha256="c" * 64,
+        ),)
+        after = self.client.get(url, headers=self.headers())
+        self.assertEqual(after.status_code, 200, after.text)
+        self.assertEqual(
+            initial.json()["synthetic_context_fingerprint_sha256"],
+            after.json()["synthetic_context_fingerprint_sha256"],
+        )
+        self.assertNotEqual(
+            token, after.json()["synthetic_versioned_context_fingerprint_sha256"],
+        )
+        stale = self.client.get(
+            url + "&expected_context_fingerprint=" + token,
+            headers=self.headers(),
+        )
+        self.assertEqual(stale.status_code, 409, stale.text)
+        self.assertEqual(state["generations"][SCIENCE], 1)
+        self.assertNotIn("DEMO-SOURCE-NEW", after.text)
+
     def test_source_owned_digest_mismatch_fails_without_success_audit(self):
         from ronas_api.internal_authority_source_owned_read import (
             SourceOwnedCandidateObservation, SourceOwnedCandidateAuthorityRead,

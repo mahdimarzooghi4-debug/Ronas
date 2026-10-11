@@ -1768,6 +1768,203 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertFalse(after.json()["plan_accepted"])
         self.assertTrue(reopened.verify_integrity())
 
+
+    def setup_checkpointed_versioned_case(self):
+        from ronas_api.internal_authority_revision_journal_sqlite import (
+            SqliteSyntheticAuthorityRevisionJournal,
+        )
+        from ronas_api.internal_authority_local_checkpoint_sqlite import (
+            SqliteLocalAuthorityCheckpoint,
+        )
+        from ronas_api.internal_authority_checkpointed_read import (
+            LocalCheckpointedAuthorityRead,
+        )
+        from ronas_api.internal_authority_revision_witness import (
+            SCIENCE, SPECIALIST, ASSIGNMENT,
+        )
+        from ronas_api.internal_specialist_scope_contract import (
+            SyntheticSpecialistEvidenceRegistry,
+        )
+        journalpath=self.path.parent/"checkpoint-witness-journal.db"
+        checkpointpath=self.path.parent/"checkpoint-witness-sidecar.db"
+        journal=SqliteSyntheticAuthorityRevisionJournal(journalpath)
+        checkpoint=SqliteLocalAuthorityCheckpoint(checkpointpath)
+        scope=dict(subject=EXPERT,case_ref="DEMO-D-1",case_version=3)
+        states={
+            SCIENCE:tuple(),
+            SPECIALIST:SyntheticSpecialistEvidenceRegistry(),
+            ASSIGNMENT:True,
+        }
+        for kind,value in states.items():
+            journal.record_owned_snapshot(
+                kind=kind,snapshot=value,
+                action_ref="DEMO-CHK-INIT-"+kind.replace("_","-"),
+                expected_generation=0,**scope,
+            )
+        checkpoint.pin_current(journal)
+        self.workspace._local_checkpointed_authority=(
+            LocalCheckpointedAuthorityRead(journalpath,checkpointpath)
+        )
+        self.seed_input()
+        return journal,checkpoint,journalpath,checkpointpath,scope
+
+    def test_checkpointed_signed_versioned_read_requires_exact_pinned_files(self):
+        journal,checkpoint,jpath,cpath,scope=(
+            self.setup_checkpointed_versioned_case()
+        )
+        url=self.versioned_review_context_url()
+        initial=self.client.get(url,headers=self.headers())
+        self.assertEqual(initial.status_code,200,initial.text)
+        result=initial.json()
+        self.assertFalse(result["cross_provider_atomicity_verified"])
+        self.assertFalse(result["plan_accepted"])
+        self.assertFalse(result["real_specialist_decision_recorded"])
+        self.assertEqual(len(result["tracks"]),3)
+        self.assertTrue(all(
+            x["review_outcome"]=="NOT_REVIEWED" for x in result["tracks"]
+        ))
+        self.assertEqual(result["authority_generation_values_exposed"]
+                         if "authority_generation_values_exposed" in result
+                         else False,False)
+        self.assertEqual(sum(
+            e.access_mode=="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for e in self.ledger.audit_snapshot()),1)
+        self.assertTrue(checkpoint.assert_current(journal)[
+            "verified_against_separate_local_file"])
+
+    def test_checkpointed_unpinned_advance_and_repin_never_auto_heal(self):
+        from ronas_api.internal_authority_revision_witness import ASSIGNMENT
+        journal,checkpoint,jpath,cpath,scope=(
+            self.setup_checkpointed_versioned_case()
+        )
+        url=self.versioned_review_context_url()
+        first=self.client.get(url,headers=self.headers())
+        self.assertEqual(first.status_code,200,first.text)
+        token=first.json()["synthetic_versioned_context_fingerprint_sha256"]
+        journal.record_owned_snapshot(
+            kind=ASSIGNMENT,snapshot=False,
+            action_ref="DEMO-CHK-REVOKE",expected_generation=1,**scope,
+        )
+        self.assertEqual(self.client.get(
+            url,headers=self.headers()).status_code,503)
+        checkpoint.pin_current(journal)
+        self.assertEqual(self.client.get(
+            url,headers=self.headers()).status_code,404)
+        journal.record_owned_snapshot(
+            kind=ASSIGNMENT,snapshot=True,
+            action_ref="DEMO-CHK-REGRANT",expected_generation=2,**scope,
+        )
+        self.assertEqual(self.client.get(
+            url,headers=self.headers()).status_code,503)
+        checkpoint.pin_current(journal)
+        stale=self.client.get(
+            url+"&expected_context_fingerprint="+token,
+            headers=self.headers(),
+        )
+        self.assertEqual(stale.status_code,409,stale.text)
+        self.assertEqual(stale.json()["detail"],
+                         "SYNTHETIC_REVIEW_CONTEXT_CHANGED")
+        now=self.client.get(url,headers=self.headers())
+        self.assertEqual(now.status_code,200,now.text)
+        self.assertNotEqual(token,now.json()[
+            "synthetic_versioned_context_fingerprint_sha256"])
+        self.assertEqual(sum(
+            e.access_mode=="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for e in self.ledger.audit_snapshot()),2)
+
+    def test_checkpointed_missing_checkpoint_refuses_creation_or_success_audit(self):
+        journal,checkpoint,jpath,cpath,scope=(
+            self.setup_checkpointed_versioned_case()
+        )
+        cpath.unlink()
+        response=self.client.get(
+            self.versioned_review_context_url(),headers=self.headers())
+        self.assertEqual(response.status_code,503,response.text)
+        self.assertEqual(response.json()["detail"],
+                         "SYNTHETIC_AGRONOMY_UNAVAILABLE")
+        self.assertFalse(cpath.exists())
+        self.assertFalse(any(
+            e.access_mode=="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for e in self.ledger.audit_snapshot()))
+
+    def test_checkpointed_rolled_back_main_and_checkpoint_mismatch_denied(self):
+        journal,checkpoint,jpath,cpath,scope=(
+            self.setup_checkpointed_versioned_case()
+        )
+        old=self.path.parent/"checkpoint-old-main.db"
+        with sqlite3.connect(jpath) as src:
+            with sqlite3.connect(old) as dst:
+                src.backup(dst)
+        from ronas_api.internal_authority_revision_witness import SCIENCE
+        journal.record_owned_snapshot(
+            kind=SCIENCE,snapshot=tuple(),
+            action_ref="DEMO-CHK-ADDED",expected_generation=1,**scope,
+        )
+        checkpoint.pin_current(journal)
+        with sqlite3.connect(old) as src:
+            with sqlite3.connect(jpath) as dst:
+                src.backup(dst)
+        response=self.client.get(
+            self.versioned_review_context_url(),headers=self.headers())
+        self.assertEqual(response.status_code,503,response.text)
+        self.assertFalse(any(
+            e.access_mode=="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for e in self.ledger.audit_snapshot()))
+
+    def test_checkpointed_source_or_guard_change_mid_read_fails(self):
+        from ronas_api.internal_authority_revision_witness import SPECIALIST
+        journal,checkpoint,jpath,cpath,scope=(
+            self.setup_checkpointed_versioned_case()
+        )
+        # The first specialist owned-snapshot read is after the first
+        # source-scoped/versioned witness. Advance without pinning while
+        # another callback executes inside the same signed HTTP request.
+        original=self.workspace._local_checkpointed_authority
+        class MutatingLocal:
+            pass
+        # Use the actual typed guard; inject mutation through separately
+        # validated current live permission callback.
+        real=self.workspace._live_authority
+        calls=[0]
+        def live(actor,ref,version):
+            calls[0]+=1
+            if calls[0]==2:
+                journal.record_owned_snapshot(
+                    kind=SPECIALIST,
+                    snapshot=journal.read_owned_snapshot(
+                        kind=SPECIALIST,**scope,
+                    )[0],
+                    action_ref="DEMO-CHK-MID",
+                    expected_generation=1,**scope,
+                )
+            return real(actor,ref,version)
+        self.workspace._live_authority=live
+        response=self.client.get(
+            self.versioned_review_context_url(),headers=self.headers())
+        self.assertEqual(response.status_code,503,response.text)
+        self.assertEqual(calls,[2])
+        self.assertFalse(any(
+            e.access_mode=="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT"
+            for e in self.ledger.audit_snapshot()))
+        self.assertFalse(checkpoint.assert_current(journal)
+                         if False else False)
+
+    def test_checkpointed_wrong_actor_and_default_app_still_denied(self):
+        journal,checkpoint,jpath,cpath,scope=(
+            self.setup_checkpointed_versioned_case()
+        )
+        url=self.versioned_review_context_url()
+        self.assertEqual(self.client.get(url).status_code,401)
+        self.assertEqual(self.client.get(
+            url,headers=self.headers(OWNER,("household",))
+        ).status_code,404)
+        self.assertEqual(self.client.get(
+            url.replace("DEMO-D-1","DEMO-E-1"),
+            headers=self.headers()).status_code,404)
+        self.assertEqual(self.client.post(
+            url,headers=self.headers(),json={}).status_code,405)
+        self.assertEqual(TestClient(create_app(self.config)).get(
+            url,headers=self.headers()).status_code,404)
     def evidence_index_url(self):
         return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-index"
 

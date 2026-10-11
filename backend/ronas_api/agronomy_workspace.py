@@ -47,9 +47,11 @@ from .internal_specialist_review_context import (
     enforce_synthetic_context_precondition,
 )
 from .internal_authority_revision_witness import (
+    SCIENCE, SPECIALIST, ASSIGNMENT,
     SyntheticAuthorityWitness, validate_witness_vector,
     compare_authority_vectors, versioned_context_fingerprint,
 )
+from .internal_authority_checkpointed_read import LocalCheckpointedAuthorityRead
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +92,7 @@ class SyntheticAgronomyWorkspace:
         trusted_assignment_authority_version: Callable[
             [str, str, int], SyntheticAuthorityWitness
         ] | None = None,
+        local_checkpointed_authority: LocalCheckpointedAuthorityRead | None = None,
     ) -> None:
         if (not isinstance(ledger, SqliteSyntheticHumanReviewLedger)
                 or not callable(trusted_assignment_active)):
@@ -163,6 +166,15 @@ class SyntheticAgronomyWorkspace:
         )
         if any(x is not None and not callable(x) for x in authority_versions):
             raise ValueError("independent authority revision callback invalid")
+        if (local_checkpointed_authority is not None
+                and not isinstance(
+                    local_checkpointed_authority, LocalCheckpointedAuthorityRead
+                )):
+            raise ValueError("untrusted LOCAL/TEST checkpoint authority")
+        if (local_checkpointed_authority is not None
+                and any(x is not None for x in authority_versions)):
+            raise ValueError("ambiguous source authority in checkpoint mode")
+        self._local_checkpointed_authority = local_checkpointed_authority
         self._authority_version_callbacks = authority_versions
         self._scientific_basis_fixtures = bases
         self._trusted_scientific_sources = trusted_scientific_source_snapshot
@@ -1080,10 +1092,23 @@ class SyntheticAgronomyWorkspace:
                 return None
             if not self._allowed(actor, ref, record.version):
                 return None
-            revisions_before = (
-                self._read_independent_authority_revisions(actor,ref,record.version)
+            local = (
+                self._local_checkpointed_authority
                 if require_versioned_authorities else None
             )
+            if local is not None:
+                local.checked_journal()
+                if local.snapshot(
+                    ASSIGNMENT, actor, ref, record.version,
+                )[0] is not True:
+                    return None
+                revisions_before = local.vector(actor, ref, record.version)
+            else:
+                revisions_before = (
+                    self._read_independent_authority_revisions(
+                        actor, ref, record.version,
+                    ) if require_versioned_authorities else None
+                )
             current_input = self.ledger._input_snapshot_from_verified_transaction(
                 db, ref, record.version,
             )
@@ -1111,7 +1136,10 @@ class SyntheticAgronomyWorkspace:
                         proposal.scientific_basis_manifest_digest,
                     )
                     try:
-                        snapshot = self._trusted_scientific_sources()
+                        snapshot = (
+                            local.snapshot(SCIENCE, actor, ref, record.version)[0]
+                            if local is not None else self._trusted_scientific_sources()
+                        )
                         inspect_scientific_basis_structure(
                             basis,
                             expected_manifest_digest=(
@@ -1152,7 +1180,11 @@ class SyntheticAgronomyWorkspace:
                 "WHERE ref=? ORDER BY audit_sequence", (ref,),
             ))
 
-            if self._trusted_specialist_governance_snapshot is None:
+            if local is not None:
+                registry = local.snapshot(
+                    SPECIALIST, actor, ref, record.version,
+                )[0]
+            elif self._trusted_specialist_governance_snapshot is None:
                 registry = SyntheticSpecialistEvidenceRegistry()
             else:
                 try:
@@ -1207,7 +1239,10 @@ class SyntheticAgronomyWorkspace:
             # before committing the successful read audit.
             if source_at_start is not None:
                 try:
-                    latest_sources = self._trusted_scientific_sources()
+                    latest_sources = (
+                        local.snapshot(SCIENCE, actor, ref, record.version)[0]
+                        if local is not None else self._trusted_scientific_sources()
+                    )
                     inspect_scientific_basis_structure(
                         basis,
                         expected_manifest_digest=(
@@ -1226,9 +1261,14 @@ class SyntheticAgronomyWorkspace:
                     raise LedgerIntegrityError(
                         "independent synthetic scientific source changed"
                     ) from exc
-            if self._trusted_specialist_governance_snapshot is not None:
+            if (local is not None
+                    or self._trusted_specialist_governance_snapshot is not None):
                 try:
-                    after = self._trusted_specialist_governance_snapshot()
+                    after = (
+                        local.snapshot(SPECIALIST, actor, ref, record.version)[0]
+                        if local is not None
+                        else self._trusted_specialist_governance_snapshot()
+                    )
                     if not isinstance(after, SyntheticSpecialistEvidenceRegistry):
                         raise ValueError("invalid specialist registry")
                     after.project_assigned_case(
@@ -1248,9 +1288,20 @@ class SyntheticAgronomyWorkspace:
                 raise LedgerIntegrityError(
                     "live specialist case assignment changed during read"
                 )
+            if local is not None and local.snapshot(
+                ASSIGNMENT, actor, ref, record.version,
+            )[0] is not True:
+                raise LedgerIntegrityError(
+                    "local case assignment revoked during versioned read"
+                )
             if require_versioned_authorities:
-                revisions_after=self._read_independent_authority_revisions(
-                    actor,ref,record.version)
+                revisions_after = (
+                    local.vector(actor, ref, record.version)
+                    if local is not None else
+                    self._read_independent_authority_revisions(
+                        actor, ref, record.version,
+                    )
+                )
                 try:
                     compare_authority_vectors(
                         revisions_before,revisions_after,
@@ -1278,6 +1329,10 @@ class SyntheticAgronomyWorkspace:
                     current_fingerprint=result[
                         "synthetic_context_fingerprint_sha256"],
                     expected_fingerprint=expected_context_fingerprint)
+            if local is not None:
+                # Final fail-closed check immediately before success audit.
+                # It does not claim cross-file atomicity or external proof.
+                local.checked_journal()
             self.ledger._append(
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                 actor=actor, mode="AGRONOMY_SYNTHETIC_REVIEW_CONTEXT_IMPACT",

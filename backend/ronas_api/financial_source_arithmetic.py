@@ -32,7 +32,7 @@ def source_arithmetic(*, root: Path | None = None) -> dict:
         if len(raw) > 80_000:
             raise BusinessSourceSnapshotError("unexpected finance source size")
         digest = sha1(
-            b"blob " + str(len(raw)).encode("ascii") + b"\\0" + raw
+            b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
         ).hexdigest()
         if digest != SOURCE_BLOB_SHA:
             raise BusinessSourceSnapshotError("finance source drift")

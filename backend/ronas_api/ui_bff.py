@@ -15,6 +15,7 @@ from .auth import InvalidToken, Principal
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES as TECHNICAL_STATES
 from .scoped_drafts import _synthetic_ref
 from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
+from .household_input_ledger_sqlite import SqliteSyntheticHouseholdInputLedger
 from .oidc_browser import BrowserOIDC
 from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
                                      visible_dossiers, verify_pinned_business_sources,
@@ -164,6 +165,7 @@ def build_authenticated_ui_router(
     flow: BrowserOIDC,
     technical_review_ledger: SqliteSyntheticHumanReviewLedger | None = None,
     owned_case_ledger: SqliteSyntheticGrantLedger | None = None,
+    household_input_ledger: SqliteSyntheticHouseholdInputLedger | None = None,
     gate_handoff_ledger: SqliteSyntheticGateEvidenceHandoff | None = None,
     authority_enquiry_ledger: SqliteSyntheticAuthorityEnquiryLedger | None = None,
     agronomy_workspace: SyntheticAgronomyWorkspace | None = None,
@@ -178,6 +180,12 @@ def build_authenticated_ui_router(
     if (owned_case_ledger is not None
             and not isinstance(owned_case_ledger, SqliteSyntheticGrantLedger)):
         raise ValueError("owned household list requires explicit grant ledger")
+    if (household_input_ledger is not None
+            and (not isinstance(household_input_ledger,
+                                SqliteSyntheticHouseholdInputLedger)
+                 or household_input_ledger is not owned_case_ledger
+                 or household_input_ledger is not technical_review_ledger)):
+        raise ValueError("household input must use same explicit review ledger")
     if (gate_handoff_ledger is not None
             and not isinstance(gate_handoff_ledger,
                                SqliteSyntheticGateEvidenceHandoff)):
@@ -808,6 +816,44 @@ def build_authenticated_ui_router(
             return page("روناس — تاریخچه پرونده ساختگی من",
                         body, logged_in=True)
 
+    if household_input_ledger is not None:
+        @router.get("/my-drafts/{ref}/input-revisions")
+        def household_input_history_page(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            result = household_input_ledger.read_owned_input_revisions(
+                ref, Principal(session.subject, session.roles),
+            )
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            entries = ''.join(
+                '<li>بازنگری آزمایشی ' + str(number) + '</li>'
+                for number in result["input_revisions"]
+            )
+            body = (
+                '<article class="panel"><h2>تاریخچه نمونه اصلاح اطلاعات خانوار '
+                '(فقط DEMO)</h2>'
+                '<p>پرونده: ' + escape(result["ref"]) + ' · نسخه '
+                + str(result["case_version"]) + '</p>'
+                + ('<ol>' + entries + '</ol>' if entries else
+                   '<p>هنوز اثرانگشت نسخه‌ای در این نمونه ثبت نشده است.</p>')
+                + '<p>صرفاً شناسه نسخه و اثرانگشت ساختگی ثبت می‌شود؛ '
+                'هیچ محصول، آب، خاک، اطلاعات شخصی یا دستور کشت دریافت نمی‌شود.</p>'
+                '<p>این سابقه رضایت آگاهانه، کفایت داده، '
+                'تأیید متخصص یا برنامه کشت معتبر نیست.</p>'
+                '<p>ثبت اصلاح واقعی و ارائه فرم رضایت '
+                'در این پیش‌نمای آزمایشی فعال نیست.</p>'
+                '<p><a href="/my-drafts/' + quote(ref)
+                + '">بازگشت به پرونده من</a></p></article>'
+            )
+            return page("روناس — تاریخچه اصلاح آزمایشی اطلاعات خانوار",
+                        body, logged_in=True)
+
     if (technical_review_ledger is not None
             and owned_case_ledger is technical_review_ledger):
         @router.get("/my-drafts/{ref}")
@@ -847,7 +893,11 @@ def build_authenticated_ui_router(
                 '<p><a href="/my-drafts/' +
                 escape(result["ref"], quote=True) +
                 '/versions">مشاهده تاریخچه نسخه‌ها</a></p>'
-                '<p><a href="/">بازگشت به پرونده‌های من</a></p>'
+                + ('<p><a href="/my-drafts/'
+                   + quote(ref) + '/input-revisions">'
+                   'تاریخچه آزمایشی اصلاح اطلاعات خانوار</a></p>'
+                   if household_input_ledger is not None else '')
+                + '<p><a href="/">بازگشت به پرونده‌های من</a></p>'
                 '</article>'
             )
             return page("روناس — وضعیت پرونده من (آزمایشی)",

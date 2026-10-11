@@ -1298,6 +1298,7 @@ class LocalExpertQuestionTests(unittest.TestCase):
             endpoint, headers=self.headers(), json={}).status_code, 405)
         self.assertEqual(TestClient(create_app(self.config)).get(
             endpoint, headers=self.headers()).status_code, 404)
+        self.seed_input()
         self.workspace._trusted_specialist_governance_snapshot = (
             self.specialist_governance_fixture
         )
@@ -1314,7 +1315,6 @@ class LocalExpertQuestionTests(unittest.TestCase):
             endpoint, headers=self.headers()).status_code, 503)
         self.assertTrue(self.ledger.verify_integrity())
         self.workspace._trusted_specialist_governance_snapshot = None
-        self.seed_input()
         self.post()
         with sqlite3.connect(self.path) as db:
             db.execute("DROP TRIGGER expert_question_no_update")

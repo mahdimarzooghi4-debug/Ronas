@@ -15,6 +15,8 @@ from .scoped_drafts import ScopedSyntheticDraftRegistry, build_scoped_draft_rout
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
 from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
 from .owner_case_api import build_owned_household_router
+from .household_input_ledger_sqlite import SqliteSyntheticHouseholdInputLedger
+from .household_input_api import build_household_input_router
 from .technical_review_api import build_technical_review_read_router
 from .shared_workspaces import build_user_workspaces_router
 from .agronomy_workspace import SyntheticAgronomyWorkspace
@@ -98,9 +100,16 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             if isinstance(scoped_registry, SqliteSyntheticGrantLedger)
             else None
         )
+        input_ledger = (
+            scoped_registry
+            if isinstance(scoped_registry, SqliteSyntheticHouseholdInputLedger)
+            and technical_review_ledger is scoped_registry
+            else None
+        )
         app.include_router(build_authenticated_ui_router(
             browser_flow, technical_review_ledger=worklist_ledger,
             owned_case_ledger=owner_ledger,
+            household_input_ledger=input_ledger,
             gate_handoff_ledger=gate_handoff_ledger,
             authority_enquiry_ledger=authority_enquiry_ledger,
             agronomy_workspace=agronomy_workspace,
@@ -237,6 +246,15 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             app.include_router(build_owned_household_router(
                 scoped_registry, principal
             ))
+
+    if (isinstance(scoped_registry, SqliteSyntheticHouseholdInputLedger)
+            and browser_flow is not None):
+        if (not isinstance(config, KeycloakConfig)
+                or technical_review_ledger is not scoped_registry):
+            raise ValueError("synthetic household input requires same Keycloak review ledger")
+        app.include_router(build_household_input_router(
+            scoped_registry, principal,
+        ))
 
     if technical_review_ledger is not None:
         # Opt-in LOCAL/TEST only: the review store and the case-grant store

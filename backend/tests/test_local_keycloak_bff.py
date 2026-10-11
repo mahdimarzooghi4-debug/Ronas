@@ -184,7 +184,9 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
         self.assertNotIn("access_token", session.text)
         self.assertNotIn("password", session.text)
         self.assertEqual(client.get("/workspace/household").status_code, 200)
-        self.assertEqual(client.get("/admin").status_code, 200)
+        # A household identity can enter the shared shell but must NOT
+        # acquire any administration area via a logged-in session.
+        self.assertEqual(client.get("/admin").status_code, 403)
         self.assertEqual(client.get("/api/v1/admin/export/research/example").status_code, 403)
         self.assertFalse(client.get("/api/v1/admin/finance/status").status_code == 200)
         self.assertTrue(self.settings.session_database.exists())

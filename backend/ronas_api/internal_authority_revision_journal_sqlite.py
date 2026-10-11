@@ -1,6 +1,7 @@
 """Durable single-host LOCAL/TEST journal for independent synthetic revisions.
 
-This journal records only hashes of explicitly supplied candidate snapshots.
+Legacy reference mode stores only hashes; optional journal-owned LOCAL/TEST
+mode atomically records typed DEMO candidate state and its revision.
 Real science, qualifications, lawful appointments, and Production authority are
 NOT established by a locally persisted counter. External updates MUST be
 coupled to their producer's version transaction in any future real adapter.
@@ -8,6 +9,7 @@ coupled to their producer's version transaction in any future real adapter.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import asdict
 from hashlib import sha256
 import json
 import os
@@ -22,7 +24,8 @@ from .internal_authority_revision_witness import (
 )
 from .internal_scientific_basis_contract import ScientificSourceCandidate
 from .internal_specialist_scope_contract import (
-    SyntheticSpecialistEvidenceRegistry, _canonical as specialist_event_canonical,
+    SyntheticSpecialistEvidenceRegistry, SpecialistScopeEvidenceCandidate,
+    SpecialistScopeEvidenceEvent, _canonical as specialist_event_canonical,
 )
 from .scoped_drafts import _synthetic_ref, _synthetic_subject
 
@@ -85,12 +88,74 @@ def snapshot_digest(kind: str, subject: str, ref: str,
     return _sha({"contract": VERSION, "scope": scope, "candidate_snapshot": data})
 
 
+
+def _owned_json(kind: str, subject: str, ref: str, version: int,
+                snapshot: object) -> str:
+    """Only DEMO pointer metadata; preserve exactly one actor/case scope."""
+    digest = snapshot_digest(kind, subject, ref, version, snapshot)
+    if kind == SCIENCE:
+        entries = [asdict(s) for s in sorted(snapshot, key=lambda s: s.ref)]
+    elif kind == SPECIALIST:
+        entries = [asdict(e) for e in snapshot.events
+                   if e.subject == subject and e.case_ref == ref]
+    else:
+        entries = snapshot
+    return _canonical({"contract": VERSION,
+                       "kind": kind,
+                       "snapshot_digest_sha256": digest,
+                       "entries": entries})
+
+
+def _load_owned(kind: str, subject: str, ref: str, version: int,
+                raw: str) -> object:
+    """Rebuild typed current LOCAL/TEST snapshot and revalidate digest."""
+    try:
+        data = json.loads(raw)
+        if (type(data) is not dict or set(data) != {
+                "contract", "kind", "snapshot_digest_sha256", "entries"
+            } or data["contract"] != VERSION or data["kind"] != kind
+                or _canonical(data) != raw):
+            raise ValueError("noncanonical owned authority state")
+        entries = data["entries"]
+        if kind == SCIENCE:
+            if type(entries) is not list:
+                raise ValueError("invalid source entries")
+            snapshot = tuple(ScientificSourceCandidate(**s) for s in entries)
+        elif kind == SPECIALIST:
+            if type(entries) is not list:
+                raise ValueError("invalid specialist entries")
+            events = []
+            for entry in entries:
+                if type(entry) is not dict:
+                    raise ValueError("invalid specialist evidence event")
+                item = dict(entry)
+                candidate = item.get("candidate")
+                if candidate is not None:
+                    c = dict(candidate)
+                    c["declared_review_tracks"] = tuple(
+                        c["declared_review_tracks"]
+                    )
+                    item["candidate"] = SpecialistScopeEvidenceCandidate(**c)
+                events.append(SpecialistScopeEvidenceEvent(**item))
+            snapshot = SyntheticSpecialistEvidenceRegistry(tuple(events))
+        else:
+            if type(entries) is not bool:
+                raise ValueError("invalid assignment state")
+            snapshot = entries
+        digest = snapshot_digest(kind, subject, ref, version, snapshot)
+        if digest != data["snapshot_digest_sha256"]:
+            raise ValueError("owned snapshot digest mismatch")
+        return snapshot
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise LedgerIntegrityError("owned authority snapshot invalid") from exc
+
+
 class SqliteSyntheticAuthorityRevisionJournal:
     """Restart-safe, serializable LOCAL/TEST witness producer.
 
-    Owns only reference snapshots and counters, NOT real provider state. A
-    caller must update candidate state and journal in the same authoritative
-    transaction for actual end-to-end guarantees, which this adapter cannot do.
+    In explicitly selected owned mode, typed DEMO candidate state and its
+    append-only version event share ONE local SQLite transaction. This does
+    not govern or certify any real independent external provider state.
     """
 
     def __init__(self, path: str | Path):
@@ -125,6 +190,37 @@ class SqliteSyntheticAuthorityRevisionJournal:
                     snapshot_digest TEXT NOT NULL,
                     previous_digest TEXT NOT NULL, event_digest TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS authority_owned_scope (
+                    kind TEXT NOT NULL, subject TEXT NOT NULL,
+                    case_ref TEXT NOT NULL, case_version INTEGER NOT NULL,
+                    PRIMARY KEY(kind,subject,case_ref,case_version)
+                );
+                CREATE TABLE IF NOT EXISTS authority_owned_state (
+                    kind TEXT NOT NULL, subject TEXT NOT NULL,
+                    case_ref TEXT NOT NULL, case_version INTEGER NOT NULL,
+                    generation INTEGER NOT NULL,
+                    snapshot_digest TEXT NOT NULL, snapshot_json TEXT NOT NULL,
+                    PRIMARY KEY(kind,subject,case_ref,case_version),
+                    FOREIGN KEY(kind,subject,case_ref,case_version)
+                      REFERENCES authority_owned_scope(kind,subject,case_ref,case_version)
+                );
+                CREATE TRIGGER IF NOT EXISTS authority_owned_scope_no_update
+                BEFORE UPDATE ON authority_owned_scope BEGIN
+                    SELECT RAISE(ABORT,'immutable owned scope');
+                END;
+                CREATE TRIGGER IF NOT EXISTS authority_owned_scope_no_delete
+                BEFORE DELETE ON authority_owned_scope BEGIN
+                    SELECT RAISE(ABORT,'immutable owned scope');
+                END;
+                CREATE TRIGGER IF NOT EXISTS authority_owned_state_no_delete
+                BEFORE DELETE ON authority_owned_state BEGIN
+                    SELECT RAISE(ABORT,'owned authority state cannot be deleted');
+                END;
+                CREATE TRIGGER IF NOT EXISTS authority_owned_state_version_cas
+                BEFORE UPDATE ON authority_owned_state
+                WHEN NEW.generation != OLD.generation+1 BEGIN
+                    SELECT RAISE(ABORT,'owned authority generation must increase by one');
+                END;
                 CREATE TRIGGER IF NOT EXISTS authority_event_no_update
                 BEFORE UPDATE ON authority_event BEGIN
                     SELECT RAISE(ABORT,'immutable authority event');
@@ -203,6 +299,44 @@ class SqliteSyntheticAuthorityRevisionJournal:
             previous = event_hash
         if metadata["head_digest"] != previous:
             raise LedgerIntegrityError("authority journal head mismatch")
+
+        owned_trigger_names = {
+            r[0] for r in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' "
+                "AND tbl_name IN ('authority_owned_scope','authority_owned_state')"
+            )
+        }
+        if owned_trigger_names != {
+            "authority_owned_scope_no_update", "authority_owned_scope_no_delete",
+            "authority_owned_state_no_delete", "authority_owned_state_version_cas"
+        }:
+            raise LedgerIntegrityError("owned authority mutation protection missing")
+        owned_keys = {
+            tuple(r) for r in db.execute(
+                "SELECT kind,subject,case_ref,case_version "
+                "FROM authority_owned_scope"
+            )
+        }
+        owned_current = {}
+        for row in db.execute(
+            "SELECT kind,subject,case_ref,case_version,generation,"
+            "snapshot_digest,snapshot_json FROM authority_owned_state"
+        ):
+            kind, subject, ref, version, generation, digest, raw = row
+            try:
+                scope = _scope(kind, subject, ref, version)
+            except ValueError as exc:
+                raise LedgerIntegrityError("invalid owned scope") from exc
+            if scope in owned_current or state.get(scope) != (
+                generation, digest
+            ):
+                raise LedgerIntegrityError("owned state/event version drift")
+            snapshot = _load_owned(kind, subject, ref, version, raw)
+            if snapshot_digest(kind, subject, ref, version, snapshot) != digest:
+                raise LedgerIntegrityError("owned state data/event mismatch")
+            owned_current[scope] = (generation, digest)
+        if owned_keys != set(owned_current):
+            raise LedgerIntegrityError("missing or orphaned owned authority state")
         return state
 
     def record_snapshot(
@@ -217,6 +351,13 @@ class SqliteSyntheticAuthorityRevisionJournal:
         digest = snapshot_digest(kind, subject, case_ref, case_version, snapshot)
         with self._transaction() as db:
             states = self._verify(db)
+            if db.execute(
+                "SELECT 1 FROM authority_owned_scope WHERE kind=? AND "
+                "subject=? AND case_ref=? AND case_version=?", scope
+            ).fetchone() is not None:
+                raise SyntheticAuthorityRevisionConflict(
+                    "hash-only writer cannot bypass owned data/version transaction"
+                )
             current = states.get(scope, (0, None))[0]
             replay = db.execute(
                 "SELECT kind,subject,case_ref,case_version,generation,"
@@ -259,6 +400,121 @@ class SqliteSyntheticAuthorityRevisionJournal:
             return SyntheticAuthorityWitness(
                 kind, subject, case_ref, case_version, current + 1,
             )
+
+
+    def record_owned_snapshot(
+        self, *, kind: str, subject: str, case_ref: str, case_version: int,
+        snapshot: object, action_ref: str, expected_generation: int,
+    ) -> SyntheticAuthorityWitness:
+        """Atomic typed DEMO data + immutable event + source revision.
+
+        Only an initially empty scope may opt into journal-owned state.
+        Existing hash-only scopes cannot silently be upgraded; migration of
+        authentic source providers requires an explicitly reviewed contract.
+        """
+        scope = _scope(kind, subject, case_ref, case_version)
+        if (not _synthetic_ref(action_ref)
+                or type(expected_generation) is not int
+                or not 0 <= expected_generation < 2**63 - 1):
+            raise ValueError("invalid action or revision")
+        raw = _owned_json(kind, subject, case_ref, case_version, snapshot)
+        digest = snapshot_digest(kind, subject, case_ref, case_version, snapshot)
+        with self._transaction() as db:
+            states = self._verify(db)
+            current = states.get(scope, (0, None))[0]
+            owned = db.execute(
+                "SELECT generation,snapshot_digest,snapshot_json "
+                "FROM authority_owned_state WHERE kind=? AND subject=? "
+                "AND case_ref=? AND case_version=?", scope,
+            ).fetchone()
+            replay = db.execute(
+                "SELECT kind,subject,case_ref,case_version,generation,"
+                "snapshot_digest FROM authority_event WHERE action_ref=?",
+                (action_ref,),
+            ).fetchone()
+            if replay is not None:
+                if (owned is None or current != replay[4]
+                        or replay != (*scope, expected_generation+1, digest)
+                        or owned != (current,digest,raw)):
+                    raise SyntheticAuthorityRevisionConflict(
+                        "conflicting or stale owned action replay"
+                    )
+                return SyntheticAuthorityWitness(*scope, current)
+            if current != expected_generation:
+                raise SyntheticAuthorityRevisionConflict(
+                    "stale owned candidate revision"
+                )
+            if current and owned is None:
+                raise LedgerIntegrityError(
+                    "cannot adopt legacy hash-only scope without migration"
+                )
+            seq = db.execute(
+                "SELECT COALESCE(MAX(sequence),0)+1 FROM authority_event"
+            ).fetchone()[0]
+            previous = db.execute(
+                "SELECT value FROM authority_metadata WHERE key='head_digest'"
+            ).fetchone()[0]
+            fields = [seq,action_ref,*scope,current+1,digest,previous]
+            event_digest = _sha(fields)
+            db.execute(
+                "INSERT INTO authority_event(sequence,action_ref,kind,subject,"
+                "case_ref,case_version,generation,snapshot_digest,"
+                "previous_digest,event_digest) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (*fields,event_digest),
+            )
+            if owned is None:
+                db.execute(
+                    "INSERT INTO authority_owned_scope(kind,subject,case_ref,"
+                    "case_version) VALUES(?,?,?,?)",scope,
+                )
+                db.execute(
+                    "INSERT INTO authority_owned_state(kind,subject,case_ref,"
+                    "case_version,generation,snapshot_digest,snapshot_json)"
+                    " VALUES(?,?,?,?,?,?,?)",
+                    (*scope,1,digest,raw),
+                )
+            else:
+                db.execute(
+                    "UPDATE authority_owned_state SET generation=?,"
+                    "snapshot_digest=?,snapshot_json=? "
+                    "WHERE kind=? AND subject=? AND case_ref=? AND case_version=?",
+                    (current+1,digest,raw,*scope),
+                )
+            db.execute(
+                "UPDATE authority_metadata SET value=? WHERE key='head_digest'",
+                (event_digest,),
+            )
+            self._verify(db)
+            return SyntheticAuthorityWitness(*scope,current+1)
+
+    def read_owned_snapshot(
+        self, *, kind: str, subject: str, case_ref: str, case_version: int,
+    ) -> tuple[object, SyntheticAuthorityWitness]:
+        """Return typed state and its generation from ONE verified SQL read."""
+        scope = _scope(kind,subject,case_ref,case_version)
+        with self._transaction() as db:
+            self._verify(db)
+            row = db.execute(
+                "SELECT generation,snapshot_json FROM authority_owned_state "
+                "WHERE kind=? AND subject=? AND case_ref=? AND case_version=?",
+                scope,
+            ).fetchone()
+            if row is None:
+                raise LedgerIntegrityError("no owned state for requested case")
+            snapshot = _load_owned(kind,subject,case_ref,case_version,row[1])
+            return snapshot, SyntheticAuthorityWitness(*scope,row[0])
+
+    def owned_callback(self, kind: str) -> Callable[
+        [str,str,int], SyntheticAuthorityWitness,
+    ]:
+        """Explicit LOCAL/TEST adapter; default app mounts nothing."""
+        if kind not in KINDS:
+            raise ValueError("untrusted owned domain")
+        def read(subject: str, ref: str, version: int):
+            return self.read_owned_snapshot(
+                kind=kind,subject=subject,case_ref=ref,case_version=version,
+            )[1]
+        return read
 
     def witness_for_snapshot(
         self, *, kind: str, subject: str, case_ref: str,

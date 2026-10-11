@@ -1698,6 +1698,76 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertEqual(tampered.status_code,503,tampered.text)
         self.assertTrue(self.ledger.verify_integrity())
 
+
+    def test_owned_local_journal_drives_strict_signed_read_with_aba(self):
+        from ronas_api.internal_authority_revision_journal_sqlite import (
+            SqliteSyntheticAuthorityRevisionJournal,
+        )
+        from ronas_api.internal_authority_revision_witness import (
+            SCIENCE,SPECIALIST,ASSIGNMENT,
+        )
+        from ronas_api.internal_specialist_scope_contract import (
+            SyntheticSpecialistEvidenceRegistry,
+        )
+        journal=SqliteSyntheticAuthorityRevisionJournal(
+            self.path.parent/"owned-authority.db")
+        scope=dict(subject=EXPERT,case_ref="DEMO-D-1",case_version=3)
+        initial={SCIENCE:tuple(),
+                 SPECIALIST:SyntheticSpecialistEvidenceRegistry(),
+                 ASSIGNMENT:True}
+        for kind,item in initial.items():
+            journal.record_owned_snapshot(
+                kind=kind,snapshot=item,action_ref=(
+                    "DEMO-OWNED-START-"+kind.replace("_","-")
+                ),expected_generation=0,**scope,
+            )
+        reopened=SqliteSyntheticAuthorityRevisionJournal(
+            self.path.parent/"owned-authority.db")
+        def owned(kind):
+            return reopened.read_owned_snapshot(kind=kind,**scope)[0]
+        self.workspace._trusted_specialist_governance_snapshot=(
+            lambda:owned(SPECIALIST))
+        self.workspace._live_authority=lambda actor,ref,version:(
+            self.active is True and actor==EXPERT
+            and ref=="DEMO-D-1" and version==3
+            and owned(ASSIGNMENT) is True
+        )
+        self.workspace._authority_version_callbacks=tuple(
+            reopened.owned_callback(kind)
+            for kind in (SCIENCE,SPECIALIST,ASSIGNMENT)
+        )
+        self.seed_input()
+        url=self.versioned_review_context_url()
+        before=self.client.get(url,headers=self.headers())
+        self.assertEqual(before.status_code,200,before.text)
+        token=before.json()["synthetic_versioned_context_fingerprint_sha256"]
+        journal.record_owned_snapshot(
+            kind=ASSIGNMENT,snapshot=False,action_ref="DEMO-OWNED-REVOKE",
+            expected_generation=1,**scope,
+        )
+        self.assertEqual(self.client.get(
+            url,headers=self.headers()).status_code,404)
+        journal.record_owned_snapshot(
+            kind=ASSIGNMENT,snapshot=True,action_ref="DEMO-OWNED-REGRANT",
+            expected_generation=2,**scope,
+        )
+        stale=self.client.get(
+            url+"&expected_context_fingerprint="+token,
+            headers=self.headers(),
+        )
+        self.assertEqual(stale.status_code,409,stale.text)
+        after=self.client.get(url,headers=self.headers())
+        self.assertEqual(after.status_code,200,after.text)
+        self.assertEqual(
+            before.json()["synthetic_context_fingerprint_sha256"],
+            after.json()["synthetic_context_fingerprint_sha256"],
+        )
+        self.assertNotEqual(
+            token,after.json()["synthetic_versioned_context_fingerprint_sha256"]
+        )
+        self.assertFalse(after.json()["plan_accepted"])
+        self.assertTrue(reopened.verify_integrity())
+
     def evidence_index_url(self):
         return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-index"
 

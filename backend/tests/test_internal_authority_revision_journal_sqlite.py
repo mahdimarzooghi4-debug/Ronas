@@ -75,6 +75,116 @@ class AuthorityJournalTests(unittest.TestCase):
             snapshot=snapshot,
         )
 
+
+    def owned_record(self, kind, snapshot, action, expected=0, store=None):
+        return (store or self.store).record_owned_snapshot(
+            kind=kind,subject=ACTOR,case_ref=REF,case_version=VER,
+            snapshot=snapshot,action_ref=action,expected_generation=expected,
+        )
+
+    def test_owned_science_data_and_event_reopen_together(self):
+        first=self.owned_record(SCIENCE,science(),"DEMO-OWNED-SCI-A")
+        self.assertEqual(first.generation,1)
+        restarted=SqliteSyntheticAuthorityRevisionJournal(self.file)
+        value,witness=restarted.read_owned_snapshot(
+            kind=SCIENCE,subject=ACTOR,case_ref=REF,case_version=VER)
+        self.assertEqual(value,science())
+        self.assertEqual(witness,first)
+        self.owned_record(SCIENCE,science(2,"9"*64),"DEMO-OWNED-SCI-B",1)
+        changed,_=restarted.read_owned_snapshot(
+            kind=SCIENCE,subject=ACTOR,case_ref=REF,case_version=VER)
+        self.assertEqual(changed,science(2,"9"*64))
+        self.assertTrue(restarted.verify_integrity())
+
+    def test_owned_all_domains_persist_real_synthetic_typed_data(self):
+        for kind,value,action in (
+            (SCIENCE,science(),"DEMO-OWNED-S"),
+            (SPECIALIST,specialists(),"DEMO-OWNED-P"),
+            (ASSIGNMENT,True,"DEMO-OWNED-A"),
+        ):
+            with self.subTest(kind=kind):
+                self.owned_record(kind,value,action)
+                restored,verified=self.store.read_owned_snapshot(
+                    kind=kind,subject=ACTOR,case_ref=REF,case_version=VER)
+                self.assertEqual(restored,value)
+                self.assertEqual(verified.generation,1)
+                self.assertEqual(self.store.owned_callback(kind)(
+                    ACTOR,REF,VER).generation,1)
+
+    def test_owned_data_cannot_change_without_new_event(self):
+        self.owned_record(SCIENCE,science(),"DEMO-OWNED-SCI-A")
+        with sqlite3.connect(self.file) as db:
+            db.execute("DROP TRIGGER authority_owned_state_version_cas")
+            db.execute(
+                "UPDATE authority_owned_state SET snapshot_json='{}' "
+                "WHERE kind=?", (SCIENCE,),
+            )
+        self.assertFalse(self.store.verify_integrity())
+        with self.assertRaises(LedgerIntegrityError):
+            self.store.read_owned_snapshot(
+                kind=SCIENCE,subject=ACTOR,case_ref=REF,case_version=VER)
+
+    def test_owned_cas_concurrent_two_instances_one_winner(self):
+        self.owned_record(ASSIGNMENT,True,"DEMO-OWNED-START")
+        other=SqliteSyntheticAuthorityRevisionJournal(self.file)
+        def update(args):
+            store,action=args
+            try:
+                return self.owned_record(ASSIGNMENT,False,action,1,store)
+            except SyntheticAuthorityRevisionConflict:
+                return None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            result=list(pool.map(update,[
+                (self.store,"DEMO-OWNED-NEXT-A"),
+                (other,"DEMO-OWNED-NEXT-B"),
+            ]))
+        self.assertEqual(sum(x is not None for x in result),1)
+        value,witness=self.store.read_owned_snapshot(
+            kind=ASSIGNMENT,subject=ACTOR,case_ref=REF,case_version=VER)
+        self.assertIs(value,False)
+        self.assertEqual(witness.generation,2)
+
+    def test_owned_insert_failure_rolls_back_data_event_and_head(self):
+        self.owned_record(ASSIGNMENT,True,"DEMO-OWNED-START")
+        with sqlite3.connect(self.file) as db:
+            db.execute("""
+                CREATE TRIGGER reject_next_owned_update
+                BEFORE UPDATE ON authority_owned_state
+                BEGIN SELECT RAISE(ABORT,'simulated owned snapshot failure'); END
+            """)
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.owned_record(ASSIGNMENT,False,"DEMO-OWNED-FAIL",1)
+        with sqlite3.connect(self.file) as db:
+            db.execute("DROP TRIGGER reject_next_owned_update")
+            count=db.execute("SELECT COUNT(*) FROM authority_event").fetchone()[0]
+        self.assertEqual(count,1)
+        self.assertTrue(self.store.verify_integrity())
+        owned,witness=self.store.read_owned_snapshot(
+            kind=ASSIGNMENT,subject=ACTOR,case_ref=REF,case_version=VER)
+        self.assertIs(owned,True)
+        self.assertEqual(witness.generation,1)
+
+    def test_owned_writer_rejects_hash_only_bypass_and_legacy_takeover(self):
+        self.owned_record(ASSIGNMENT,True,"DEMO-OWNED-START")
+        with self.assertRaises(SyntheticAuthorityRevisionConflict):
+            self.record(ASSIGNMENT,False,"DEMO-BYPASS-OLD",1)
+        self.record(SCIENCE,science(),"DEMO-LEGACY")
+        with self.assertRaises(LedgerIntegrityError):
+            self.owned_record(SCIENCE,science(2),"DEMO-ILLEGAL-TAKEOVER",1)
+        self.assertTrue(self.store.verify_integrity())
+
+    def test_owned_idempotency_conflict_and_aba_generations(self):
+        first=self.owned_record(ASSIGNMENT,True,"DEMO-OWNED-A")
+        self.assertEqual(first,self.owned_record(
+            ASSIGNMENT,True,"DEMO-OWNED-A"))
+        self.owned_record(ASSIGNMENT,False,"DEMO-OWNED-B",1)
+        third=self.owned_record(ASSIGNMENT,True,"DEMO-OWNED-C",2)
+        self.assertEqual(third.generation,3)
+        with self.assertRaises(SyntheticAuthorityRevisionConflict):
+            self.owned_record(ASSIGNMENT,True,"DEMO-OWNED-A")
+        current,_=self.store.read_owned_snapshot(
+            kind=ASSIGNMENT,subject=ACTOR,case_ref=REF,case_version=VER)
+        self.assertIs(current,True)
     def test_restart_safe_and_versioned_aba(self):
         a=science()
         b=science(2,"9"*64)

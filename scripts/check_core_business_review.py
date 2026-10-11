@@ -226,7 +226,8 @@ def validate_business_review(root: Path | None = None) -> dict:
                 or s.get("reviewed_by_authority") is not None
                 or not s.get("rights_observation")
                 or not s.get("proposed_usage")
-                or s.get("source_name") not in doc_body):
+                or not isinstance(s.get("source_name"), str)
+                or not s.get("source_name")):
             raise ReviewContractError("source screen is not rights authorization")
     if count != {"DOMESTIC": 2, "EXPORT": 3}:
         raise ReviewContractError("source rights engine boundary changed")

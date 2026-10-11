@@ -28,6 +28,14 @@ class SyntheticQuestionCommand(BaseModel):
     evidence_ref: StrictStr
 
 
+class SyntheticReceiptInspectionCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: StrictStr
+    expected_case_version: StrictInt
+    expected_input_revision: StrictInt
+    expected_question_revision: StrictInt
+
+
 def build_agronomy_workspace_router(
     workspace: SyntheticAgronomyWorkspace,
     verified_principal: Callable[..., Principal],
@@ -87,6 +95,41 @@ def build_agronomy_workspace_router(
             except ValueError as exc:
                 raise HTTPException(
                     422, detail="INVALID_SYNTHETIC_REVIEW_QUESTION",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return result
+
+        @router.post(
+            "/api/v1/agronomy/assigned-drafts/{ref}/response-receipt-inspections",
+            status_code=201,
+        )
+        def inspect_assigned_response_receipt(
+            ref: str, command: SyntheticReceiptInspectionCommand,
+            authorization: str | None = Header(default=None),
+            p: Principal = Depends(verified_principal),
+        ) -> dict:
+            if (not isinstance(authorization, str)
+                    or not authorization.startswith("Bearer ")):
+                raise HTTPException(401, detail="BEARER_REQUIRED_FOR_MUTATION")
+            try:
+                result = workspace.inspect_assigned_synthetic_response_receipt(
+                    ref, p, action_id=command.action_id,
+                    expected_case_version=command.expected_case_version,
+                    expected_input_revision=command.expected_input_revision,
+                    expected_question_revision=command.expected_question_revision,
+                )
+            except ReviewQuestionConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_RECEIPT_CONTEXT_CHANGED",
+                ) from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(
+                    422, detail="INVALID_SYNTHETIC_RECEIPT_INSPECTION",
                 ) from exc
             if result is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")

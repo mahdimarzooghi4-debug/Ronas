@@ -18,6 +18,7 @@ from .internal_cultivation_plan_contract import (
     InternalCultivationProposal, _digest, inspect_proposal_structure,
 )
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES
+from .internal_expert_review_preparation import project_expert_review_preparation
 from .scoped_drafts import _synthetic_ref, _synthetic_subject
 from .internal_scientific_basis_contract import (
     ScientificBasisCandidate, ScientificSourceCandidate,
@@ -370,3 +371,22 @@ class SyntheticAgronomyWorkspace:
                     actor=subject, mode="AGRONOMY_INTERNAL_PROPOSAL_HANDOFF",
                 )
             return result
+
+    def read_assigned_expert_review_preparation(
+        self, ref: str, principal: Principal,
+    ) -> dict | None:
+        """One role-and-live-assignment-verified, audited dossier read.
+
+        Reuses the exact same checked case/input/science proposal snapshot;
+        no second read can mix revisions, no unaudited review privileges
+        or write/approve command are created.
+        """
+        snapshot = self.read_assigned_proposal_structure(ref, principal)
+        if snapshot is None:
+            return None
+        try:
+            return project_expert_review_preparation(snapshot)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise LedgerIntegrityError(
+                "untrusted synthetic expert review preparation source"
+            ) from exc

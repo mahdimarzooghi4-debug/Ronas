@@ -102,3 +102,50 @@ class SyntheticDomesticPartnerWorkspace:
             "payment_enabled": False,
             "real_data": False,
         }
+
+    def own_preparation_overview(self, principal: Principal) -> dict:
+        """Read only this signed subject's independently permitted DEMO roles.
+
+        The list is NOT a matchmaking or cross-actor export. Each role gets
+        its own current authority check. Missing/denied seeds disappear
+        without revealing their identifiers or counts. Authority failures
+        fail the *entire* response rather than returning partial exposure.
+        """
+        items: list[dict] = []
+        for role in ROLES:
+            preview = self.own_preview(role, principal)
+            if preview is None:
+                continue
+            fields = preview["preparation_fields"]
+            # This is a presentation inventory of NULL DEMO placeholders,
+            # not a Business completeness threshold or permission checklist.
+            if (preview["profile_state"] != "NOT_SUBMITTED_DEMO"
+                    or preview["commercial_actions_enabled"] is not False
+                    or preview["data_submission_enabled"] is not False
+                    or tuple(fields) != FIELDS[role]
+                    or any(value is not None for value in fields.values())):
+                raise SyntheticDomesticPartnerUnavailable(
+                    "invalid synthetic partner preparation projection"
+                )
+            items.append({
+                "role": role,
+                "profile_ref": preview["profile_ref"],
+                "profile_version": preview["profile_version"],
+                "profile_state": preview["profile_state"],
+                "unknown_display_slots": list(fields),
+                "business_readiness": "NOT_EVALUATED",
+                "commercial_actions_enabled": False,
+                "data_submission_enabled": False,
+            })
+        return {
+            "contract_version": "ronas.domestic-partner.preparation-overview.v1",
+            "environment": "SHARED_USER_PARTNER",
+            "engine": "DOMESTIC",
+            "source": "SYNTHETIC_ONLY",
+            "items": items,
+            "business_readiness": "NOT_EVALUATED",
+            "commercial_actions_enabled": False,
+            "data_submission_enabled": False,
+            "counterpart_matching_enabled": False,
+            "real_data": False,
+        }

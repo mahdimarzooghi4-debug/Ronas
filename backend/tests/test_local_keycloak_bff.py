@@ -398,6 +398,147 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
             "/api/v1/admin/export/research/drafts/DEMO-E-1/workspace",
         ).status_code, 404)
 
+
+    def test_owner_expert_question_response_receipt_and_stale_revision_roundtrip(self):
+        from ronas_api.internal_cultivation_plan_contract import (
+            InternalCultivationProposal, ProposedCultivationStage,
+        )
+
+        ledger = self._case_ledger()
+        owner, owner_csrf = self._signed_login(
+            role="household", subject="synthetic-household-one", ledger=ledger,
+        )
+        input_page = owner.get("/my-drafts/DEMO-D-1/input-revisions")
+        self.assertEqual(input_page.status_code, 200, input_page.text)
+        submitted = owner.post(
+            "/my-drafts/DEMO-D-1/input-revisions/demo-correction",
+            data={
+                "csrf": owner_csrf, "case_version": "3", "input_revision": "0",
+                "scenario": "DEMO-MANIFEST-ALPHA",
+            },
+            headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(submitted.status_code, 303, submitted.text)
+        input_revision, input_digest = ledger.internal_input_snapshot(
+            "DEMO-D-1", 3,
+        )
+        self.assertEqual(input_revision, 1)
+
+        proposal = InternalCultivationProposal(
+            household_case_ref="DEMO-D-1",
+            household_case_version=3,
+            household_input_revision=input_revision,
+            household_input_snapshot_digest=input_digest,
+            scientific_basis_manifest_digest="a" * 64,
+            internal_model_artifact_digest="b" * 64,
+            internal_run_ref="DEMO-RUN-1",
+            proposal_content_digest="c" * 64,
+            proposed_stages=(ProposedCultivationStage(
+                "DEMO-STAGE-1", "d" * 64, "e" * 64,
+            ),),
+        )
+        expert_workspace = SyntheticAgronomyWorkspace(
+            ledger, (SyntheticAgronomyAssignment(
+                "DEMO-D-1", "synthetic-agronomy-one", 3,
+            ),),
+            trusted_assignment_active=lambda actor, ref, version: (
+                actor == "synthetic-agronomy-one"
+                and ref == "DEMO-D-1" and version == 3
+            ),
+            proposal_fixtures=(proposal,),
+        )
+        expert, expert_csrf = self._signed_login(
+            role="agronomy_expert", subject="synthetic-agronomy-one",
+            ledger=ledger, expert=expert_workspace,
+        )
+        questions_url = "/agronomy/assigned-drafts/DEMO-D-1/review-questions"
+        expert_page = expert.get(questions_url)
+        self.assertEqual(expert_page.status_code, 200, expert_page.text)
+        self.assertIn("ثبت پرسش ساختاری آزمایشی", expert_page.text)
+        asked = expert.post(
+            "/agronomy/assigned-drafts/DEMO-D-1/review-questions/demo-question",
+            data={
+                "csrf": expert_csrf, "case_version": "3",
+                "input_revision": "1", "question_revision": "0",
+                "track": "HOUSEHOLD_INPUT_ADEQUACY",
+            },
+            headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(asked.status_code, 303, asked.text)
+        expert_page = expert.get(questions_url)
+        self.assertEqual(expert_page.status_code, 200, expert_page.text)
+        self.assertIn("پاسخی ثبت نشده", expert_page.text)
+
+        owner_url = "/my-drafts/DEMO-D-1/question-responses"
+        owner_page = owner.get(owner_url)
+        self.assertEqual(owner_page.status_code, 200, owner_page.text)
+        self.assertIn("ثبت پاسخ DEMO", owner_page.text)
+        replied = owner.post(
+            "/my-drafts/DEMO-D-1/question-responses/demo-reply",
+            data={
+                "csrf": owner_csrf, "case_version": "3",
+                "input_revision": "1", "question_revision": "1",
+                "scenario": "DEMO-REPLY-ALPHA",
+            },
+            headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(replied.status_code, 303, replied.text)
+        owner_history = owner.get(owner_url)
+        self.assertEqual(owner_history.status_code, 200, owner_history.text)
+        self.assertIn("DEMO-REPLY-ALPHA", owner_history.text)
+
+        receipt_page = expert.get(questions_url)
+        self.assertEqual(receipt_page.status_code, 200, receipt_page.text)
+        self.assertIn("پاسخ ساختاری خانوار دریافت شده", receipt_page.text)
+        self.assertNotIn("DEMO-REPLY-ALPHA", receipt_page.text)
+        self.assertNotIn("DEMO-OWNER-PENDING-REF", receipt_page.text)
+        self.assertIn("ثبت مشاهده رسید پاسخ DEMO", receipt_page.text)
+        inspected = expert.post(
+            "/agronomy/assigned-drafts/DEMO-D-1/review-questions/demo-inspection",
+            data={
+                "csrf": expert_csrf, "case_version": "3",
+                "input_revision": "1", "question_revision": "1",
+            },
+            headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(inspected.status_code, 303, inspected.text)
+        receipt_page = expert.get(questions_url)
+        self.assertEqual(receipt_page.status_code, 200, receipt_page.text)
+        self.assertIn("رسید پاسخ مشاهده شد (بدون داوری تخصصی)", receipt_page.text)
+        self.assertNotIn("DEMO-REPLY-ALPHA", receipt_page.text)
+        self.assertNotIn("DEMO-OWNER-PENDING-REF", receipt_page.text)
+        self.assertNotIn("تأیید علمی", receipt_page.text)
+
+        revised = owner.post(
+            "/my-drafts/DEMO-D-1/input-revisions/demo-correction",
+            data={
+                "csrf": owner_csrf, "case_version": "3", "input_revision": "1",
+                "scenario": "DEMO-MANIFEST-BETA",
+            },
+            headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(revised.status_code, 303, revised.text)
+        historical = owner.get(owner_url)
+        self.assertEqual(historical.status_code, 200, historical.text)
+        self.assertIn("نسخه تاریخی", historical.text)
+        self.assertNotIn("ثبت پاسخ DEMO", historical.text)
+        self.assertEqual(owner.post(
+            "/my-drafts/DEMO-D-1/question-responses/demo-reply",
+            data={
+                "csrf": owner_csrf, "case_version": "3",
+                "input_revision": "1", "question_revision": "1",
+                "scenario": "DEMO-REPLY-BETA",
+            },
+            headers={"Origin": ORIGIN},
+        ).status_code, 409)
+        expert_after_revision = expert.get(questions_url)
+        self.assertEqual(expert_after_revision.status_code, 200,
+                         expert_after_revision.text)
+        self.assertIn("پرسش آزمایشی 1", expert_after_revision.text)
+        self.assertNotIn("DEMO-REPLY-ALPHA", expert_after_revision.text)
+        self.assertNotIn("ثبت مشاهده رسید پاسخ DEMO", expert_after_revision.text)
+        self.assertTrue(ledger.verify_integrity())
+
     def test_real_oidc_specialist_assignment_is_separate_from_role_and_owner(self):
         ledger = self._case_ledger()
         expert = SyntheticAgronomyWorkspace(

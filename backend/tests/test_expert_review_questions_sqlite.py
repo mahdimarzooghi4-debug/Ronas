@@ -719,7 +719,7 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200, page.text)
         self.assertIn("تاریخچه پاسخ‌های ساختاری خانوار", page.text)
         self.assertIn("DEMO-ANSWER-A", page.text)
-        self.assertIn("بدون", page.text)
+        self.assertIn("تأیید/رد وجود ندارد", page.text)
         self.assertNotIn("1" * 64, page.text)
         self.assertEqual(page.headers["cache-control"], "no-store")
         self.assertIn("frame-ancestors 'none'",

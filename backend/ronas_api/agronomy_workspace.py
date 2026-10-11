@@ -13,6 +13,9 @@ from typing import Callable, Iterable
 from .auth import Principal
 from .grant_ledger_sqlite import LedgerIntegrityError
 from .domestic_preparation_preview import domestic_preparation_preview
+from .internal_cultivation_plan_contract import (
+    InternalCultivationProposal, _digest, inspect_proposal_structure,
+)
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES
 from .scoped_drafts import _synthetic_ref, _synthetic_subject
 
@@ -37,6 +40,8 @@ class SyntheticAgronomyWorkspace:
         self, ledger: SqliteSyntheticHumanReviewLedger,
         assignments: Iterable[SyntheticAgronomyAssignment], *,
         trusted_assignment_active: Callable[[str, str, int], bool],
+        proposal_fixtures: Iterable[InternalCultivationProposal] = (),
+        trusted_input_snapshot: Callable[[str, int], tuple[int, str] | None] | None = None,
     ) -> None:
         if (not isinstance(ledger, SqliteSyntheticHumanReviewLedger)
                 or not callable(trusted_assignment_active)):
@@ -52,6 +57,24 @@ class SyntheticAgronomyWorkspace:
             if key in bound:
                 raise ValueError("duplicate agronomy case assignment")
             bound[key] = assignment
+        # Optional LOCAL/TEST fixtures never attest real model execution.
+        # Input binding must be checked against a separate source.
+        catalog: dict[str, InternalCultivationProposal] = {}
+        for fixture in proposal_fixtures:
+            if not isinstance(fixture, InternalCultivationProposal):
+                raise ValueError("untrusted synthetic AI proposal fixture")
+            record = ledger._catalogue.get(("DOMESTIC", fixture.household_case_ref))
+            if (record is None
+                    or fixture.household_case_version != record.version
+                    or fixture.household_case_ref in catalog):
+                raise ValueError("proposal fixture case/version not pinned")
+            catalog[fixture.household_case_ref] = fixture
+        if (catalog and not callable(trusted_input_snapshot)
+                or trusted_input_snapshot is not None
+                   and not callable(trusted_input_snapshot)):
+            raise ValueError("independent input snapshot authority required")
+        self._proposal_fixtures = catalog
+        self._trusted_input_snapshot = trusted_input_snapshot
         self.ledger = ledger
         self._assignments = bound
         self._live_authority = trusted_assignment_active
@@ -186,3 +209,96 @@ class SyntheticAgronomyWorkspace:
                 "items": items,
                 "next_cursor": selected[-1][0] if len(refs) > limit else None,
             }
+
+    def read_assigned_proposal_structure(
+        self, ref: str, principal: Principal,
+    ) -> dict | None:
+        """Audited, assigned specialist-only, read-only synthetic AI handoff.
+
+        A technical review response is never cultivation-plan approval.
+        """
+        if not _synthetic_ref(ref):
+            return None
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            record = self.ledger._catalogue.get(("DOMESTIC", ref))
+            subject = self._actor(principal)
+            if record is None or subject is None:
+                return None
+            allowed = self._allowed(subject, ref, record.version)
+            result = None
+            if allowed:
+                case = self._preview(db, ref)
+                proposal = self._proposal_fixtures.get(ref)
+                if proposal is None:
+                    result = {
+                        "contract_version": "ronas.domestic.internal-proposal-handoff.v0",
+                        "engine": "DOMESTIC", "case_ref": ref,
+                        "case_version": record.version,
+                        "proposal_status": "NO_INTERNAL_PROPOSAL_FIXTURE",
+                        "input_state": case["cultivation_preparation"]["input_state"],
+                        "cultivation_inputs": case["cultivation_inputs"],
+                        "technical_review_state": case["technical_review_state"],
+                        "plan_state": "NOT_AUTHORED",
+                        "expert_qualification_verified": False,
+                        "scientific_review_approved": False,
+                        "plan_accepted": False,
+                        "advice_enabled": False, "real_data": False,
+                    }
+                else:
+                    authority = self._trusted_input_snapshot
+                    if authority is None:
+                        raise LedgerIntegrityError("input authority not configured")
+                    try:
+                        snapshot = authority(ref, record.version)
+                    except Exception as exc:
+                        raise LedgerIntegrityError(
+                            "synthetic input snapshot source unavailable"
+                        ) from exc
+                    if (not isinstance(snapshot, tuple)
+                            or len(snapshot) != 2
+                            or type(snapshot[0]) is not int
+                            or snapshot[0] < 1
+                            or not _digest(snapshot[1])):
+                        raise LedgerIntegrityError(
+                            "missing/invalid independent synthetic input snapshot"
+                        )
+                    try:
+                        traced = inspect_proposal_structure(
+                            proposal, expected_case_engine="DOMESTIC",
+                            expected_case_ref=ref,
+                            expected_case_version=record.version,
+                            expected_input_revision=snapshot[0],
+                            expected_input_snapshot_digest=snapshot[1],
+                        )
+                    except ValueError as exc:
+                        raise LedgerIntegrityError(
+                            "stale/mismatched synthetic proposal lineage"
+                        ) from exc
+                    # Client receives no digests, model ref, source material,
+                    # household profile or fictional scientific content.
+                    result = {
+                        "contract_version": "ronas.domestic.internal-proposal-handoff.v0",
+                        "engine": "DOMESTIC", "case_ref": ref,
+                        "case_version": record.version,
+                        "proposal_status": traced["proposal_status"],
+                        "proposed_stage_refs": traced["proposed_stage_refs"],
+                        "input_revision": snapshot[0],
+                        "input_state": case["cultivation_preparation"]["input_state"],
+                        "technical_review_state": case["technical_review_state"],
+                        "plan_state": "NOT_AUTHORED",
+                        "expert_qualification_verified": False,
+                        "scientific_review_approved": False,
+                        "plan_accepted": False,
+                        "advice_enabled": False, "real_data": False,
+                    }
+                self.ledger._append(
+                    db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                    actor=subject, mode="AGRONOMY_INTERNAL_PROPOSAL_HANDOFF",
+                )
+            else:
+                self.ledger._append(
+                    db, kind="READ_DENIED", engine="DOMESTIC", ref=ref,
+                    actor=subject, mode="AGRONOMY_INTERNAL_PROPOSAL_HANDOFF",
+                )
+            return result

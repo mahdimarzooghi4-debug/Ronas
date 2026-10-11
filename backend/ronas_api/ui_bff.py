@@ -676,6 +676,9 @@ def build_authenticated_ui_router(
                 + (' · پاسخ ساختاری خانوار دریافت شده (بررسی نشده)'
                    if q["synthetic_household_response_received"]
                    else ' · پاسخی ثبت نشده')
+                + (' · رسید پاسخ مشاهده شد (بدون داوری تخصصی)'
+                   if q["synthetic_receipt_inspected_not_reviewed"]
+                   else '')
                 + ' — صرفاً سابقه، بدون تأیید</li>'
                 for q in notes["questions"]
             )

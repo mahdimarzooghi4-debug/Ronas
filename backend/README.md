@@ -1,5 +1,10 @@
 # Ronas: signed-token backend foundation
 
+## تاریخچه پرسش‌های نسخه‌دار متخصص داخلی — فقط LOCAL/TEST
+
+`SqliteSyntheticExpertQuestionLedger` یک الحاق اختیاری به **همان دفتر ممیزی و نسخه ورودی خانوار** است. کارشناس دارای Keycloak امضاشده و تخصیص جاری می‌تواند صرفاً ارجاع `DEMO-` برای **پرسش کمبود شواهد** در یکی از سه محور مستقل ثبت کند، نه متن واقعی اطلاعات خانوار یا تصمیم برنامه. ثبت `POST /api/v1/agronomy/assigned-drafts/{ref}/review-questions` فقط Bearer دارد و بر نسخه جاری داده، پیشنهاد و منابع بررسی‌نشده تطبیق می‌گیرد؛ تعارض/اصلاح داده یا منبع رد می‌شود. تاریخچه API و صفحه فارسی `/agronomy/assigned-drafts/{ref}/review-questions` فقط برای متخصص دارای مجوز فعلی، خواندنی و ممیزی‌شده است؛ سابقه قدیمی حذف نمی‌شود ولی هرگز رأی کارشناسی محسوب نمی‌شود. وضعیت همیشگی `SYNTHETIC_QUESTION_ONLY_NOT_REVIEWED` است و تأیید داده/علم/برنامه، مراحل و همه فعالیت‌های عملیاتی غیرفعال‌اند. [قرارداد](internal-expert-question-audit-contract.md) · [آزمون‌ها](tests/test_expert_review_questions_sqlite.py). قرارداد D1-REV-02 در PR Business #1 هنوز تصویب نشده است.
+
+
 ## سه محور مستقل آماده‌سازی بررسی متخصص روناس — LOCAL/TEST
 
 از پرونده خانوارِ اختصاص‌داده‌شده به کارشناس داخلی، اکنون نمای **سه محور غیرعملیاتی** در `/agronomy/assigned-drafts/{ref}/expert-review-preparation` و GET API هم‌نام در `/api/v1/agronomy/assigned-drafts/{ref}/expert-review-preparation` دیده می‌شود. کنترل و ممیزی خواندن **یک بار در همان زنجیره معتبر پرونده** انجام می‌شود؛ فهرست سه محور: **کفایت داده خانوار، منشأ علمی/حقوق استفاده، خود برنامه پیشنهادی**. هیچ بازبین دارای صلاحیت واقعی یا تصمیم علمی ثبت نشده و `review_outcome=NOT_REVIEWED` در هر سه محور ثابت است. ثبت پاسخ فنی قبلی، تأیید علمی یا تصمیم برنامه نیست. اصلاح داده خانوار یا تغییر نسخه/حقوق منبع، نمایش پرونده آماده‌سازی مرتبط با پیشنهاد قدیمی را fail-closed می‌کند. هیچ داده واقعی، اجرای AI، تأیید برنامه یا فعال‌سازی گزارش مرحله‌ای وجود ندارد. [قرارداد](internal-expert-review-preparation-contract.md) و [آزمون‌ها](tests/test_internal_expert_review_preparation.py).

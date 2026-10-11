@@ -166,13 +166,13 @@ def build_technical_review_read_router(
             raise HTTPException(
                 409, detail="EXPORT_LOCAL_QUESTION_CHANGED",
             ) from exc
-        except ValueError as exc:
-            raise HTTPException(
-                422, detail="INVALID_EXPORT_LOCAL_QUESTION",
-            ) from exc
         except (LedgerIntegrityError, sqlite3.Error) as exc:
             raise HTTPException(
                 503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                422, detail="INVALID_EXPORT_LOCAL_QUESTION",
             ) from exc
         if result is None:
             raise HTTPException(404, detail="DRAFT_NOT_FOUND")

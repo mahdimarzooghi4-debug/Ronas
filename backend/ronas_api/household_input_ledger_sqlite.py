@@ -81,7 +81,11 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
         ):
             event = json.loads(payload)
             mode = event.get("access_mode")
-            if isinstance(mode, str) and mode.startswith(MODE):
+            # Pair both sides of this event contract: an unexpected event
+            # kind *or* a forged revision mode must never escape the ledger's
+            # append-only table verifier merely because its mode was changed.
+            if (event.get("kind") == EVENT_KIND
+                    or isinstance(mode, str) and mode.startswith(MODE)):
                 linked[sequence] = event
         used = set()
         previous: dict[str, str] = {}

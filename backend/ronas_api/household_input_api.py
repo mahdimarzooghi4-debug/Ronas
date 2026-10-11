@@ -67,12 +67,12 @@ def build_household_input_router(
             )
         except InputRevisionConflict as exc:
             raise HTTPException(409, detail="SYNTHETIC_INPUT_VERSION_CONFLICT") from exc
-        except ValueError as exc:
-            raise HTTPException(422, detail="INVALID_SYNTHETIC_INPUT_REVISION") from exc
         except (LedgerIntegrityError, sqlite3.Error) as exc:
             raise HTTPException(
                 503, detail="SYNTHETIC_INPUT_HISTORY_UNAVAILABLE",
             ) from exc
+        except ValueError as exc:
+            raise HTTPException(422, detail="INVALID_SYNTHETIC_INPUT_REVISION") from exc
         if result is None:
             raise HTTPException(404, detail="DRAFT_NOT_FOUND")
         return result

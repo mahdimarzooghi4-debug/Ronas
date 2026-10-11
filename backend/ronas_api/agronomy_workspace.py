@@ -22,6 +22,9 @@ from .internal_expert_review_preparation import project_expert_review_preparatio
 from .internal_expert_evidence_index import project_synthetic_review_evidence_index
 from .internal_expert_provenance_dossier import project_expert_provenance_dossier
 from .internal_expert_binding_drift import project_synthetic_review_binding_drift
+from .internal_expert_review_handoff import (
+    prepare_synthetic_review_handoff, SOURCE_NONE, SOURCE_PINNED,
+)
 from .expert_review_questions_sqlite import (
     SqliteSyntheticExpertQuestionLedger, ReviewQuestionConflict, TRACKS,
 )
@@ -723,6 +726,98 @@ class SyntheticAgronomyWorkspace:
             self.ledger._append(
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                 actor=actor, mode="AGRONOMY_SYNTHETIC_HISTORICAL_BINDING_DRIFT",
+            )
+            return result
+
+
+    def read_assigned_synthetic_review_handoff_fingerprint(
+        self, ref: str, principal: Principal,
+    ) -> dict | None:
+        """One auditable, reproducible structural fingerprint, no authority.
+
+        This is intentionally strict about current input/fixture/source
+        binding. For historical drift use historical-binding-drift instead.
+        """
+        if not isinstance(self.ledger, SqliteSyntheticExpertQuestionLedger):
+            raise ValueError("synthetic expert ledger not installed")
+        if not _synthetic_ref(ref):
+            return None
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
+            record = self.ledger._catalogue.get(("DOMESTIC", ref))
+            actor = self._actor(principal)
+            if record is None or actor is None:
+                return None
+            if not self._allowed(actor, ref, record.version):
+                return None
+            current_input = self.ledger._input_snapshot_from_verified_transaction(
+                db, ref, record.version,
+            )
+            proposal = self._proposal_fixtures.get(ref)
+            source_state = SOURCE_NONE
+            if proposal is not None:
+                if current_input is None:
+                    raise LedgerIntegrityError("synthetic input missing for proposal")
+                try:
+                    inspect_proposal_structure(
+                        proposal, expected_case_engine="DOMESTIC",
+                        expected_case_ref=ref,
+                        expected_case_version=record.version,
+                        expected_input_revision=current_input[0],
+                        expected_input_snapshot_digest=current_input[1],
+                    )
+                except ValueError as exc:
+                    raise LedgerIntegrityError(
+                        "synthetic proposal input/current case mismatch"
+                    ) from exc
+                if self._scientific_basis_fixtures:
+                    basis = self._scientific_basis_fixtures.get(
+                        proposal.scientific_basis_manifest_digest
+                    )
+                    try:
+                        inspect_scientific_basis_structure(
+                            basis,
+                            expected_manifest_digest=(
+                                proposal.scientific_basis_manifest_digest
+                            ),
+                            current_sources=self._trusted_scientific_sources(),
+                        )
+                    except Exception as exc:
+                        raise LedgerIntegrityError(
+                            "synthetic scientific source catalogue unavailable/drifted"
+                        ) from exc
+                    source_state = SOURCE_PINNED
+            questions = list(db.execute(
+                "SELECT track,revision,input_revision,input_digest,"
+                "science_digest,proposal_digest,receipt,audit_sequence "
+                "FROM expert_review_question WHERE ref=? ORDER BY audit_sequence",
+                (ref,),
+            ))
+            replies = list(db.execute(
+                "SELECT track,question_revision,response_receipt,audit_sequence "
+                "FROM household_question_response WHERE ref=? ORDER BY audit_sequence",
+                (ref,),
+            ))
+            sightings = list(db.execute(
+                "SELECT track,question_revision,inspection_receipt,audit_sequence "
+                "FROM expert_response_receipt_inspection "
+                "WHERE ref=? ORDER BY audit_sequence", (ref,),
+            ))
+            try:
+                result = prepare_synthetic_review_handoff(
+                    case_ref=ref, case_version=record.version,
+                    input_snapshot=current_input, proposal=proposal,
+                    source_state=source_state,
+                    question_rows=questions, response_rows=replies,
+                    sighting_rows=sightings,
+                )
+            except (ValueError, KeyError, TypeError) as exc:
+                raise LedgerIntegrityError(
+                    "untrusted synthetic handoff structural identity"
+                ) from exc
+            self.ledger._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=actor, mode="AGRONOMY_SYNTHETIC_REVIEW_HANDOFF_FINGERPRINT",
             )
             return result
 

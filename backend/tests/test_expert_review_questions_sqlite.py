@@ -481,6 +481,145 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertEqual(bad.status_code, 503)
         self.assertNotIn("f" * 64, bad.text)
 
+
+    def handoff_fingerprint_url(self):
+        return ("/api/v1/agronomy/assigned-drafts/DEMO-D-1/"
+                "review-handoff-fingerprint")
+
+    def test_handoff_fingerprint_stable_until_owner_reply_sighting_or_question(self):
+        self.seed_input()
+        url = self.handoff_fingerprint_url()
+        before = self.client.get(url, headers=self.headers())
+        self.assertEqual(before.status_code, 200, before.text)
+        empty = before.json()["context_fingerprint_sha256"]
+        self.assertEqual(empty, self.client.get(
+            url, headers=self.headers()).json()["context_fingerprint_sha256"])
+        self.post()
+        first = self.client.get(url, headers=self.headers())
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertNotEqual(first.json()["context_fingerprint_sha256"], empty)
+        self.assertTrue(first.json()["tracks"][0]
+                        ["latest_question_fixture_binding_matches"] is False)
+        self.owner_reply()
+        second = self.client.get(url, headers=self.headers())
+        self.assertNotEqual(second.json()["context_fingerprint_sha256"],
+                            first.json()["context_fingerprint_sha256"])
+        self.inspect()
+        third = self.client.get(url, headers=self.headers())
+        self.assertNotEqual(third.json()["context_fingerprint_sha256"],
+                            second.json()["context_fingerprint_sha256"])
+        self.assertTrue(third.json()["tracks"][0]
+                        ["latest_specialist_receipt_sighting_present"])
+        self.assertFalse(third.json()["independent_decision_recorded"])
+        self.assertEqual(third.json()["source_candidate_pointer_state"],
+                         "NO_SEPARATE_SOURCE_CATALOGUE")
+        self.assertEqual(len([
+            x for x in self.ledger.audit_snapshot()
+            if x.access_mode == "AGRONOMY_SYNTHETIC_REVIEW_HANDOFF_FINGERPRINT"
+        ]), 5)
+        for text in ("DEMO-ANSWER-A", "DEMO-OWNER-EVIDENCE",
+                     "DEMO-REASON-A", "DEMO-EVIDENCE-A", "DEMO-RUN-1",
+                     "DEMO-STAGE-A", "1" * 64):
+            self.assertNotIn(text, third.text)
+
+    def test_handoff_fingerprint_tracks_three_independent_lanes(self):
+        self.seed_input()
+        for i, track in enumerate(TRACKS):
+            self.assertEqual(self.post(
+                action="DEMO-Q-LANE-" + str(i), track=track,
+            ).status_code, 201)
+        result = self.client.get(
+            self.handoff_fingerprint_url(), headers=self.headers())
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual([t["track"] for t in result.json()["tracks"]],
+                         list(TRACKS))
+        self.assertEqual([t["historical_question_count"]
+                          for t in result.json()["tracks"]], [1, 1, 1])
+        self.assertTrue(all(t["review_outcome"] == "NOT_REVIEWED"
+                            for t in result.json()["tracks"]))
+        self.assertFalse(result.json()["plan_accepted"])
+
+    def test_handoff_fingerprint_current_source_fixture_and_rights_drift(self):
+        src = ScientificSourceCandidate(
+            ref="DEMO-SCI-FP", version=1, content_sha256="a" * 64,
+            rights_document_ref="DEMO-RIGHTS-FP",
+            rights_document_sha256="b" * 64,
+            science_review_request_ref="DEMO-SCI-REVIEW-FP",
+            science_review_material_sha256="c" * 64,
+        )
+        basis = ScientificBasisCandidate(
+            ref="DEMO-BASIS-FP", version=1, sources=(src,),
+        )
+        self.science_current[:] = [src]
+        self.workspace = self.specialist(
+            proposal=self.proposal(science=basis.manifest_digest),
+            science_basis=basis,
+        )
+        self.client = self.make_client()
+        self.seed_input()
+        self.post()
+        first = self.client.get(
+            self.handoff_fingerprint_url(), headers=self.headers())
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["source_candidate_pointer_state"],
+                         "SOURCE_CANDIDATE_POINTERS_PINNED_UNVERIFIED")
+        self.assertTrue(first.json()["tracks"][0]
+                        ["latest_question_fixture_binding_matches"])
+        self.science_current[:] = [
+            replace(src, rights_document_sha256="d" * 64)
+        ]
+        self.assertEqual(self.client.get(
+            self.handoff_fingerprint_url(), headers=self.headers()
+        ).status_code, 503)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_handoff_fingerprint_rejects_stale_input_and_tampering(self):
+        self.seed_input()
+        self.post()
+        self.seed_input(revision=1, digest="7" * 64, action="DEMO-INPUT-B")
+        failure = self.client.get(
+            self.handoff_fingerprint_url(), headers=self.headers())
+        self.assertEqual(failure.status_code, 503)
+        self.assertNotIn("DEMO-REASON-A", failure.text)
+        self.workspace = self.specialist(
+            proposal=self.proposal(revision=2, digest="7" * 64))
+        self.client = self.make_client()
+        updated = self.client.get(
+            self.handoff_fingerprint_url(), headers=self.headers())
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertFalse(updated.json()["tracks"][0]
+                         ["latest_question_fixture_binding_matches"])
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER expert_question_no_update")
+            db.execute(
+                "UPDATE expert_review_question SET evidence_ref='DEMO-TAMPERED'"
+            )
+        self.assertEqual(self.client.get(
+            self.handoff_fingerprint_url(), headers=self.headers()
+        ).status_code, 503)
+
+    def test_handoff_fingerprint_signed_case_scope_and_opt_in(self):
+        endpoint = self.handoff_fingerprint_url()
+        self.assertEqual(self.client.get(endpoint).status_code, 401)
+        self.assertEqual(self.client.get(
+            endpoint, headers=self.headers(OWNER, ("household",)),
+        ).status_code, 404)
+        self.assertEqual(self.client.get(
+            endpoint.replace("DEMO-D-1", "DEMO-E-1"),
+            headers=self.headers(),
+        ).status_code, 404)
+        self.assertEqual(self.client.post(
+            endpoint, json={}, headers=self.headers()
+        ).status_code, 405)
+        self.active = False
+        self.assertEqual(self.client.get(
+            endpoint, headers=self.headers()
+        ).status_code, 404)
+        self.active = True
+        self.assertEqual(TestClient(create_app(self.config)).get(
+            endpoint, headers=self.headers()
+        ).status_code, 404)
+
     def evidence_index_url(self):
         return "/api/v1/agronomy/assigned-drafts/DEMO-D-1/review-evidence-index"
 

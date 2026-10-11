@@ -1,5 +1,10 @@
 # Ronas: signed-token backend foundation
 
+## پاسخ آزمایشی خانوار به پرسش متخصص ــ تفکیک دریافت پاسخ از داوری (LOCAL/TEST)
+
+`SqliteSyntheticExpertQuestionLedger` اکنون در همان دفتر یکپارچه پرونده/ورودی/ممیزی، پاسخ **ارجاعی و مصنوعی خانوار** به *آخرین پرسش کفایت اطلاعات خود* را به‌صورت الحاقی نگه می‌دارد. `POST /api/v1/domestic/household-intake/my-drafts/{ref}/question-responses` فقط با توکن Keycloak Bearer امضاشده، نسخه دقیق پرسش و ورودی جاری، شناسه `DEMO-` پاسخ/شاهد و کنترل تعارض پذیرفته می‌شود. نه متن واقعی خانوار دریافت می‌شود، نه پرسش علمی/تصمیم برنامه با دسترسی خانوار پاسخ می‌گیرد. تاریخچه GET و صفحه فارسی `/my-drafts/{ref}/question-responses` فقط برای مالک است؛ کارشناس دارای تخصیص جاری **صرفاً نشان دریافت پاسخ** را می‌بیند، نه ارجاع خصوصی آن را. پاسخ و پرسش قبلی بعد از اصلاح اطلاعات حفظ می‌شوند، اما برای نتیجه جدید قابل‌اتکا نیستند؛ همه مجوزها و داوری‌ها همچنان `false`اند. [قرارداد](household-expert-question-response-contract.md) · [آزمون‌ها](tests/test_expert_review_questions_sqlite.py). پرونده D1-REV-03 در PR Business #1 صرفاً نامزد تصمیم است.
+
+
 ## تاریخچه پرسش‌های نسخه‌دار متخصص داخلی — فقط LOCAL/TEST
 
 `SqliteSyntheticExpertQuestionLedger` یک الحاق اختیاری به **همان دفتر ممیزی و نسخه ورودی خانوار** است. کارشناس دارای Keycloak امضاشده و تخصیص جاری می‌تواند صرفاً ارجاع `DEMO-` برای **پرسش کمبود شواهد** در یکی از سه محور مستقل ثبت کند، نه متن واقعی اطلاعات خانوار یا تصمیم برنامه. ثبت `POST /api/v1/agronomy/assigned-drafts/{ref}/review-questions` فقط Bearer دارد و بر نسخه جاری داده، پیشنهاد و منابع بررسی‌نشده تطبیق می‌گیرد؛ تعارض/اصلاح داده یا منبع رد می‌شود. تاریخچه API و صفحه فارسی `/agronomy/assigned-drafts/{ref}/review-questions` فقط برای متخصص دارای مجوز فعلی، خواندنی و ممیزی‌شده است؛ سابقه قدیمی حذف نمی‌شود ولی هرگز رأی کارشناسی محسوب نمی‌شود. وضعیت همیشگی `SYNTHETIC_QUESTION_ONLY_NOT_REVIEWED` است و تأیید داده/علم/برنامه، مراحل و همه فعالیت‌های عملیاتی غیرفعال‌اند. [قرارداد](internal-expert-question-audit-contract.md) · [آزمون‌ها](tests/test_expert_review_questions_sqlite.py). قرارداد D1-REV-02 در PR Business #1 هنوز تصویب نشده است.

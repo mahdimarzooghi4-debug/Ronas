@@ -1573,7 +1573,7 @@ class LocalExpertQuestionTests(unittest.TestCase):
         for kind in order:
             journal.record_snapshot(
                 kind=kind,subject=EXPERT,case_ref="DEMO-D-1",case_version=3,
-                snapshot=state[kind],action_ref=f"DEMO-INIT-{kind}",
+                snapshot=state[kind],action_ref=f"DEMO-INIT-{kind.replace('_','-')}",
                 expected_generation=0,
             )
         reopened=SqliteSyntheticAuthorityRevisionJournal(
@@ -1617,7 +1617,7 @@ class LocalExpertQuestionTests(unittest.TestCase):
                 value=False
             journal.record_snapshot(
                 kind=kind,subject=EXPERT,case_ref="DEMO-D-1",case_version=3,
-                snapshot=value,action_ref=f"DEMO-ABA-B-{kind}",
+                snapshot=value,action_ref=f"DEMO-ABA-B-{kind.replace('_','-')}",
                 expected_generation=1,
             )
             state[kind]=value
@@ -1626,7 +1626,7 @@ class LocalExpertQuestionTests(unittest.TestCase):
                 snapshot=(() if kind==SCIENCE else
                           SyntheticSpecialistEvidenceRegistry() if kind==SPECIALIST
                           else True),
-                action_ref=f"DEMO-ABA-A-{kind}",expected_generation=2,
+                action_ref=f"DEMO-ABA-A-{kind.replace('_','-')}",expected_generation=2,
             )
             state[kind]=(() if kind==SCIENCE else
                          SyntheticSpecialistEvidenceRegistry() if kind==SPECIALIST
@@ -1667,7 +1667,7 @@ class LocalExpertQuestionTests(unittest.TestCase):
         for kind in kinds:
             authority.record_snapshot(
                 kind=kind,subject=EXPERT,case_ref="DEMO-D-1",case_version=3,
-                snapshot=state[kind],action_ref=f"DEMO-INTEGRITY-{kind}",
+                snapshot=state[kind],action_ref=f"DEMO-INTEGRITY-{kind.replace('_','-')}",
                 expected_generation=0,
             )
         self.workspace._authority_version_callbacks=tuple(

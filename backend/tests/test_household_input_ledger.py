@@ -188,25 +188,25 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         ).json()["input_revisions"], [1])
 
     def test_only_exact_household_owner_can_read_or_append(self):
-        for path in (
-            ROOT,
-            "/api/v1/domestic/household-intake/my-drafts/DEMO-D-2/input-revisions",
-            "/api/v1/domestic/household-intake/my-drafts/DEMO-E-1/input-revisions",
-        ):
-            for subject, roles in (
-                ("synthetic-household-other", ("household",)),
-                (OWNER, ("domestic_ops",)),
-                ("synthetic-domestic-ops", ("domestic_ops",)),
-                (OWNER, ("export_ops",)),
-            ):
-                with self.subTest(path=path, subject=subject, roles=roles):
-                    self.assertEqual(self.client.get(
-                        path, headers=self.headers(subject, roles)
-                    ).status_code, 404)
-                    self.assertEqual(self.client.post(
-                        path, json=self.command(),
-                        headers=self.headers(subject, roles),
-                    ).status_code, 404)
+        forbidden = (
+            (ROOT, "synthetic-household-other", ("household",)),
+            (ROOT, OWNER, ("domestic_ops",)),
+            (ROOT, "synthetic-domestic-ops", ("domestic_ops",)),
+            (ROOT, OWNER, ("export_ops",)),
+            ("/api/v1/domestic/household-intake/my-drafts/DEMO-D-2/input-revisions",
+             OWNER, ("household",)),
+            ("/api/v1/domestic/household-intake/my-drafts/DEMO-E-1/input-revisions",
+             OWNER, ("household",)),
+        )
+        for path, subject, roles in forbidden:
+            with self.subTest(path=path, subject=subject, roles=roles):
+                self.assertEqual(self.client.get(
+                    path, headers=self.headers(subject, roles)
+                ).status_code, 404)
+                self.assertEqual(self.client.post(
+                    path, json=self.command(),
+                    headers=self.headers(subject, roles),
+                ).status_code, 404)
         self.assertTrue(self.ledger.verify_integrity())
 
     def test_no_real_fields_or_unknown_schema_can_enter(self):

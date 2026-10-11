@@ -33,6 +33,179 @@ class LocalAuthorityCheckpointTests(unittest.TestCase):
             snapshot=value,action_ref=action,expected_generation=expected,
         )
 
+
+    def test_strict_recovery_inspection_matches_without_any_mutation(self):
+        from ronas_api.internal_authority_recovery_inspection import (
+            MATCHED, inspect_local_recovery,
+        )
+        self.record("DEMO-RECOVERY-A",True,0)
+        pinned=self.checkpoint.pin_current(self.journal)
+        before=self._snapshot_counts()
+        result=inspect_local_recovery(self.db,self.side)
+        self.assertEqual(result.state,MATCHED)
+        self.assertTrue(result.local_checkpoint_matches)
+        self.assertFalse(result.independent_external_attestation)
+        self.assertEqual(self._snapshot_counts(),before)
+        self.assertEqual(self.checkpoint.assert_current(self.journal)[
+            "checkpoint_ordinal"],pinned["checkpoint_ordinal"])
+
+    def _snapshot_counts(self):
+        with sqlite3.connect(self.db) as db:
+            events=db.execute("SELECT COUNT(*) FROM authority_event").fetchone()[0]
+        with sqlite3.connect(self.side) as db:
+            pins=db.execute("SELECT COUNT(*) FROM local_checkpoint").fetchone()[0]
+        return events,pins
+
+    def test_missing_checkpoint_file_fails_without_recreation_or_repin(self):
+        from ronas_api.internal_authority_recovery_inspection import (
+            MISSING_CHECKPOINT,inspect_local_recovery,
+        )
+        self.record("DEMO-RECOVERY-A",True,0)
+        self.checkpoint.pin_current(self.journal)
+        self.side.unlink()
+        result=inspect_local_recovery(self.db,self.side)
+        self.assertEqual(result.state,MISSING_CHECKPOINT)
+        self.assertFalse(result.local_checkpoint_matches)
+        self.assertFalse(self.side.exists())
+        with self.assertRaises(LocalCheckpointMismatch):
+            SqliteLocalAuthorityCheckpoint.open_existing(self.side)
+        self.assertFalse(self.side.exists())
+
+    def test_missing_journal_and_both_files_fail_without_recreation(self):
+        from ronas_api.internal_authority_recovery_inspection import (
+            MISSING_JOURNAL,MISSING_BOTH,inspect_local_recovery,
+        )
+        self.checkpoint.pin_current(self.journal)
+        self.db.unlink()
+        self.assertEqual(inspect_local_recovery(self.db,self.side).state,
+                         MISSING_JOURNAL)
+        with self.assertRaises(Exception):
+            SqliteSyntheticAuthorityRevisionJournal.open_existing(self.db)
+        self.assertFalse(self.db.exists())
+        self.side.unlink()
+        self.assertEqual(inspect_local_recovery(self.db,self.side).state,
+                         MISSING_BOTH)
+        self.assertFalse(self.db.exists())
+        self.assertFalse(self.side.exists())
+
+    def test_partial_checkpoint_recovery_reports_journal_ahead_unpinned(self):
+        from ronas_api.internal_authority_recovery_inspection import (
+            AHEAD,inspect_local_recovery,
+        )
+        self.record("DEMO-RECOVERY-A",True,0)
+        self.checkpoint.pin_current(self.journal)
+        old_side=self.side.parent/"oldside.db"
+        with sqlite3.connect(self.side) as src:
+            with sqlite3.connect(old_side) as dst:
+                src.backup(dst)
+        self.record("DEMO-RECOVERY-B",False,1)
+        self.checkpoint.pin_current(self.journal)
+        with sqlite3.connect(old_side) as src:
+            with sqlite3.connect(self.side) as dst:
+                src.backup(dst)
+        self.assertEqual(inspect_local_recovery(self.db,self.side).state,AHEAD)
+        with self.assertRaises(LocalCheckpointMismatch):
+            self.checkpoint.assert_current(self.journal)
+
+    def test_partial_journal_recovery_reports_behind_and_denies_repin(self):
+        from ronas_api.internal_authority_recovery_inspection import (
+            BEHIND,inspect_local_recovery,
+        )
+        self.record("DEMO-RECOVERY-A",True,0)
+        self.checkpoint.pin_current(self.journal)
+        old_main=self.db.parent/"oldmain.db"
+        with sqlite3.connect(self.db) as src:
+            with sqlite3.connect(old_main) as dst:
+                src.backup(dst)
+        self.record("DEMO-RECOVERY-B",False,1)
+        self.checkpoint.pin_current(self.journal)
+        with sqlite3.connect(old_main) as src:
+            with sqlite3.connect(self.db) as dst:
+                src.backup(dst)
+        self.assertEqual(inspect_local_recovery(self.db,self.side).state,BEHIND)
+        with self.assertRaises(LocalCheckpointMismatch):
+            self.checkpoint.pin_current(self.journal)
+
+    def test_replaced_and_unpinned_journal_are_not_false_matches(self):
+        from ronas_api.internal_authority_recovery_inspection import (
+            REPLACED,NO_CHECKPOINT,inspect_local_recovery,
+        )
+        self.assertEqual(inspect_local_recovery(self.db,self.side).state,
+                         NO_CHECKPOINT)
+        self.checkpoint.pin_current(self.journal)
+        replacement=self.db.parent/"replacement.db"
+        SqliteSyntheticAuthorityRevisionJournal(replacement)
+        with sqlite3.connect(replacement) as src:
+            with sqlite3.connect(self.db) as dst:
+                src.backup(dst)
+        self.assertEqual(inspect_local_recovery(self.db,self.side).state,
+                         REPLACED)
+
+    def test_corrupt_journal_or_checkpoint_detected_not_repaired(self):
+        from ronas_api.internal_authority_recovery_inspection import (
+            JOURNAL_UNTRUSTED,CHECKPOINT_UNTRUSTED,inspect_local_recovery,
+        )
+        self.record("DEMO-RECOVERY-A",True,0)
+        self.checkpoint.pin_current(self.journal)
+        with sqlite3.connect(self.side) as db:
+            db.execute("DROP TRIGGER local_checkpoint_no_delete")
+        self.assertEqual(inspect_local_recovery(self.db,self.side).state,
+                         CHECKPOINT_UNTRUSTED)
+        with self.assertRaises(LocalCheckpointMismatch):
+            SqliteLocalAuthorityCheckpoint.open_existing(self.side)
+        with sqlite3.connect(self.side) as db:
+            db.execute("""CREATE TRIGGER local_checkpoint_no_delete
+                BEFORE DELETE ON local_checkpoint
+                BEGIN SELECT RAISE(ABORT,'immutable checkpoint'); END""")
+        with sqlite3.connect(self.db) as db:
+            db.execute("DROP TRIGGER authority_event_no_update")
+        self.assertEqual(inspect_local_recovery(self.db,self.side).state,
+                         JOURNAL_UNTRUSTED)
+        from ronas_api.grant_ledger_sqlite import LedgerIntegrityError
+        with self.assertRaises(LedgerIntegrityError):
+            SqliteSyntheticAuthorityRevisionJournal.open_existing(self.db)
+
+    def test_strict_open_existing_refuses_empty_or_incomplete_sqlite(self):
+        from ronas_api.grant_ledger_sqlite import LedgerIntegrityError
+        temp=self.db.parent
+        incomplete_j=temp/"partialjournal.db"
+        incomplete_c=temp/"partialcheckpoint.db"
+        sqlite3.connect(incomplete_j).close()
+        sqlite3.connect(incomplete_c).close()
+        with self.assertRaises((LedgerIntegrityError,sqlite3.DatabaseError)):
+            SqliteSyntheticAuthorityRevisionJournal.open_existing(incomplete_j)
+        with self.assertRaises((LocalCheckpointMismatch,sqlite3.DatabaseError)):
+            SqliteLocalAuthorityCheckpoint.open_existing(incomplete_c)
+        for f in (incomplete_j,incomplete_c):
+            with sqlite3.connect(f) as db:
+                self.assertEqual(db.execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
+                ).fetchone()[0],0)
+
+    def test_both_files_rolled_back_together_remain_unprovable(self):
+        from ronas_api.internal_authority_recovery_inspection import (
+            MATCHED,inspect_local_recovery,
+        )
+        self.record("DEMO-RECOVERY-A",True,0)
+        self.checkpoint.pin_current(self.journal)
+        backup_j=self.db.parent/"backupj.db"
+        backup_c=self.db.parent/"backupc.db"
+        for srcname,dstname in ((self.db,backup_j),(self.side,backup_c)):
+            with sqlite3.connect(srcname) as src:
+                with sqlite3.connect(dstname) as dst:
+                    src.backup(dst)
+        self.record("DEMO-RECOVERY-B",False,1)
+        self.checkpoint.pin_current(self.journal)
+        for srcname,dstname in ((backup_j,self.db),(backup_c,self.side)):
+            with sqlite3.connect(srcname) as src:
+                with sqlite3.connect(dstname) as dst:
+                    src.backup(dst)
+        # Explicitly proves the LIMIT: two coherent rolled-back local
+        # files are indistinguishable without an external trusted witness.
+        check=inspect_local_recovery(self.db,self.side)
+        self.assertEqual(check.state,MATCHED)
+        self.assertFalse(check.independent_external_attestation)
+
     def test_unpinned_and_unsealed_progress_fail_closed(self):
         with self.assertRaises(LocalCheckpointMismatch):
             self.checkpoint.assert_current(self.journal)

@@ -28,26 +28,41 @@ class LocalCheckpointMismatch(LedgerIntegrityError):
 class SqliteLocalAuthorityCheckpoint:
     """Separate private SQLite file, explicit pin/advance and strict checks."""
 
-    def __init__(self, path: str | Path):
+    @classmethod
+    def open_existing(cls, path: str | Path):
+        """Recovery-only open; never manufacture lost checkpoint trust."""
+        return cls(path, create=False)
+
+    def __init__(self, path: str | Path, *, create: bool = True):
         self.path = Path(path)
+        if type(create) is not bool:
+            raise ValueError("explicit create flag must be boolean")
+        self._strict_existing = create is False
         if (not self.path.is_absolute() or self.path.is_symlink()
                 or not self.path.parent.is_dir()):
             raise ValueError("absolute private local checkpoint file required")
-        try:
-            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            if self.path.is_symlink():
-                raise ValueError("symlink checkpoint forbidden") from None
+        if self._strict_existing:
+            if not self.path.is_file():
+                raise LocalCheckpointMismatch("existing local checkpoint required")
         else:
-            os.close(fd)
+            try:
+                fd = os.open(
+                    self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+                )
+            except FileExistsError:
+                if self.path.is_symlink():
+                    raise ValueError("symlink checkpoint forbidden") from None
+            else:
+                os.close(fd)
         st = self.path.stat()
         if (not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) & 0o077
                 or hasattr(os,"getuid") and st.st_uid != os.getuid()):
             raise ValueError("checkpoint must be a private regular file")
-        with self._connect() as db:
-            db.execute("PRAGMA journal_mode=WAL")
-            db.execute("PRAGMA synchronous=FULL")
-            db.executescript("""
+        if not self._strict_existing:
+            with self._connect() as db:
+                db.execute("PRAGMA journal_mode=WAL")
+                db.execute("PRAGMA synchronous=FULL")
+                db.executescript("""
                 CREATE TABLE IF NOT EXISTS local_checkpoint (
                     ordinal INTEGER PRIMARY KEY, journal_id TEXT NOT NULL,
                     event_sequence INTEGER NOT NULL,
@@ -63,12 +78,24 @@ class SqliteLocalAuthorityCheckpoint:
                     SELECT RAISE(ABORT,'immutable checkpoint');
                 END;
             """)
-        with self._tx() as db:
-            self._verify(db)
+        try:
+            with self._tx() as db:
+                self._verify(db)
+        except sqlite3.DatabaseError as exc:
+            raise LocalCheckpointMismatch("local checkpoint unreadable") from exc
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        db = sqlite3.connect(self.path, timeout=15, isolation_level=None)
+        if self._strict_existing:
+            from urllib.parse import quote
+            db = sqlite3.connect(
+                "file:" + quote(str(self.path), safe="/") + "?mode=rw",
+                uri=True, timeout=15, isolation_level=None,
+            )
+        else:
+            db = sqlite3.connect(
+                self.path, timeout=15, isolation_level=None,
+            )
         try:
             db.execute("PRAGMA busy_timeout=15000")
             yield db

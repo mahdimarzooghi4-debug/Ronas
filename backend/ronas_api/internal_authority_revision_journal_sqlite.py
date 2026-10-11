@@ -159,26 +159,41 @@ class SqliteSyntheticAuthorityRevisionJournal:
     not govern or certify any real independent external provider state.
     """
 
-    def __init__(self, path: str | Path):
+    @classmethod
+    def open_existing(cls, path: str | Path):
+        """Recovery-only open: do not create a file, tables, triggers or IDs."""
+        return cls(path, create=False)
+
+    def __init__(self, path: str | Path, *, create: bool = True):
         self.path = Path(path)
+        self._strict_existing = create is False
+        if type(create) is not bool:
+            raise ValueError("explicit create flag must be boolean")
         if (not self.path.is_absolute() or self.path.is_symlink()
                 or not self.path.parent.is_dir()):
             raise ValueError("absolute non-symlink local journal required")
-        try:
-            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            if self.path.is_symlink():
-                raise ValueError("symlink journal forbidden") from None
+        if self._strict_existing:
+            if not self.path.is_file():
+                raise LedgerIntegrityError("existing local journal required")
         else:
-            os.close(fd)
+            try:
+                fd = os.open(
+                    self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+                )
+            except FileExistsError:
+                if self.path.is_symlink():
+                    raise ValueError("symlink journal forbidden") from None
+            else:
+                os.close(fd)
         st = self.path.stat()
         if (not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) & 0o077
                 or hasattr(os, "getuid") and st.st_uid != os.getuid()):
             raise ValueError("authority journal must be a private regular file")
-        with self._connect() as db:
-            db.execute("PRAGMA journal_mode=WAL")
-            db.execute("PRAGMA synchronous=FULL")
-            db.executescript("""
+        if not self._strict_existing:
+            with self._connect() as db:
+                db.execute("PRAGMA journal_mode=WAL")
+                db.execute("PRAGMA synchronous=FULL")
+                db.executescript("""
                 CREATE TABLE IF NOT EXISTS authority_metadata (
                     key TEXT PRIMARY KEY, value TEXT NOT NULL
                 );
@@ -231,20 +246,32 @@ class SqliteSyntheticAuthorityRevisionJournal:
                     SELECT RAISE(ABORT,'immutable authority event');
                 END;
             """)
-            db.execute(
-                "INSERT OR IGNORE INTO authority_metadata(key,value) "
-                "VALUES('head_digest',?)", (GENESIS,),
-            )
-            db.execute(
-                "INSERT OR IGNORE INTO authority_metadata(key,value) "
-                "VALUES('journal_instance_id',?)", (uuid4().hex,),
-            )
-        with self._transaction() as db:
-            self._verify(db)
+                db.execute(
+                    "INSERT OR IGNORE INTO authority_metadata(key,value) "
+                    "VALUES('head_digest',?)", (GENESIS,),
+                )
+                db.execute(
+                    "INSERT OR IGNORE INTO authority_metadata(key,value) "
+                    "VALUES('journal_instance_id',?)", (uuid4().hex,),
+                )
+        try:
+            with self._transaction() as db:
+                self._verify(db)
+        except sqlite3.DatabaseError as exc:
+            raise LedgerIntegrityError("local journal unreadable") from exc
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        db = sqlite3.connect(self.path, timeout=15, isolation_level=None)
+        if self._strict_existing:
+            from urllib.parse import quote
+            db = sqlite3.connect(
+                "file:" + quote(str(self.path), safe="/") + "?mode=rw",
+                uri=True, timeout=15, isolation_level=None,
+            )
+        else:
+            db = sqlite3.connect(
+                self.path, timeout=15, isolation_level=None
+            )
         try:
             db.execute("PRAGMA busy_timeout=15000")
             db.execute("PRAGMA foreign_keys=ON")

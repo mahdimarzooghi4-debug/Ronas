@@ -74,8 +74,8 @@ class InternalCultivationProposal:
 
 
 def inspect_proposal_structure(
-    proposal: InternalCultivationProposal, *, expected_case_ref: str,
-    expected_case_version: int, expected_input_revision: int,
+    proposal: InternalCultivationProposal, *, expected_case_engine: str,
+    expected_case_ref: str, expected_case_version: int, expected_input_revision: int,
     expected_input_snapshot_digest: str,
 ) -> dict:
     """An immutable offline trace for tests, never a science/consent/approval gate.
@@ -85,6 +85,7 @@ def inspect_proposal_structure(
     trusted consent, expert qualification, approved science, or model attestation.
     """
     if (not isinstance(proposal, InternalCultivationProposal)
+            or expected_case_engine != "DOMESTIC"
             or not _synthetic_ref(expected_case_ref)
             or type(expected_case_version) is not int
             or type(expected_input_revision) is not int

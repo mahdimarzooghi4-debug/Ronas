@@ -146,16 +146,19 @@ class AuthorityJournalTests(unittest.TestCase):
 
     def test_owned_insert_failure_rolls_back_data_event_and_head(self):
         self.owned_record(ASSIGNMENT,True,"DEMO-OWNED-START")
+        from unittest.mock import patch
+        original_verify = self.store._verify
+        calls = [0]
+        def fail_after_writes(db):
+            calls[0] += 1
+            if calls[0] == 2:
+                raise RuntimeError("simulated failure after data and event writes")
+            return original_verify(db)
+        with patch.object(self.store, "_verify", side_effect=fail_after_writes):
+            with self.assertRaises(RuntimeError):
+                self.owned_record(ASSIGNMENT,False,"DEMO-OWNED-FAIL",1)
+        self.assertEqual(calls,[2])
         with sqlite3.connect(self.file) as db:
-            db.execute("""
-                CREATE TRIGGER reject_next_owned_update
-                BEFORE UPDATE ON authority_owned_state
-                BEGIN SELECT RAISE(ABORT,'simulated owned snapshot failure'); END
-            """)
-        with self.assertRaises(sqlite3.DatabaseError):
-            self.owned_record(ASSIGNMENT,False,"DEMO-OWNED-FAIL",1)
-        with sqlite3.connect(self.file) as db:
-            db.execute("DROP TRIGGER reject_next_owned_update")
             count=db.execute("SELECT COUNT(*) FROM authority_event").fetchone()[0]
         self.assertEqual(count,1)
         self.assertTrue(self.store.verify_integrity())

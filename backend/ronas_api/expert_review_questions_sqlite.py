@@ -188,6 +188,19 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
                 "SELECT manifest_digest,audit_sequence FROM household_input_revision "
                 "WHERE ref=? AND revision=?", (ref, input_revision),
             ).fetchone()
+            has_profile_history = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='household_profile_revision'",
+            ).fetchone() is not None
+            if source_input is None and has_profile_history:
+                # The profile ledger validates its complete append-only chain
+                # after this base question verifier returns. Bind this question
+                # to the exact immutable profile revision here.
+                source_input = db.execute(
+                    "SELECT content_digest,audit_sequence "
+                    "FROM household_profile_revision WHERE ref=? AND revision=?",
+                    (ref, input_revision),
+                ).fetchone()
             if (source_input is None or source_input[0] != input_digest
                     or source_input[1] >= sequence):
                 raise LedgerIntegrityError("question input lineage missing or altered")

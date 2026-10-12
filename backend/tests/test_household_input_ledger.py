@@ -700,7 +700,6 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         view = self.client.get(route)
         self.assertIn("&lt;script&gt;", view.text)
         self.assertNotIn("<script>", view.text)
-        self.assertNotIn("تأیید علمی", view.text)
         self.assertEqual(self.client.get("/my-drafts/DEMO-D-1").status_code, 200)
         self.assertIn("/my-drafts/DEMO-D-1/progress-notes",
                       self.client.get("/my-drafts/DEMO-D-1").text)

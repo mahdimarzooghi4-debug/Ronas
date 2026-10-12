@@ -453,6 +453,7 @@ def build_agronomy_workspace_router(
             except ReviewQuestionConflict as exc:
                 raise HTTPException(
                     409, detail="SYNTHETIC_QUESTION_VERSION_CONFLICT",
+                    headers={"X-Ronas-Conflict-Reason": str(exc)},
                 ) from exc
             except (LedgerIntegrityError, sqlite3.Error) as exc:
                 raise HTTPException(

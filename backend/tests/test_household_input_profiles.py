@@ -489,10 +489,24 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             question_path, json=stale_question, headers=specialist_headers,
         )
         self.assertEqual(rejected_question.status_code, 409, rejected_question.text)
+        direct_question = workspace.record_assigned_synthetic_review_question(
+            REF, Principal(specialist, frozenset({"agronomy_expert"})),
+            action_id="DEMO-STAGE-QUESTION-DIRECT",
+            track="HOUSEHOLD_INPUT_ADEQUACY",
+            expected_case_version=2, expected_input_revision=1,
+            expected_question_revision=0,
+            reason_ref="DEMO-MISSING-REF", evidence_ref="DEMO-PENDING-REF",
+            stage_context_authority=self.stage_context,
+            stage_ref="DEMO-STAGE-01",
+            expected_stage_observation_revision=receipt["revision"],
+            expected_stage_observation_receipt_digest=receipt["receipt_digest"],
+        )
+        self.assertEqual(direct_question["question_revision"], 1)
         linked_question = client.post(
             question_path,
             json={**stale_question,
                   "action_id": "DEMO-STAGE-QUESTION-1",
+                  "expected_question_revision": 1,
                   "expected_stage_observation_receipt_digest": receipt["receipt_digest"]},
             headers=specialist_headers,
         )

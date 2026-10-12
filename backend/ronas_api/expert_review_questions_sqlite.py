@@ -365,6 +365,16 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
                 "SELECT manifest_digest,audit_sequence FROM household_input_revision "
                 "WHERE ref=? AND revision=?", (ref, input_revision),
             ).fetchone()
+            has_profile_history = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='household_profile_revision'",
+            ).fetchone() is not None
+            if inp is None and has_profile_history:
+                inp = db.execute(
+                    "SELECT content_digest,audit_sequence "
+                    "FROM household_profile_revision WHERE ref=? AND revision=?",
+                    (ref, input_revision),
+                ).fetchone()
             event = expected.get(seq)
             if (record is None or version != record.version
                     or track != "HOUSEHOLD_INPUT_ADEQUACY"

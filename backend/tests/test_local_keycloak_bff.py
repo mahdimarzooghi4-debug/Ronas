@@ -101,8 +101,11 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
         )
         return TestClient(app, base_url=ORIGIN, follow_redirects=False), calls, captured
 
-    def _start(self, client, captured):
-        start = client.get("/api/auth/start")
+    def _start(self, client, captured, *, return_to=None):
+        start = client.get(
+            "/api/auth/start",
+            params={"return_to": return_to} if return_to is not None else None,
+        )
         self.assertEqual(start.status_code, 303, start.text)
         loc = urlsplit(start.headers["location"])
         self.assertEqual(loc.scheme, "https")
@@ -233,6 +236,28 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
         })
         self.assertEqual(logout.status_code, 200)
         self.assertEqual(client.get("/api/auth/session").status_code, 401)
+
+    def test_login_destination_returns_to_admin_only_for_admin_roles(self):
+        client, _, captured = self._client(role="finance")
+        query = self._start(client, captured, return_to="/admin")
+        response = client.get(
+            "/api/auth/callback",
+            params={"code": "code-1", "state": query["state"][0]},
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/admin")
+
+        client, _, captured = self._client(role="household")
+        denied = client.get("/admin")
+        self.assertEqual(denied.status_code, 401)
+        self.assertIn("return_to=%2Fadmin", denied.text)
+        query = self._start(client, captured, return_to="/admin")
+        response = client.get(
+            "/api/auth/callback",
+            params={"code": "code-1", "state": query["state"][0]},
+        )
+        self.assertEqual(response.headers["location"], "/")
+        self.assertEqual(client.get("/admin").status_code, 403)
 
     def test_invalid_id_nonce_fails_no_session(self):
         client, _, capture = self._client(bad_nonce=True)

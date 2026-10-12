@@ -39,6 +39,11 @@ class PendingLogin:
     verifier: str
     nonce: str
     created_at: float
+    return_path: str = "/"
+
+    def __post_init__(self) -> None:
+        if self.return_path not in ("/", "/admin"):
+            raise ValueError("fixed local post-login destination required")
 
 
 @dataclass(frozen=True)
@@ -94,9 +99,14 @@ class BrowserOIDC:
         self.now = now
         self.access_verifier = KeycloakTokenVerifier(config.keycloak)
 
-    def start(self) -> tuple[str, str]:
+    def start(self, return_path: str | None = None) -> tuple[str, str]:
+        destination = self.config.return_path if return_path is None else return_path
+        if destination not in ("/", "/admin"):
+            raise ValueError("fixed local post-login destination required")
         state, verifier, nonce = _opaque(), _opaque(48), _opaque()
-        self.store.save_pending(PendingLogin(state, verifier, nonce, self.now()))
+        self.store.save_pending(PendingLogin(
+            state, verifier, nonce, self.now(), destination,
+        ))
         params = {
             "client_id": self.config.keycloak.browser_client_id,
             "redirect_uri": self.config.callback_url,
@@ -136,7 +146,9 @@ class BrowserOIDC:
         except (jwt.PyJWTError, ValueError, TypeError, KeyError, InvalidToken) as exc:
             raise InvalidToken from exc
 
-    async def finish(self, code: str, state: str, state_cookie: str | None) -> str:
+    async def finish(
+        self, code: str, state: str, state_cookie: str | None,
+    ) -> tuple[str, str]:
         if (not _safe_string(code, 2048) or not _safe_string(state, 256)
                 or not state_cookie or not hmac.compare_digest(state, state_cookie)):
             raise InvalidToken
@@ -178,7 +190,11 @@ class BrowserOIDC:
                 principal.subject, principal.roles,
                 bundle["access_token"], _opaque(), expires_at,
             ))
-            return sid
+            destination = pending.return_path
+            admin_roles = {"domestic_ops", "export_ops", "finance", "governance"}
+            if destination == "/admin" and not principal.roles.intersection(admin_roles):
+                destination = "/"
+            return sid, destination
         except (InvalidToken, jwt.PyJWTError, ValueError, KeyError, TypeError) as exc:
             raise InvalidToken from exc
 
@@ -200,8 +216,11 @@ def build_browser_router(flow: BrowserOIDC) -> APIRouter:
     pending_name = "__Host-ronas_login"
 
     @router.get("/api/auth/start")
-    def start():
-        url, state = flow.start()
+    def start(return_to: str | None = None):
+        try:
+            url, state = flow.start(return_to)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="INVALID_LOCAL_RETURN_PATH") from None
         resp = RedirectResponse(url, status_code=303)
         resp.set_cookie(pending_name, state, max_age=300,
                         secure=True, httponly=True, samesite="lax", path="/")
@@ -212,10 +231,10 @@ def build_browser_router(flow: BrowserOIDC) -> APIRouter:
     async def callback(code: str = "", state: str = "",
                        cookie: str | None = Cookie(default=None, alias=pending_name)):
         try:
-            sid = await flow.finish(code, state, cookie)
+            sid, return_path = await flow.finish(code, state, cookie)
         except InvalidToken:
             raise HTTPException(status_code=401, detail="OIDC_CALLBACK_REJECTED") from None
-        resp = RedirectResponse(flow.config.return_path, status_code=303)
+        resp = RedirectResponse(return_path, status_code=303)
         resp.delete_cookie(pending_name, path="/", secure=True, httponly=True, samesite="lax")
         resp.set_cookie(name, sid, max_age=900,
                         secure=True, httponly=True, samesite="lax", path="/")

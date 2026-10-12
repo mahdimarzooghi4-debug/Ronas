@@ -83,11 +83,15 @@ LOGOUT_SCRIPT = """document.addEventListener('DOMContentLoaded', () => {
 });"""
 
 def page(title: str, body: str, *, logged_in: bool, code: int = 200,
-         local_test_form: bool = False) -> HTMLResponse:
+         local_test_form: bool = False,
+         login_return_path: str = "/") -> HTMLResponse:
     logout = (
         '<button type="button" id="ronas-logout">خروج امن</button>'
         '<p id="logout-message" role="status" aria-live="polite"></p>'
-        if logged_in else '<a class="btn" href="/api/auth/start">ورود با Keycloak</a>'
+        if logged_in else (
+            '<a class="btn" href="/api/auth/start?return_to='
+            + quote(login_return_path, safe='') + '">ورود با Keycloak</a>'
+        )
     )
     html = ('<!doctype html><html lang="fa" dir="rtl"><head>'
             '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -2244,7 +2248,7 @@ def build_authenticated_ui_router(
         grants = session.roles if session is not None else None
         if grants is None:
             return page("مدیریت روناس — ورود الزامی", '<p>ورود امن لازم است.</p>',
-                        logged_in=False, code=401)
+                        logged_in=False, code=401, login_return_path="/admin")
         active = [(name, label) for name, label in ADMIN_ROLES.items() if name in grants]
         if not active:
             return page("دسترسی مدیریت مجاز نیست",

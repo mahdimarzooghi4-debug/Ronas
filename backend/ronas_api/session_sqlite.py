@@ -114,6 +114,7 @@ class SqliteBrowserSessionStore:
         ciphertext = self._encrypt("pending:", digest, {
             "state": item.state, "verifier": item.verifier,
             "nonce": item.nonce, "created_at": item.created_at,
+            "return_path": item.return_path,
         })
         with self._db() as db:
             try:
@@ -143,8 +144,9 @@ class SqliteBrowserSessionStore:
             return None
         data = self._decrypt("pending:", digest, row[0])
         try:
-            if (data is None or set(data) != {"state", "verifier", "nonce", "created_at"}
-                    or data["state"] != state
+            if (data is None or set(data) != {
+                    "state", "verifier", "nonce", "created_at", "return_path",
+            } or data["state"] != state
                     or type(data["created_at"]) not in (int, float)
                     or not math.isfinite(data["created_at"])
                     or row[1] != data["created_at"] + 300):

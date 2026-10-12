@@ -162,6 +162,26 @@ class BrowserLoginTests(unittest.TestCase):
         self.assertNotIn("id_token", r.headers["set-cookie"])
         self.assertNotIn("synthetic-test-user", r.headers["set-cookie"])
 
+    def test_admin_return_path_is_role_scoped_and_redirect_allowlisted(self):
+        self.access_changes = {
+            "resource_access": {API: {"roles": ["household"]}},
+        }
+        start = self.client.get("/api/auth/start", params={"return_to": "/admin"})
+        self.assertEqual(start.status_code, 303)
+        args = parse_qs(urlsplit(start.headers["location"]).query)
+        self.assertEqual(args["state"], [self.store.latest_pending.state])
+        self.assertEqual(self.complete(args).headers["location"], "/")
+
+        self.setUp()
+        for target in ("https://evil.example.test", "//evil.example.test", "/admin?next=/"):
+            with self.subTest(target=target):
+                rejected = self.client.get(
+                    "/api/auth/start", params={"return_to": target},
+                )
+                self.assertEqual(rejected.status_code, 422)
+        self.assertEqual(self.store.pending, {})
+        self.assertEqual(self.exchange_calls, [])
+
     def test_state_cookie_required_and_wrong_state_prevents_exchange(self):
         _, params = self.start()
         state = params["state"][0]

@@ -40,6 +40,12 @@ class SqliteStoreTests(unittest.TestCase):
         self.store.save_pending(record)
         reopened = self.make_store()
         self.assertEqual(reopened.take_pending(self.state), record)
+        admin_record = PendingLogin(
+            secrets.token_urlsafe(32), secrets.token_urlsafe(48),
+            secrets.token_urlsafe(32), self.clock[0], "/admin",
+        )
+        self.store.save_pending(admin_record)
+        self.assertEqual(reopened.take_pending(admin_record.state), admin_record)
         self.assertIsNone(self.store.take_pending(self.state))
 
     def test_atomic_pending_consumption_across_eight_connections(self):

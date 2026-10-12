@@ -16,6 +16,9 @@ from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
 from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
 from .owner_case_api import build_owned_household_router
 from .household_input_ledger_sqlite import SqliteSyntheticHouseholdInputLedger
+from .household_input_profiles import (
+    HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
+)
 from .household_input_api import build_household_input_router
 from .technical_review_api import build_technical_review_read_router
 from .shared_workspaces import build_user_workspaces_router
@@ -53,7 +56,9 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                authority_enquiry_ledger: SqliteSyntheticAuthorityEnquiryLedger | None = None,
                agronomy_workspace: SyntheticAgronomyWorkspace | None = None,
                export_supplier_workspace: SyntheticSupplierWorkspace | None = None,
-               domestic_partner_workspace: SyntheticDomesticPartnerWorkspace | None = None) -> FastAPI:
+               domestic_partner_workspace: SyntheticDomesticPartnerWorkspace | None = None,
+               household_profile_schema: HouseholdInputSchema | None = None,
+               household_profile_access_authority=None) -> FastAPI:
     app = FastAPI(
         title="Ronas bounded read-only API foundation",
         docs_url=None, redoc_url=None, openapi_url=None,
@@ -110,6 +115,8 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             browser_flow, technical_review_ledger=worklist_ledger,
             owned_case_ledger=owner_ledger,
             household_input_ledger=input_ledger,
+            household_profile_schema=household_profile_schema,
+            household_profile_access_authority=household_profile_access_authority,
             gate_handoff_ledger=gate_handoff_ledger,
             authority_enquiry_ledger=authority_enquiry_ledger,
             agronomy_workspace=agronomy_workspace,

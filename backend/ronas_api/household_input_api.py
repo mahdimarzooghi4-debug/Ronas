@@ -18,6 +18,9 @@ from .household_input_ledger_sqlite import (
 from .expert_review_questions_sqlite import (
     SqliteSyntheticExpertQuestionLedger, ReviewQuestionConflict,
 )
+from .household_input_profiles import (
+    HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
+)
 
 
 class SyntheticManifestCorrection(BaseModel):
@@ -37,6 +40,15 @@ class SyntheticProgressNote(BaseModel):
     note: StrictStr
 
 
+
+class HouseholdProfileCorrection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: StrictStr
+    expected_case_version: StrictInt
+    expected_revision: StrictInt
+    values: dict[StrictStr, StrictStr]
+
+
 class SyntheticHouseholdQuestionReply(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     action_id: StrictStr
@@ -51,9 +63,18 @@ class SyntheticHouseholdQuestionReply(BaseModel):
 def build_household_input_router(
     ledger: SqliteSyntheticHouseholdInputLedger,
     verified_principal: Callable[..., Principal],
+    profile_schema: HouseholdInputSchema | None = None,
+    profile_access_authority: Callable[[Principal, str, str], bool] | None = None,
 ) -> APIRouter:
     if not isinstance(ledger, SqliteSyntheticHouseholdInputLedger):
         raise ValueError("explicit local synthetic input ledger required")
+    if profile_schema is not None:
+        if (not isinstance(ledger, SqliteSyntheticHouseholdProfileLedger)
+                or ledger.profile_schema != profile_schema
+                or not callable(profile_access_authority)):
+            raise ValueError("profile intake needs same ledger, schema, and access authority")
+    elif profile_access_authority is not None:
+        raise ValueError("profile authority without profile schema")
     router = APIRouter()
 
     @router.get("/api/v1/domestic/household-intake/my-drafts/{ref}/input-revisions")
@@ -187,6 +208,75 @@ def build_household_input_router(
                 raise HTTPException(
                     422, detail="INVALID_SYNTHETIC_RESPONSE",
                 ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return result
+
+
+    if profile_schema is not None and profile_access_authority is not None:
+        profile_ledger = ledger
+
+        def profile_allowed(p: Principal, ref: str) -> bool:
+            try:
+                return profile_access_authority(
+                    p, ref, profile_schema.schema_ref,
+                ) is True
+            except Exception as exc:
+                raise HTTPException(
+                    503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                ) from exc
+
+        @router.get(
+            "/api/v1/domestic/household-intake/my-drafts/{ref}/cultivation-inputs",
+        )
+        def read_cultivation_inputs(
+            ref: str, p: Principal = Depends(verified_principal),
+        ) -> dict:
+            if not profile_allowed(p, ref):
+                raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+            try:
+                result = profile_ledger.read_owned_profile(ref, p)
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return {
+                **result,
+                "fields": [{
+                    "key": f.key, "label": f.label, "kind": f.kind,
+                    "required": f.required, "max_length": f.max_length,
+                    "choices": list(f.choices),
+                } for f in profile_schema.fields],
+            }
+
+        @router.post(
+            "/api/v1/domestic/household-intake/my-drafts/{ref}/cultivation-inputs",
+            status_code=201,
+        )
+        def write_cultivation_inputs(
+            ref: str, data: HouseholdProfileCorrection,
+            authorization: str | None = Header(default=None),
+            p: Principal = Depends(verified_principal),
+        ) -> dict:
+            if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
+                raise HTTPException(401, detail="BEARER_REQUIRED_FOR_MUTATION")
+            if not profile_allowed(p, ref):
+                raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+            try:
+                result = profile_ledger.append_owned_profile(
+                    ref, p, action_id=data.action_id,
+                    expected_case_version=data.expected_case_version,
+                    expected_revision=data.expected_revision,
+                    values=data.values,
+                )
+            except InputRevisionConflict as exc:
+                raise HTTPException(409, detail="HOUSEHOLD_PROFILE_VERSION_CONFLICT") from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE") from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_HOUSEHOLD_PROFILE") from exc
             if result is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
             return result

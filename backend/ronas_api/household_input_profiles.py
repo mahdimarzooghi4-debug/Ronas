@@ -811,6 +811,9 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                     "observation_revision": (
                         latest["revision"] if latest is not None else None
                     ),
+                    "receipt_inspected": bool(
+                        latest is not None and latest["receipt_inspected"]
+                    ),
                 })
         return {
             "engine": "DOMESTIC", "ref": ref,

@@ -676,6 +676,64 @@ class ExportResearchQueueTests(unittest.TestCase):
             headers=headers if headers is not None else self.headers(),
         )
 
+    def demo_export_evidence_form(self, *, question_rev=1,
+                                  evidence_rev=0, case_version=3,
+                                  evidence="DEMO-EVIDENCE-ALPHA",
+                                  connector="DEMO-CONNECTOR-ALPHA",
+                                  digest="c" * 64, csrf=None):
+        sid = self.client.cookies.get("__Host-ronas_session")
+        session = self.store.get_session(sid)
+        return {
+            "csrf": session.csrf if csrf is None else csrf,
+            "case_version": str(case_version),
+            "question_revision": str(question_rev),
+            "evidence_revision": str(evidence_rev),
+            "evidence_ref": evidence, "connector_ref": connector,
+            "source_snapshot_digest": digest,
+        }
+
+    def test_export_browser_evidence_reference_form_end_to_end(self):
+        self.assertEqual(self.post_question().status_code, 201)
+        self.login()
+        base = "/admin/export/research/drafts/DEMO-E-001"
+        page = self.client.get(base)
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("ثبت fingerprint اتصال منبع", page.text)
+        route = base + "/evidence-reference"
+        payload = self.demo_export_evidence_form()
+        post = self.client.post(
+            route, data=payload, headers={"Origin": ORIGIN},
+            follow_redirects=False,
+        )
+        self.assertEqual(post.status_code, 303, post.text)
+        rendered = self.client.get(base)
+        self.assertEqual(rendered.status_code, 200, rendered.text)
+        self.assertIn("DEMO-EVIDENCE-ALPHA", rendered.text)
+        self.assertIn("c" * 64, rendered.text)
+        self.assertEqual(self.client.post(
+            route, data=payload, headers={"Origin": ORIGIN},
+        ).status_code, 409)
+        self.assertEqual(self.client.post(
+            route, data=payload,
+        ).status_code, 403)
+        invalid = self.demo_export_evidence_form(
+            evidence="https://example.test/raw-source",
+        )
+        self.assertEqual(self.client.post(
+            route, data=invalid, headers={"Origin": ORIGIN},
+        ).status_code, 422)
+        workspace = self.client.get(
+            base.replace("/admin/", "/api/v1/admin/") + "/workspace",
+            headers=self.headers(),
+        ).json()
+        self.assertEqual(
+            workspace["local_test_evidence_references"][0]["source_snapshot_digest"],
+            "c" * 64,
+        )
+        self.assertFalse(workspace["source_rights_verified"])
+        self.assertIsNone(workspace["study_findings"])
+        self.assertTrue(self.reopen().verify_integrity())
+
     def test_export_evidence_references_bind_to_question_and_render_in_workspace(self):
         self.assertEqual(self.post_question().status_code, 201)
         payload = self.evidence_payload()

@@ -402,6 +402,10 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             agronomy_workspace=workspace,
         )
         client = TestClient(app, base_url=ORIGIN)
+        profile = client.post(
+            ROOT, json=self.command(), headers=self.bearer(),
+        )
+        self.assertEqual(profile.status_code, 201, profile.text)
         command = self.stage_command()
         command["observation_artifact_digest"] = artifact.digest
         submitted = client.post(

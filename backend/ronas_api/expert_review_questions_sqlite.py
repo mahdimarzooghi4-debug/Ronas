@@ -503,6 +503,27 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
                 "WHERE q.ref=? AND q.track='HOUSEHOLD_INPUT_ADEQUACY' "
                 "ORDER BY q.revision", (ref,),
             ))
+            has_stage_links = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='expert_stage_question_binding'",
+            ).fetchone() is not None
+            stage_links = {}
+            if has_stage_links:
+                stage_links = {
+                    revision: {
+                        "stage_ref": stage_ref,
+                        "stage_observation_revision": observation_revision,
+                        "stage_observation_receipt_digest": observation_digest,
+                    }
+                    for revision, stage_ref, observation_revision, observation_digest
+                    in db.execute(
+                        "SELECT question_revision,stage_ref,observation_revision,"
+                        "observation_receipt_digest FROM "
+                        "expert_stage_question_binding WHERE ref=? "
+                        "AND track='HOUSEHOLD_INPUT_ADEQUACY'",
+                        (ref,),
+                    )
+                }
             self._append(
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                 actor=principal.subject,
@@ -524,6 +545,11 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
                         "is_current_input_version": (
                             latest is not None and bound_input == latest[0]
                         ),
+                        **stage_links.get(revision, {
+                            "stage_ref": None,
+                            "stage_observation_revision": None,
+                            "stage_observation_receipt_digest": None,
+                        }),
                     }
                     for revision, bound_input, action, answer, evidence
                     in questions

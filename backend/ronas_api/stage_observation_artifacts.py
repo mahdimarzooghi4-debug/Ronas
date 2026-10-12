@@ -203,8 +203,13 @@ def _validated_content_type(content_type: str, content: bytes) -> str:
     return content_type
 
 
-class PrivateFilesystemStageArtifactStore:
-    """Encrypted content-addressed LOCAL/TEST adapter with owner/case isolation."""
+class PrivateFilesystemStageArtifactStore(StageArtifactStore):
+    """Encrypted content-addressed LOCAL/TEST adapter with owner/case isolation.
+
+    Filesystem operations are inherited from the descriptor-relative protocol
+    implementation above so the concrete adapter cannot fall back to
+    path-based traversal after validating the root.
+    """
 
     def __init__(self, root: str | Path, encryption_key: bytes):
         self.root = Path(root)
@@ -238,76 +243,8 @@ class PrivateFilesystemStageArtifactStore:
                 + hashlib.sha256(case_ref.encode()).hexdigest() + ":"
                 + digest).encode("ascii")
 
-    def put(self, owner: str, case_ref: str, content_type: str,
-            content: bytes) -> StageArtifact:
-        if not isinstance(content, bytes) or not 1 <= len(content) <= MAX_ARTIFACT_BYTES:
-            raise ValueError("stage artifact size is outside the allowed range")
-        content_type = _validated_content_type(content_type, content)
-        digest = hashlib.sha256(content).hexdigest()
-        path = self._path(owner, case_ref, digest)
-        owner_dir = self.root / self._namespace(owner)
-        directory = owner_dir / self._namespace(case_ref)
-        try:
-            owner_dir.mkdir(mode=0o700, exist_ok=True)
-            directory.mkdir(mode=0o700, exist_ok=True)
-            for parent in (self.root, owner_dir, directory):
-                info = parent.lstat()
-                if (not stat.S_ISDIR(info.st_mode)
-                        or stat.S_IMODE(info.st_mode) & 0o077
-                        or (hasattr(os, "getuid") and info.st_uid != os.getuid())):
-                    raise StageArtifactStoreError("artifact directory is not private")
-            nonce = secrets.token_bytes(12)
-            ciphertext = nonce + self._cipher.encrypt(
-                nonce, content, self._aad(owner, case_ref, digest),
-            )
-            try:
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                              | getattr(os, "O_NOFOLLOW", 0), 0o600)
-            except FileExistsError:
-                existing = self.get(owner, case_ref, digest)
-                if existing is None or existing[1] != content:
-                    raise StageArtifactStoreError("artifact digest collision")
-            else:
-                with os.fdopen(fd, "wb") as target:
-                    target.write(ciphertext)
-                    target.flush()
-                    os.fsync(target.fileno())
-        except (OSError, InvalidTag) as exc:
-            if isinstance(exc, StageArtifactStoreError):
-                raise
-            raise StageArtifactStoreError("artifact write failed") from exc
-        return StageArtifact(digest, content_type, len(content))
-
-    def get(self, owner: str, case_ref: str, digest: str
-            ) -> tuple[StageArtifact, bytes] | None:
-        path = self._path(owner, case_ref, digest)
-        try:
-            info = path.lstat()
-            if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
-                raise StageArtifactStoreError("artifact file is not private")
-            encrypted = path.read_bytes()
-            if not 28 <= len(encrypted) <= MAX_ARTIFACT_BYTES + 28:
-                raise StageArtifactStoreError("artifact file size is invalid")
-            content = self._cipher.decrypt(
-                encrypted[:12], encrypted[12:], self._aad(owner, case_ref, digest),
-            )
-            if not hmac.compare_digest(hashlib.sha256(content).hexdigest(), digest):
-                raise StageArtifactStoreError("artifact digest verification failed")
-            # Store the validated type in a tiny authenticated sidecar-free header:
-            # infer from signed bytes, so no mutable metadata can alter serving.
-            media = next((kind for kind, matches in _MIME_SIGNATURES.items()
-                          if matches(content)), None)
-            if media is None:
-                raise StageArtifactStoreError("artifact media signature is invalid")
-            return StageArtifact(digest, media, len(content)), content
-        except FileNotFoundError:
-            return None
-        except (OSError, InvalidTag) as exc:
-            raise StageArtifactStoreError("artifact read or integrity check failed") from exc
-
     def contains(self, owner: str, case_ref: str, digest: str) -> bool:
         return self.get(owner, case_ref, digest) is not None
-
 
 def _context_matches(context: CurrentStageContext | None, ref: str,
                      headers: dict[str, str]) -> bool:

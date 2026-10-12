@@ -75,6 +75,17 @@ class StageArtifactStoreTests(unittest.TestCase):
         with self.assertRaises(StageArtifactStoreError):
             self.store.put("owner", "DEMO-D-002", "image/png", PNG)
 
+    def test_root_symlink_replacement_is_rejected_for_reads_and_writes(self):
+        artifact = self.store.put("owner", "DEMO-D-001", "image/png", PNG)
+        moved_root = Path(self.temp.name) / "moved-root"
+        self.root.rename(moved_root)
+        self.root.symlink_to(moved_root, target_is_directory=True)
+
+        with self.assertRaises(StageArtifactStoreError):
+            self.store.get("owner", "DEMO-D-001", artifact.digest)
+        with self.assertRaises(StageArtifactStoreError):
+            self.store.put("owner", "DEMO-D-002", "image/png", PNG)
+
     def test_private_directory_and_ciphertext_tampering_fail_closed(self):
         public = Path(self.temp.name) / "public"
         public.mkdir(mode=0o755)

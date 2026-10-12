@@ -28,6 +28,15 @@ class SyntheticManifestCorrection(BaseModel):
     synthetic_manifest_digest: StrictStr
 
 
+class SyntheticProgressNote(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: StrictStr
+    expected_case_version: StrictInt
+    expected_revision: StrictInt
+    reported_at: StrictStr
+    note: StrictStr
+
+
 class SyntheticHouseholdQuestionReply(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     action_id: StrictStr
@@ -87,6 +96,42 @@ def build_household_input_router(
             ) from exc
         except ValueError as exc:
             raise HTTPException(422, detail="INVALID_SYNTHETIC_INPUT_REVISION") from exc
+        if result is None:
+            raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+        return result
+
+    @router.get("/api/v1/domestic/household-intake/my-drafts/{ref}/progress-notes")
+    def own_progress_notes(ref: str, p: Principal = Depends(verified_principal)) -> dict:
+        try:
+            result = ledger.read_owned_progress_notes(ref, p)
+        except (LedgerIntegrityError, sqlite3.Error) as exc:
+            raise HTTPException(503, detail="SYNTHETIC_PROGRESS_HISTORY_UNAVAILABLE") from exc
+        if result is None:
+            raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+        return result
+
+    @router.post("/api/v1/domestic/household-intake/my-drafts/{ref}/progress-notes",
+                 status_code=201)
+    def append_progress_note(
+        ref: str, data: SyntheticProgressNote,
+        authorization: str | None = Header(default=None),
+        p: Principal = Depends(verified_principal),
+    ) -> dict:
+        if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
+            raise HTTPException(401, detail="BEARER_REQUIRED_FOR_MUTATION")
+        try:
+            result = ledger.append_owned_progress_note(
+                ref, p, action_id=data.action_id,
+                expected_case_version=data.expected_case_version,
+                expected_revision=data.expected_revision,
+                reported_at=data.reported_at, note=data.note,
+            )
+        except InputRevisionConflict as exc:
+            raise HTTPException(409, detail="SYNTHETIC_PROGRESS_VERSION_CONFLICT") from exc
+        except (LedgerIntegrityError, sqlite3.Error) as exc:
+            raise HTTPException(503, detail="SYNTHETIC_PROGRESS_HISTORY_UNAVAILABLE") from exc
+        except ValueError as exc:
+            raise HTTPException(422, detail="INVALID_SYNTHETIC_PROGRESS_NOTE") from exc
         if result is None:
             raise HTTPException(404, detail="DRAFT_NOT_FOUND")
         return result

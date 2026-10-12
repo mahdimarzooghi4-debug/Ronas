@@ -32,3 +32,16 @@ New tests use real signed Keycloak-shaped PKCE browser login via isolated HTTP m
 ## Safe post-login destination
 
 The two existing shells can request only the fixed local destinations `/` or `/admin`. The destination is encrypted with the one-time PKCE login state, never accepted as an external URL, and `/admin` is honored only when the verified token carries an existing administration role. Other roles land in the shared user/collaborator shell. This preserves navigation intent without granting access; every route still performs its existing server-side authorization.
+
+
+## LOCAL/TEST Domestic synthetic progress notes
+
+The owner-only household progress journal accepts a synthetic note prefixed with
+`DEMO:` and a user-reported timezone-aware timestamp. It is append-only,
+revision-checked, audit-bound to the existing household ledger, and available
+through the local authenticated BFF and signed API. Its content is never shown
+to an expert or export user. The journal has no predefined cultivation stages,
+scientific criteria, actual data intake, expert inspection, plan acceptance,
+consent evidence, or production authority. External identity/service connections
+are represented by existing local contracts and test fixtures during internal
+development; this does not claim that live external services or approvals exist.

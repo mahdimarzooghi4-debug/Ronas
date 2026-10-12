@@ -613,5 +613,102 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
         self.assertNotIn("اقدام بعدی", resp.text)
 
+
+    def progress_command(self, revision=0, action="DEMO-PROGRESS-A",
+                         note="DEMO: observed leaves", reported_at="2026-10-12T10:30:00+03:30"):
+        return {
+            "action_id": action, "expected_case_version": 3,
+            "expected_revision": revision, "reported_at": reported_at,
+            "note": note,
+        }
+
+    def test_progress_note_api_is_owner_only_append_only_and_replay_safe(self):
+        root = "/api/v1/domestic/household-intake/my-drafts/DEMO-D-1/progress-notes"
+        initial = self.client.get(root, headers=self.headers())
+        self.assertEqual(initial.status_code, 200, initial.text)
+        self.assertEqual(initial.json()["notes"], [])
+        for key in ("real_data", "scientific_review", "expert_inspection", "plan_accepted"):
+            self.assertIs(initial.json()[key], False)
+        first = self.client.post(root, json=self.progress_command(), headers=self.headers())
+        self.assertEqual(first.status_code, 201, first.text)
+        self.assertFalse(first.json()["idempotent_replay"])
+        replay = self.client.post(root, json=self.progress_command(), headers=self.headers())
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertTrue(replay.json()["idempotent_replay"])
+        history = self.client.get(root, headers=self.headers()).json()
+        self.assertEqual(history["notes"], [{
+            "revision": 1, "reported_at": "2026-10-12T10:30:00+03:30",
+            "note": "DEMO: observed leaves",
+        }])
+        self.assertTrue(self.ledger.verify_integrity())
+        self.ledger = self.reopen()
+        self.assertEqual(self.ledger.read_owned_progress_notes(
+            "DEMO-D-1", Principal(OWNER, frozenset({"household"}))
+        )["current_revision"], 1)
+
+    def test_progress_note_api_rejects_stale_owner_role_and_real_claims(self):
+        root = "/api/v1/domestic/household-intake/my-drafts/DEMO-D-1/progress-notes"
+        for subject, roles in (
+            ("synthetic-household-other", ("household",)),
+            (OWNER, ("domestic_ops",)),
+        ):
+            self.assertEqual(self.client.get(root, headers=self.headers(subject, roles)).status_code, 404)
+            self.assertEqual(self.client.post(root, json=self.progress_command(),
+                                              headers=self.headers(subject, roles)).status_code, 404)
+        self.assertEqual(self.client.post(root, json=self.progress_command(reported_at="2026-10-12T10:30:00"),
+                                          headers=self.headers()).status_code, 422)
+        self.assertEqual(self.client.post(root, json=self.progress_command(note="real crop data"),
+                                          headers=self.headers()).status_code, 422)
+        self.assertEqual(self.client.post(root, json=self.progress_command(),
+                                          headers={"Authorization": "Bearer invalid"}).status_code, 401)
+        self.client.post(root, json=self.progress_command(), headers=self.headers())
+        stale = self.client.post(root, json=self.progress_command(revision=0, action="DEMO-PROGRESS-B"),
+                                 headers=self.headers())
+        self.assertEqual(stale.status_code, 409)
+
+    def test_progress_note_audit_tampering_fails_closed(self):
+        root = "/api/v1/domestic/household-intake/my-drafts/DEMO-D-1/progress-notes"
+        self.assertEqual(self.client.post(root, json=self.progress_command(),
+                                          headers=self.headers()).status_code, 201)
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER progress_note_no_update")
+            db.execute("UPDATE household_progress_note SET note='DEMO: forged' WHERE revision=1")
+        denied = self.client.get(root, headers=self.headers())
+        self.assertEqual(denied.status_code, 503)
+        with self.assertRaises(LedgerIntegrityError):
+            self.reopen().verify_integrity()
+
+    def test_progress_note_browser_form_csrf_origin_escape_and_owner(self):
+        self.browser()
+        route = "/my-drafts/DEMO-D-1/progress-notes"
+        before = self.client.get(route)
+        self.assertEqual(before.status_code, 200, before.text)
+        self.assertIn("یادداشت‌های پیشرفت", before.text)
+        form = {
+            "csrf": self.sessions.get_session(self.client.cookies.get("__Host-ronas_session")).csrf,
+            "case_version": "3", "revision": "0",
+            "reported_at": "2026-10-12T10:30:00+03:30",
+            "note": 'DEMO: <script>alert("x")</script>',
+        }
+        good = {**form, "note": 'DEMO: <script>alert("x")</script>'}
+        self.assertEqual(self.client.post(route, data=good, headers={"Origin": "https://evil.test"}).status_code, 403)
+        self.assertEqual(self.client.post(route, data={**good, "csrf": "wrong"},
+                                          headers={"Origin": ORIGIN}).status_code, 403)
+        saved = self.client.post(route, data=good, headers={"Origin": ORIGIN},
+                                 follow_redirects=False)
+        self.assertEqual(saved.status_code, 303, saved.text)
+        view = self.client.get(route)
+        self.assertIn("&lt;script&gt;", view.text)
+        self.assertNotIn("<script>", view.text)
+        self.assertNotIn("تأیید علمی", view.text)
+        self.assertEqual(self.client.get("/my-drafts/DEMO-D-1").status_code, 200)
+        self.assertIn("/my-drafts/DEMO-D-1/progress-notes",
+                      self.client.get("/my-drafts/DEMO-D-1").text)
+
+    def test_progress_note_form_is_disabled_for_wrong_owner_and_export(self):
+        self.browser(subject="synthetic-household-other")
+        self.assertEqual(self.client.get("/my-drafts/DEMO-D-1/progress-notes").status_code, 404)
+        self.assertEqual(self.client.get("/my-drafts/DEMO-E-1/progress-notes").status_code, 404)
+
 if __name__ == "__main__":
     unittest.main()

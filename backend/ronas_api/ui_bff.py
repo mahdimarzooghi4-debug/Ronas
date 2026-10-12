@@ -1275,6 +1275,87 @@ def build_authenticated_ui_router(
                         body, logged_in=True)
 
     if household_input_ledger is not None:
+        @router.get("/my-drafts/{ref}/progress-notes")
+        def household_progress_notes_page(
+            ref: str, sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            result = household_input_ledger.read_owned_progress_notes(
+                ref, Principal(session.subject, session.roles),
+            )
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            notes = ''.join(
+                '<li><time>' + escape(item["reported_at"]) + '</time> — '
+                + escape(item["note"]) + '</li>' for item in result["notes"]
+            )
+            form = (
+                '<form method="post" action="/my-drafts/' + quote(ref)
+                + '/progress-notes">'
+                '<input type="hidden" name="csrf" value="'
+                + escape(session.csrf, quote=True) + '">'
+                '<input type="hidden" name="case_version" value="'
+                + str(result["case_version"]) + '">'
+                '<input type="hidden" name="revision" value="'
+                + str(result["current_revision"]) + '">'
+                '<label for="reported-at">زمان گزارش‌شده با منطقه زمانی</label>'
+                '<input id="reported-at" name="reported_at" maxlength="40" '
+                'placeholder="2026-10-12T10:30:00+03:30" required>'
+                '<label for="progress-note">یادداشت ساختگی</label>'
+                '<textarea id="progress-note" name="note" maxlength="150" '
+                'required>DEMO: </textarea>'
+                '<button type="submit">ثبت یادداشت DEMO</button></form>'
+            )
+            body = (
+                '<article class="panel"><h2>یادداشت‌های پیشرفت پرونده (DEMO)</h2>'
+                '<p>فقط متن ساختگی با پیشوند DEMO: و زمان واردشده توسط شما ثبت می‌شود. '
+                'مرحله علمی از پیش تعریف‌شده یا ارزیابی محصول وجود ندارد.</p>'
+                + ('<ol>' + notes + '</ol>' if notes else
+                   '<p>یادداشتی ثبت نشده است.</p>')
+                + '<p>این یادداشت‌ها داده واقعی، نظارت متخصص، ارزیابی علمی یا '
+                'تأیید برنامه کشت محسوب نمی‌شوند و فقط برای مالک قابل مشاهده‌اند.</p>'
+                + form
+                + '<p><a href="/my-drafts/' + quote(ref)
+                + '">بازگشت به پرونده من</a></p></article>'
+            )
+            return page("روناس — یادداشت پیشرفت ساختگی",
+                        body, logged_in=True, local_test_form=True)
+
+        @router.post("/my-drafts/{ref}/progress-notes")
+        async def household_progress_note_submit(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            principal, form = await checked_browser_form(
+                request, sid, fields=frozenset({
+                    "csrf", "case_version", "revision", "reported_at", "note",
+                }),
+            )
+            try:
+                saved = household_input_ledger.append_owned_progress_note(
+                    ref, principal,
+                    action_id="DEMO-PROGRESS-" + secrets.token_hex(10).upper(),
+                    expected_case_version=form_version(
+                        form["case_version"], zero_allowed=False,
+                    ),
+                    expected_revision=form_version(form["revision"]),
+                    reported_at=form["reported_at"], note=form["note"],
+                )
+            except InputRevisionConflict as exc:
+                raise HTTPException(409, detail="SYNTHETIC_PROGRESS_VERSION_CONFLICT") from exc
+            except LedgerIntegrityError as exc:
+                raise HTTPException(503, detail="SYNTHETIC_PROGRESS_HISTORY_UNAVAILABLE") from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
+            if saved is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return RedirectResponse(
+                "/my-drafts/" + quote(ref) + "/progress-notes", status_code=303,
+            )
+
         @router.get("/my-drafts/{ref}/input-revisions")
         def household_input_history_page(
             ref: str,
@@ -1621,6 +1702,9 @@ def build_authenticated_ui_router(
                 + ('<p><a href="/my-drafts/'
                    + quote(ref) + '/input-revisions">'
                    'تاریخچه آزمایشی اصلاح اطلاعات خانوار</a></p>'
+                   if household_input_ledger is not None else '')
+                + ('<p><a href="/my-drafts/' + quote(ref)
+                   + '/progress-notes">یادداشت پیشرفت ساختگی (DEMO)</a></p>'
                    if household_input_ledger is not None else '')
                 + ('<p><a href="/my-drafts/' + quote(ref)
                    + '/question-responses">'

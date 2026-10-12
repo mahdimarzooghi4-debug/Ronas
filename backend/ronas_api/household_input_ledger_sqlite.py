@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
 
 from .auth import Principal
 from .grant_ledger_sqlite import GENESIS, LedgerIntegrityError, _hash, _json
@@ -19,6 +20,9 @@ from .scoped_drafts import _synthetic_ref, _synthetic_subject
 EVENT_KIND = "SYNTHETIC_INPUT_MANIFEST_REVISION_RECORDED"
 MODE = "HOUSEHOLD_INPUT_MANIFEST_REVISION_SHA256:"
 CONTRACT_VERSION = "ronas.domestic.synthetic-household-input-revisions.v0"
+PROGRESS_EVENT = "SYNTHETIC_HOUSEHOLD_PROGRESS_NOTE_RECORDED"
+PROGRESS_MODE = "HOUSEHOLD_PROGRESS_NOTE_SHA256:"
+PROGRESS_CONTRACT = "ronas.domestic.synthetic-household-progress-notes.v0"
 
 
 class InputRevisionConflict(ValueError):
@@ -52,6 +56,21 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
                 CREATE TRIGGER IF NOT EXISTS input_no_delete
                 BEFORE DELETE ON household_input_revision
                 BEGIN SELECT RAISE(ABORT, 'synthetic input history immutable'); END;
+                CREATE TABLE IF NOT EXISTS household_progress_note (
+                    action_id TEXT PRIMARY KEY, ref TEXT NOT NULL,
+                    case_version INTEGER NOT NULL, revision INTEGER NOT NULL,
+                    owner_digest TEXT NOT NULL, reported_at TEXT NOT NULL,
+                    note TEXT NOT NULL, previous_receipt_digest TEXT NOT NULL,
+                    receipt_digest TEXT NOT NULL UNIQUE, audit_sequence INTEGER NOT NULL UNIQUE,
+                    UNIQUE(ref, revision),
+                    FOREIGN KEY(audit_sequence) REFERENCES audit_event(sequence)
+                );
+                CREATE TRIGGER IF NOT EXISTS progress_note_no_update
+                BEFORE UPDATE ON household_progress_note
+                BEGIN SELECT RAISE(ABORT, 'synthetic progress history immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS progress_note_no_delete
+                BEFORE DELETE ON household_progress_note
+                BEGIN SELECT RAISE(ABORT, 'synthetic progress history immutable'); END;
             """)
         self._input_ready = True
         with self._transaction() as db:
@@ -61,7 +80,7 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
         # Preserve all *independently verified* parent review/Export audit
         # events. Replacing rather than extending this set caused a shared
         # Domestic + Export ledger to reject valid Export question events.
-        return super()._extended_audit_kinds() | frozenset({EVENT_KIND})
+        return super()._extended_audit_kinds() | frozenset({EVENT_KIND, PROGRESS_EVENT})
 
     @staticmethod
     def _binding(action: str, ref: str, case_version: int, revision: int,
@@ -132,6 +151,160 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
             counts[ref] = revision
         if used != set(linked):
             raise LedgerIntegrityError("orphaned synthetic input audit event")
+        self._verify_progress_notes(db)
+
+    @staticmethod
+    def _progress_binding(action: str, ref: str, case_version: int,
+                          revision: int, owner_digest: str,
+                          reported_at: str, note: str, prior: str) -> str:
+        return _hash(_json({
+            "action_id": action, "engine": "DOMESTIC", "ref": ref,
+            "case_version": case_version, "revision": revision,
+            "owner_digest": owner_digest, "reported_at": reported_at,
+            "note_digest": _hash(note), "previous_receipt_digest": prior,
+        }))
+
+    @staticmethod
+    def _valid_reported_at(value: str) -> bool:
+        if not isinstance(value, str) or len(value) > 40:
+            return False
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+    def _verify_progress_notes(self, db: sqlite3.Connection) -> None:
+        linked = {}
+        for sequence, payload in db.execute(
+            "SELECT sequence,payload FROM audit_event ORDER BY sequence"
+        ):
+            event = json.loads(payload)
+            mode = event.get("access_mode")
+            if (event.get("kind") == PROGRESS_EVENT
+                    or isinstance(mode, str) and mode.startswith(PROGRESS_MODE)):
+                linked[sequence] = event
+        used = set()
+        previous: dict[str, str] = {}
+        counts: dict[str, int] = {}
+        for row in db.execute(
+            "SELECT action_id,ref,case_version,revision,owner_digest,reported_at,"
+            "note,previous_receipt_digest,receipt_digest,audit_sequence "
+            "FROM household_progress_note ORDER BY audit_sequence"
+        ):
+            action, ref, version, revision, owner_hash, reported_at, note, prior, receipt, seq = row
+            record = self._catalogue.get(("DOMESTIC", ref))
+            expected_revision = counts.get(ref, 0) + 1
+            expected_prior = previous.get(ref, GENESIS)
+            event = linked.get(seq)
+            if (record is None or not _synthetic_ref(action)
+                    or type(version) is not int or not 1 <= version <= record.version
+                    or type(revision) is not int or revision != expected_revision
+                    or owner_hash != _hash(record.owner_subject)
+                    or not self._valid_reported_at(reported_at)
+                    or not isinstance(note, str) or not note.startswith("DEMO:")
+                    or len(note) > 150 or prior != expected_prior
+                    or receipt != self._progress_binding(
+                        action, ref, version, revision, owner_hash,
+                        reported_at, note, prior)
+                    or event is None or event.get("kind") != PROGRESS_EVENT
+                    or event.get("engine") != "DOMESTIC"
+                    or event.get("ref") != ref or event.get("case_version") != version
+                    or event.get("action_id") != action
+                    or event.get("actor_digest") != owner_hash
+                    or event.get("target_digest") != _hash(receipt)
+                    or event.get("access_mode") != PROGRESS_MODE + receipt):
+                raise LedgerIntegrityError("synthetic progress note/audit mismatch")
+            if seq in used:
+                raise LedgerIntegrityError("duplicate progress note audit")
+            used.add(seq)
+            previous[ref] = receipt
+            counts[ref] = revision
+        if used != set(linked):
+            raise LedgerIntegrityError("orphaned synthetic progress audit event")
+
+    def read_owned_progress_notes(self, ref: str, principal: Principal) -> dict | None:
+        with self._transaction() as db:
+            self._verify(db)
+            if not self._owner(ref, principal):
+                return None
+            record = self._catalogue[("DOMESTIC", ref)]
+            rows = list(db.execute(
+                "SELECT revision,reported_at,note FROM household_progress_note "
+                "WHERE ref=? ORDER BY revision", (ref,),
+            ))
+            self._append(db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                         actor=principal.subject, mode="HOUSEHOLD_PROGRESS_NOTE_HISTORY")
+            return {
+                "contract_version": PROGRESS_CONTRACT, "engine": "DOMESTIC",
+                "ref": ref, "case_version": record.version,
+                "notes": [{"revision": r, "reported_at": ts, "note": text}
+                          for r, ts, text in rows],
+                "current_revision": rows[-1][0] if rows else 0,
+                "real_data": False, "scientific_review": False,
+                "expert_inspection": False, "plan_accepted": False,
+            }
+
+    def append_owned_progress_note(
+        self, ref: str, principal: Principal, *, action_id: str,
+        expected_case_version: int, expected_revision: int,
+        reported_at: str, note: str,
+    ) -> dict | None:
+        if (not _synthetic_ref(action_id) or type(expected_case_version) is not int
+                or expected_case_version < 1 or type(expected_revision) is not int
+                or expected_revision < 0 or not self._valid_reported_at(reported_at)
+                or not isinstance(note, str) or not note.startswith("DEMO:")
+                or not 6 <= len(note) <= 150 or note != note.strip()):
+            raise ValueError("invalid synthetic progress note")
+        with self._transaction() as db:
+            self._verify(db)
+            if not self._owner(ref, principal):
+                return None
+            record = self._catalogue[("DOMESTIC", ref)]
+            if record.version != expected_case_version:
+                raise InputRevisionConflict("stale case version")
+            owner_hash = _hash(principal.subject)
+            prior_action = db.execute(
+                "SELECT ref,case_version,revision,owner_digest,reported_at,note "
+                "FROM household_progress_note WHERE action_id=?", (action_id,),
+            ).fetchone()
+            expected = (ref, expected_case_version, expected_revision + 1,
+                        owner_hash, reported_at, note)
+            if prior_action is not None:
+                if prior_action == expected:
+                    return {"contract_version": PROGRESS_CONTRACT, "engine": "DOMESTIC",
+                            "ref": ref, "case_version": expected_case_version,
+                            "revision": expected_revision + 1, "idempotent_replay": True,
+                            "real_data": False, "scientific_review": False,
+                            "expert_inspection": False, "plan_accepted": False}
+                raise InputRevisionConflict("conflicting progress note replay")
+            latest = db.execute(
+                "SELECT revision,receipt_digest FROM household_progress_note "
+                "WHERE ref=? ORDER BY revision DESC LIMIT 1", (ref,),
+            ).fetchone()
+            current = latest[0] if latest else 0
+            if current != expected_revision:
+                raise InputRevisionConflict("stale progress note revision")
+            revision = current + 1
+            prior = latest[1] if latest else GENESIS
+            receipt = self._progress_binding(action_id, ref, record.version, revision,
+                owner_hash, reported_at, note, prior)
+            audit = self._append(db, kind=PROGRESS_EVENT, engine="DOMESTIC", ref=ref,
+                actor=principal.subject, target=receipt, action_id=action_id,
+                mode=PROGRESS_MODE + receipt)
+            db.execute(
+                "INSERT INTO household_progress_note "
+                "(action_id,ref,case_version,revision,owner_digest,reported_at,note,"
+                "previous_receipt_digest,receipt_digest,audit_sequence) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (action_id, ref, record.version, revision, owner_hash, reported_at,
+                 note, prior, receipt, audit.sequence),
+            )
+            return {"contract_version": PROGRESS_CONTRACT, "engine": "DOMESTIC",
+                    "ref": ref, "case_version": record.version, "revision": revision,
+                    "idempotent_replay": False, "real_data": False,
+                    "scientific_review": False, "expert_inspection": False,
+                    "plan_accepted": False}
 
     def _owner(self, ref: str, principal: Principal) -> bool:
         record = self._catalogue.get(("DOMESTIC", ref))

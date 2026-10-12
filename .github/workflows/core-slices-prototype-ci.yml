@@ -2,9 +2,12 @@ name: Core slices prototype checks
 on:
   push:
     branches:
-      - feat/core-d1a-e0a-offline-foundation
+      - 'feat/**'
+      - 'fix/**'
+      - 'sprint/**'
   pull_request:
     branches:
+      - main
       - business/ronas-foundation-v0-1
 
 permissions:

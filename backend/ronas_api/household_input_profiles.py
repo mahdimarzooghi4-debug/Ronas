@@ -6,6 +6,7 @@ is LOCAL/TEST and accepts only synthetic household cases.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -21,12 +22,19 @@ from .household_input_ledger_sqlite import (
 )
 from .internal_cultivation_plan_contract import _digest
 from .scoped_drafts import _synthetic_ref
+from .domestic_stage_observation import (
+    CurrentStageContext, StageObservationCommand, StageObservationConflict,
+    StageObservationReceipt, StageRequirement, receipt_is_current,
+    record_stage_observation,
+)
 
 
 _KEY = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _SCHEMA_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 PROFILE_EVENT = "SYNTHETIC_HOUSEHOLD_PROFILE_RECORDED"
 PROFILE_MODE = "HOUSEHOLD_PROFILE_SHA256:"
+STAGE_OBSERVATION_EVENT = "DOMESTIC_STAGE_OBSERVATION_REFERENCE_RECORDED"
+STAGE_OBSERVATION_MODE = "DOMESTIC_STAGE_OBSERVATION_RECEIPT:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,13 +151,32 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticHouseholdInputLedger)
                 CREATE TRIGGER IF NOT EXISTS household_profile_no_delete
                 BEFORE DELETE ON household_profile_revision
                 BEGIN SELECT RAISE(ABORT, 'household profile history immutable'); END;
+                CREATE TABLE IF NOT EXISTS household_stage_observation (
+                    action_id TEXT PRIMARY KEY, ref TEXT NOT NULL,
+                    case_version INTEGER NOT NULL, input_revision INTEGER NOT NULL,
+                    input_snapshot_digest TEXT NOT NULL, plan_digest TEXT NOT NULL,
+                    stage_ref TEXT NOT NULL, requirements_digest TEXT NOT NULL,
+                    observed_at TEXT NOT NULL, artifact_digest TEXT NOT NULL,
+                    revision INTEGER NOT NULL, owner_digest TEXT NOT NULL,
+                    previous_receipt_digest TEXT NOT NULL,
+                    receipt_digest TEXT NOT NULL UNIQUE,
+                    audit_sequence INTEGER NOT NULL UNIQUE,
+                    UNIQUE(ref, revision),
+                    FOREIGN KEY(audit_sequence) REFERENCES audit_event(sequence)
+                );
+                CREATE TRIGGER IF NOT EXISTS stage_observation_no_update
+                BEFORE UPDATE ON household_stage_observation
+                BEGIN SELECT RAISE(ABORT, 'stage observation history immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS stage_observation_no_delete
+                BEFORE DELETE ON household_stage_observation
+                BEGIN SELECT RAISE(ABORT, 'stage observation history immutable'); END;
             """)
         self._profile_ready = True
         with self._transaction() as db:
             self._verify(db)
 
     def _extended_audit_kinds(self):
-        return super()._extended_audit_kinds() | frozenset({PROFILE_EVENT})
+        return super()._extended_audit_kinds() | frozenset({PROFILE_EVENT, STAGE_OBSERVATION_EVENT})
 
     @staticmethod
     def _content_digest(schema_digest: str, values_json: str) -> str:
@@ -230,6 +257,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticHouseholdInputLedger)
             used.add(sequence); prior_by_ref[ref] = receipt; revision_by_ref[ref] = revision
         if used != set(linked):
             raise LedgerIntegrityError("orphaned household profile audit")
+        self._verify_stage_observations(db)
 
     def _profile_snapshot_from_verified_transaction(
         self, db: sqlite3.Connection, ref: str, version: int,
@@ -411,3 +439,290 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticHouseholdInputLedger)
             return {"ref": ref, "case_version": record.version,
                     "profile_revision": revision,
                     "idempotent_replay": False}
+
+    @staticmethod
+    def _stage_receipt_view(receipt: StageObservationReceipt) -> dict:
+        return {
+            "contract_version": receipt.contract_version,
+            "case_ref": receipt.case_ref,
+            "case_version": receipt.case_version,
+            "input_revision": receipt.input_revision,
+            "stage_ref": receipt.stage_ref,
+            "observed_at": receipt.observed_at,
+            "observation_artifact_digest": receipt.observation_artifact_digest,
+            "revision": receipt.revision,
+            "previous_receipt_digest": receipt.previous_receipt_digest,
+            "receipt_digest": receipt.receipt_digest,
+            "status": receipt.status,
+            "stage_completed": False,
+            "scientific_review_approved": False,
+            "advice_enabled": False,
+            "real_data": False,
+        }
+
+    def _verify_stage_observations(self, db: sqlite3.Connection) -> None:
+        linked = {}
+        for sequence, payload in db.execute(
+            "SELECT sequence,payload FROM audit_event ORDER BY sequence"
+        ):
+            event = json.loads(payload)
+            mode = event.get("access_mode")
+            if (event.get("kind") == STAGE_OBSERVATION_EVENT
+                    or isinstance(mode, str)
+                       and mode.startswith(STAGE_OBSERVATION_MODE)):
+                linked[sequence] = event
+        used, prior_by_ref, revision_by_ref = set(), {}, {}
+        rows = db.execute(
+            "SELECT action_id,ref,case_version,input_revision,input_snapshot_digest,"
+            "plan_digest,stage_ref,requirements_digest,observed_at,artifact_digest,"
+            "revision,owner_digest,previous_receipt_digest,receipt_digest,audit_sequence "
+            "FROM household_stage_observation ORDER BY audit_sequence"
+        )
+        for row in rows:
+            (action, ref, case_version, input_revision, input_digest, plan_digest,
+             stage_ref, requirements_digest, observed_at, artifact_digest,
+             revision, owner_digest, previous, receipt, sequence) = row
+            record = self._catalogue.get(("DOMESTIC", ref))
+            expected_previous = prior_by_ref.get(ref, GENESIS)
+            expected_revision = revision_by_ref.get(ref, 0) + 1
+            event = linked.get(sequence)
+            try:
+                command = StageObservationCommand(
+                    action_id=action, expected_case_version=case_version,
+                    expected_input_revision=input_revision,
+                    expected_input_snapshot_digest=input_digest,
+                    expected_plan_digest=plan_digest, stage_ref=stage_ref,
+                    expected_observation_requirements_digest=requirements_digest,
+                    observed_at=observed_at,
+                    observation_artifact_digest=artifact_digest,
+                )
+                current = CurrentStageContext(
+                    case_ref=ref, case_version=case_version,
+                    input_revision=input_revision,
+                    input_snapshot_digest=input_digest, plan_digest=plan_digest,
+                    requirements=(StageRequirement(stage_ref, requirements_digest),),
+                )
+                expected = record_stage_observation(
+                    command, current=current, revision=revision,
+                    previous_receipt_digest=previous,
+                )
+            except (TypeError, ValueError) as exc:
+                raise LedgerIntegrityError(
+                    "invalid Domestic stage observation receipt"
+                ) from exc
+            if (record is None or case_version != record.version
+                    or not _synthetic_ref(action)
+                    or type(input_revision) is not int or input_revision < 1
+                    or not _digest(input_digest) or not _digest(plan_digest)
+                    or type(revision) is not int or revision != expected_revision
+                    or owner_digest != _hash(record.owner_subject)
+                    or previous != expected_previous
+                    or receipt != expected.receipt_digest
+                    or event is None
+                    or event.get("kind") != STAGE_OBSERVATION_EVENT
+                    or event.get("engine") != "DOMESTIC"
+                    or event.get("ref") != ref
+                    or event.get("case_version") != case_version
+                    or event.get("action_id") != action
+                    or event.get("actor_digest") != owner_digest
+                    or event.get("target_digest") != _hash(receipt)
+                    or event.get("access_mode") != STAGE_OBSERVATION_MODE + receipt):
+                raise LedgerIntegrityError(
+                    "Domestic stage observation/audit mismatch"
+                )
+            if sequence in used:
+                raise LedgerIntegrityError("duplicate stage observation audit")
+            used.add(sequence)
+            prior_by_ref[ref] = receipt
+            revision_by_ref[ref] = revision
+        if used != set(linked):
+            raise LedgerIntegrityError("orphaned Domestic stage observation audit")
+
+    @staticmethod
+    def _read_stage_context(
+        ref: str,
+        context_authority: Callable[[str], CurrentStageContext | None],
+    ) -> CurrentStageContext | None:
+        if not callable(context_authority):
+            raise ValueError("current stage context authority required")
+        try:
+            context = context_authority(ref)
+        except Exception as exc:
+            raise LedgerIntegrityError(
+                "current stage context authority unavailable"
+            ) from exc
+        if context is not None and (
+                not isinstance(context, CurrentStageContext)
+                or context.case_ref != ref):
+            raise LedgerIntegrityError("untrusted current stage context")
+        return context
+
+    def _resolve_stage_context(
+        self, db: sqlite3.Connection, ref: str,
+        context: CurrentStageContext | None,
+    ) -> CurrentStageContext | None:
+        record = self._catalogue.get(("DOMESTIC", ref))
+        if record is None or context is None:
+            return None
+        snapshot = self._profile_snapshot_from_verified_transaction(
+            db, ref, record.version,
+        )
+        if (context.case_version != record.version or snapshot is None
+                or context.input_revision != snapshot[0]
+                or context.input_snapshot_digest != snapshot[1]):
+            raise StageObservationConflict("current household input changed")
+        return context
+
+    def read_owned_stage_observations(
+        self, ref: str, principal: Principal, *,
+        context_authority: Callable[[str], CurrentStageContext | None],
+    ) -> dict | None:
+        if not self._owner(ref, principal):
+            return None
+        provided_context = self._read_stage_context(ref, context_authority)
+        with self._transaction() as db:
+            self._verify(db)
+            if not self._owner(ref, principal):
+                return None
+            record = self._catalogue[("DOMESTIC", ref)]
+            context = self._resolve_stage_context(db, ref, provided_context)
+            rows = db.execute(
+                "SELECT action_id,case_version,input_revision,input_snapshot_digest,"
+                "plan_digest,stage_ref,requirements_digest,observed_at,artifact_digest,"
+                "revision,previous_receipt_digest,receipt_digest "
+                "FROM household_stage_observation WHERE ref=? ORDER BY revision",
+                (ref,),
+            ).fetchall()
+            items = []
+            for row in rows:
+                (action, version, input_revision, input_digest, plan_digest,
+                 stage_ref, requirements_digest, observed_at, artifact_digest,
+                 revision, previous, digest) = row
+                receipt = StageObservationReceipt(
+                    contract_version="ronas.domestic.stage-observation-receipt.v0",
+                    case_ref=ref, case_version=version,
+                    input_revision=input_revision,
+                    input_snapshot_digest=input_digest, plan_digest=plan_digest,
+                    stage_ref=stage_ref,
+                    observation_requirements_digest=requirements_digest,
+                    observed_at=observed_at,
+                    observation_artifact_digest=artifact_digest,
+                    revision=revision, previous_receipt_digest=previous,
+                    receipt_digest=digest,
+                )
+                items.append({
+                    "revision": revision, "stage_ref": stage_ref,
+                    "observed_at": observed_at,
+                    "observation_artifact_digest": artifact_digest,
+                    "current": bool(context and receipt_is_current(receipt, context)),
+                    "status": "OBSERVATION_REFERENCE_RECORDED",
+                    "stage_completed": False,
+                })
+            self._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=principal.subject, mode="HOUSEHOLD_STAGE_OBSERVATIONS",
+            )
+            return {
+                "engine": "DOMESTIC", "ref": ref,
+                "case_version": record.version,
+                "state": "CURRENT_PLAN_AVAILABLE" if context else "NO_CURRENT_PLAN",
+                "current_context": ({
+                    "case_version": context.case_version,
+                    "input_revision": context.input_revision,
+                    "input_snapshot_digest": context.input_snapshot_digest,
+                    "plan_digest": context.plan_digest,
+                    "stages": [{
+                        "stage_ref": item.stage_ref,
+                        "observation_requirements_digest":
+                            item.observation_requirements_digest,
+                    } for item in context.requirements],
+                } if context else None),
+                "current_revision": rows[-1][9] if rows else 0,
+                "observations": items,
+                "real_data": False,
+                "scientific_review_approved": False,
+                "plan_accepted": False,
+            }
+
+    def append_owned_stage_observation(
+        self, ref: str, principal: Principal, command: StageObservationCommand, *,
+        expected_observation_revision: int,
+        context_authority: Callable[[str], CurrentStageContext | None],
+    ) -> dict | None:
+        if (not isinstance(command, StageObservationCommand)
+                or type(expected_observation_revision) is not int
+                or expected_observation_revision < 0):
+            raise ValueError("invalid stage observation command")
+        if not self._owner(ref, principal):
+            return None
+        provided_context = self._read_stage_context(ref, context_authority)
+        with self._transaction() as db:
+            self._verify(db)
+            if not self._owner(ref, principal):
+                return None
+            record = self._catalogue[("DOMESTIC", ref)]
+            if record.version != command.expected_case_version:
+                raise StageObservationConflict("household case changed")
+            context = self._resolve_stage_context(db, ref, provided_context)
+            if context is None:
+                raise StageObservationConflict("no current plan is available")
+            existing = db.execute(
+                "SELECT ref,case_version,input_revision,input_snapshot_digest,"
+                "plan_digest,stage_ref,requirements_digest,observed_at,artifact_digest,"
+                "revision,owner_digest,previous_receipt_digest,receipt_digest "
+                "FROM household_stage_observation WHERE action_id=?",
+                (command.action_id,),
+            ).fetchone()
+            actor = _hash(principal.subject)
+            expected_existing = (
+                ref, command.expected_case_version, command.expected_input_revision,
+                command.expected_input_snapshot_digest, command.expected_plan_digest,
+                command.stage_ref, command.expected_observation_requirements_digest,
+                command.observed_at, command.observation_artifact_digest,
+            )
+            if existing is not None:
+                if existing[:9] == expected_existing and existing[10] == actor:
+                    return {
+                        "ref": ref, "revision": existing[9],
+                        "receipt_digest": existing[12], "idempotent_replay": True,
+                        "stage_completed": False,
+                    }
+                raise StageObservationConflict("conflicting action replay")
+            previous_row = db.execute(
+                "SELECT revision,receipt_digest FROM household_stage_observation "
+                "WHERE ref=? ORDER BY revision DESC LIMIT 1", (ref,),
+            ).fetchone()
+            current_revision = previous_row[0] if previous_row else 0
+            if current_revision != expected_observation_revision:
+                raise StageObservationConflict("observation history changed")
+            previous = previous_row[1] if previous_row else GENESIS
+            receipt = record_stage_observation(
+                command, current=context, revision=current_revision + 1,
+                previous_receipt_digest=previous,
+            )
+            audit = self._append(
+                db, kind=STAGE_OBSERVATION_EVENT, engine="DOMESTIC",
+                ref=ref, actor=principal.subject, target=receipt.receipt_digest,
+                action_id=command.action_id,
+                mode=STAGE_OBSERVATION_MODE + receipt.receipt_digest,
+            )
+            db.execute(
+                "INSERT INTO household_stage_observation "
+                "(action_id,ref,case_version,input_revision,input_snapshot_digest,"
+                "plan_digest,stage_ref,requirements_digest,observed_at,artifact_digest,"
+                "revision,owner_digest,previous_receipt_digest,receipt_digest,audit_sequence) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (command.action_id, ref, receipt.case_version, receipt.input_revision,
+                 receipt.input_snapshot_digest, receipt.plan_digest, receipt.stage_ref,
+                 receipt.observation_requirements_digest, receipt.observed_at,
+                 receipt.observation_artifact_digest, receipt.revision, actor,
+                 receipt.previous_receipt_digest, receipt.receipt_digest,
+                 audit.sequence),
+            )
+            return {
+                "ref": ref, "revision": receipt.revision,
+                "receipt_digest": receipt.receipt_digest,
+                "idempotent_replay": False, "stage_completed": False,
+                "status": receipt.status,
+            }
+

@@ -19,6 +19,8 @@ from .household_input_ledger_sqlite import SqliteSyntheticHouseholdInputLedger
 from .household_input_profiles import (
     HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
 )
+from .domestic_stage_observation import CurrentStageContext
+
 from .household_input_api import build_household_input_router
 from .technical_review_api import build_technical_review_read_router
 from .shared_workspaces import build_user_workspaces_router
@@ -58,7 +60,12 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                export_supplier_workspace: SyntheticSupplierWorkspace | None = None,
                domestic_partner_workspace: SyntheticDomesticPartnerWorkspace | None = None,
                household_profile_schema: HouseholdInputSchema | None = None,
-               household_profile_access_authority=None) -> FastAPI:
+               household_profile_access_authority=None,
+               household_stage_context_authority=None) -> FastAPI:
+    if (household_stage_context_authority is not None
+            and (household_profile_schema is None
+                 or not callable(household_stage_context_authority))):
+        raise ValueError("stage observations require profile schema and context authority")
     app = FastAPI(
         title="Ronas bounded read-only API foundation",
         docs_url=None, redoc_url=None, openapi_url=None,
@@ -117,6 +124,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             household_input_ledger=input_ledger,
             household_profile_schema=household_profile_schema,
             household_profile_access_authority=household_profile_access_authority,
+            household_stage_context_authority=household_stage_context_authority,
             gate_handoff_ledger=gate_handoff_ledger,
             authority_enquiry_ledger=authority_enquiry_ledger,
             agronomy_workspace=agronomy_workspace,
@@ -266,10 +274,15 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                 raise ValueError("profile intake requires exact ledger schema and authority")
         elif household_profile_access_authority is not None:
             raise ValueError("profile authority requires explicit schema")
+        if household_stage_context_authority is not None and (
+                household_profile_schema is None
+                or not callable(household_stage_context_authority)):
+            raise ValueError("stage observation UI requires current stage authority")
         app.include_router(build_household_input_router(
             scoped_registry, principal,
             profile_schema=household_profile_schema,
             profile_access_authority=household_profile_access_authority,
+            stage_context_authority=household_stage_context_authority,
         ))
 
     if technical_review_ledger is not None:

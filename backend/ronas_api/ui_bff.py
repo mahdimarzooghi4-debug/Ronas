@@ -8,6 +8,7 @@ from collections.abc import Callable
 from html import escape
 from urllib.parse import quote, parse_qs
 from pathlib import Path
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import secrets
@@ -49,6 +50,9 @@ from .export_supplier_workspace import (
 from .domestic_partner_workspace import (
     FIELDS as DOMESTIC_PARTNER_FIELDS, SyntheticDomesticPartnerUnavailable,
     SyntheticDomesticPartnerWorkspace,
+)
+from .domestic_stage_observation import (
+    CurrentStageContext, StageObservationCommand, StageObservationConflict,
 )
 from .domestic_preparation_preview import (
     REVIEW_STATES, domestic_preparation_preview,
@@ -195,6 +199,7 @@ def build_authenticated_ui_router(
     household_input_ledger: SqliteSyntheticHouseholdInputLedger | None = None,
     household_profile_schema: HouseholdInputSchema | None = None,
     household_profile_access_authority: Callable[[Principal, str, str], bool] | None = None,
+    household_stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
     gate_handoff_ledger: SqliteSyntheticGateEvidenceHandoff | None = None,
     authority_enquiry_ledger: SqliteSyntheticAuthorityEnquiryLedger | None = None,
     agronomy_workspace: SyntheticAgronomyWorkspace | None = None,
@@ -222,6 +227,10 @@ def build_authenticated_ui_router(
             raise ValueError("household profile UI needs exact ledger/schema/authority")
     elif household_profile_access_authority is not None:
         raise ValueError("household profile authority requires explicit schema")
+    if household_stage_context_authority is not None:
+        if (household_profile_schema is None
+                or not callable(household_stage_context_authority)):
+            raise ValueError("stage observation UI needs current context authority")
     if (gate_handoff_ledger is not None
             and not isinstance(gate_handoff_ledger,
                                SqliteSyntheticGateEvidenceHandoff)):
@@ -1521,6 +1530,11 @@ def build_authenticated_ui_router(
                     '<p><a href="/my-drafts/' + quote(ref) + '">بازگشت به پرونده</a></p>'
                     '</article>'
                 )
+                if household_stage_context_authority is not None:
+                    body += (
+                        '<p><a href="/my-drafts/' + quote(ref)
+                        + '/stage-observations">ثبت و مشاهده رسیدهای مرحله‌ای</a></p>'
+                    )
                 return page("روناس — اطلاعات پرونده کشت",
                             body, logged_in=True, local_test_form=True)
 
@@ -1582,6 +1596,184 @@ def build_authenticated_ui_router(
                 )
                 return page("روناس — نسخه تاریخی اطلاعات",
                             body, logged_in=True, local_test_form=True)
+
+            if household_stage_context_authority is not None:
+                @router.get(
+                    "/my-drafts/{ref}/stage-observations",
+                    response_class=HTMLResponse,
+                )
+                def household_stage_observations_page(
+                    ref: str,
+                    sid: str | None = Cookie(default=None, alias=cookie_name),
+                ) -> HTMLResponse:
+                    try:
+                        session = flow.session(sid)
+                    except InvalidToken:
+                        raise HTTPException(401, detail="INVALID_SESSION") from None
+                    principal = Principal(session.subject, session.roles)
+                    try:
+                        permitted = household_profile_access_authority(
+                            principal, ref, household_profile_schema.schema_ref,
+                        )
+                    except Exception as exc:
+                        raise HTTPException(
+                            503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                        ) from exc
+                    if permitted is not True:
+                        raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                    try:
+                        result = household_input_ledger.read_owned_stage_observations(
+                            ref, principal,
+                            context_authority=household_stage_context_authority,
+                        )
+                    except StageObservationConflict as exc:
+                        raise HTTPException(
+                            409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                        ) from exc
+                    except (LedgerIntegrityError, sqlite3.Error) as exc:
+                        raise HTTPException(
+                            503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                        ) from exc
+                    if result is None:
+                        raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                    current = result["current_context"]
+                    forms = []
+                    if current:
+                        for index, stage in enumerate(current["stages"], start=1):
+                            stage_ref = escape(stage["stage_ref"], quote=True)
+                            requirements = escape(
+                                stage["observation_requirements_digest"], quote=True,
+                            )
+                            form = (
+                                '<form method="post" action="/my-drafts/'
+                                + quote(ref) + '/stage-observations">'
+                                '<input type="hidden" name="csrf" value="'
+                                + escape(session.csrf, quote=True) + '">'
+                                '<input type="hidden" name="case_version" value="'
+                                + str(current["case_version"]) + '">'
+                                '<input type="hidden" name="input_revision" value="'
+                                + str(current["input_revision"]) + '">'
+                                '<input type="hidden" name="input_snapshot_digest" value="'
+                                + escape(current["input_snapshot_digest"], quote=True) + '">'
+                                '<input type="hidden" name="plan_digest" value="'
+                                + escape(current["plan_digest"], quote=True) + '">'
+                                '<input type="hidden" name="stage_ref" value="'
+                                + stage_ref + '">'
+                                '<input type="hidden" name="requirements_digest" value="'
+                                + requirements + '">'
+                                '<input type="hidden" name="observation_revision" value="'
+                                + str(result["current_revision"]) + '">'
+                                '<h3>مرحله ' + str(index) + '</h3>'
+                                '<p>شناسه مرحله: ' + stage_ref + '</p>'
+                                '<label for="artifact-' + str(index)
+                                + '">اثر انگشت مرجع مشاهده (SHA-256)</label>'
+                                '<input id="artifact-' + str(index)
+                                + '" name="artifact_digest" type="text" '
+                                'inputmode="latin" minlength="64" maxlength="64" '
+                                'pattern="[0-9a-f]{64}" required>'
+                                '<button type="submit">ثبت رسید مشاهده</button>'
+                                '</form>'
+                            )
+                            forms.append(form)
+                    history = ''.join(
+                        '<li>مرحله ' + escape(item["stage_ref"])
+                        + ' · ' + ('رسید جاری' if item["current"]
+                                   else 'رسید قدیمی') + ' · نسخه '
+                        + str(item["revision"]) + ' · مرجع '
+                        + escape(item["observation_artifact_digest"])
+                        + '</li>'
+                        for item in result["observations"]
+                    )
+                    body = (
+                        '<article class="panel"><h2>ثبت مشاهده مرحله‌ای</h2>'
+                        '<p>فقط مرجع رمزنگاری‌شدهٔ مشاهده ثبت می‌شود. '
+                        'ثبت رسید به معنی تکمیل مرحله، ارزیابی علمی یا تأیید متخصص نیست.</p>'
+                        + ('<p role="status">مرجع جاری طرح در دسترس نیست؛ '
+                           'ثبت مشاهده تا دریافت نسخه جاری غیرفعال است.</p>'
+                           if not current else
+                           '<p>طرح و الزامات مشاهده از مرجع جاری دریافت شده‌اند؛ '
+                           'هیچ معیار کشاورزی در این فرم ساخته نمی‌شود.</p>')
+                        + ''.join(forms)
+                        + ('<ol>' + history + '</ol>' if history else
+                           '<p>رسیدی ثبت نشده است.</p>')
+                        + '<p>با اصلاح پرونده یا تغییر طرح، رسیدهای قبلی حفظ می‌شوند '
+                        'و به‌عنوان رسید جاری نمایش داده نخواهند شد.</p>'
+                        + '<p><a href="/my-drafts/' + quote(ref)
+                        + '/cultivation-inputs">بازگشت به اطلاعات پرونده</a></p>'
+                        '</article>'
+                    )
+                    return page("روناس — مشاهده مرحله‌ای پرونده",
+                                body, logged_in=True, local_test_form=True)
+
+                @router.post("/my-drafts/{ref}/stage-observations")
+                async def household_stage_observation_submit(
+                    ref: str, request: Request,
+                    sid: str | None = Cookie(default=None, alias=cookie_name),
+                ) -> RedirectResponse:
+                    principal, form = await checked_browser_form(
+                        request, sid,
+                        fields=frozenset({
+                            "csrf", "case_version", "input_revision",
+                            "input_snapshot_digest", "plan_digest", "stage_ref",
+                            "requirements_digest", "observation_revision",
+                            "artifact_digest",
+                        }),
+                        max_bytes=4096, max_fields=9, max_value_length=128,
+                    )
+                    try:
+                        permitted = household_profile_access_authority(
+                            principal, ref, household_profile_schema.schema_ref,
+                        )
+                    except Exception as exc:
+                        raise HTTPException(
+                            503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                        ) from exc
+                    if permitted is not True:
+                        raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                    try:
+                        command = StageObservationCommand(
+                            action_id="DEMO-STAGE-OBS-" + secrets.token_hex(10).upper(),
+                            expected_case_version=form_version(
+                                form["case_version"], zero_allowed=False,
+                            ),
+                            expected_input_revision=form_version(
+                                form["input_revision"], zero_allowed=False,
+                            ),
+                            expected_input_snapshot_digest=form[
+                                "input_snapshot_digest"
+                            ],
+                            expected_plan_digest=form["plan_digest"],
+                            stage_ref=form["stage_ref"],
+                            expected_observation_requirements_digest=
+                                form["requirements_digest"],
+                            observed_at=datetime.now(timezone.utc).isoformat(
+                                timespec="seconds",
+                            ),
+                            observation_artifact_digest=form["artifact_digest"],
+                        )
+                        saved = household_input_ledger.append_owned_stage_observation(
+                            ref, principal, command,
+                            expected_observation_revision=form_version(
+                                form["observation_revision"],
+                            ),
+                            context_authority=household_stage_context_authority,
+                        )
+                    except StageObservationConflict as exc:
+                        raise HTTPException(
+                            409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                        ) from exc
+                    except (LedgerIntegrityError, sqlite3.Error) as exc:
+                        raise HTTPException(
+                            503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                        ) from exc
+                    except ValueError as exc:
+                        raise HTTPException(422, detail="INVALID_STAGE_OBSERVATION") from exc
+                    if saved is None:
+                        raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                    return RedirectResponse(
+                        "/my-drafts/" + quote(ref) + "/stage-observations",
+                        status_code=303,
+                    )
 
             @router.post("/my-drafts/{ref}/cultivation-inputs")
             async def household_cultivation_inputs_submit(

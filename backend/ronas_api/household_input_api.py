@@ -8,9 +8,12 @@ from collections.abc import Callable
 import sqlite3
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from .auth import Principal
+from .domestic_stage_observation import (
+    CurrentStageContext, StageObservationCommand, StageObservationConflict,
+)
 from .grant_ledger_sqlite import LedgerIntegrityError
 from .household_input_ledger_sqlite import (
     InputRevisionConflict, SqliteSyntheticHouseholdInputLedger,
@@ -41,6 +44,28 @@ class SyntheticProgressNote(BaseModel):
 
 
 
+class HouseholdStageObservationCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: StrictStr = Field(min_length=1, max_length=96)
+    expected_observation_revision: StrictInt
+    expected_case_version: StrictInt
+    expected_input_revision: StrictInt
+    expected_input_snapshot_digest: StrictStr = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$",
+    )
+    expected_plan_digest: StrictStr = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$",
+    )
+    stage_ref: StrictStr = Field(min_length=1, max_length=64)
+    expected_observation_requirements_digest: StrictStr = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$",
+    )
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
+    observation_artifact_digest: StrictStr = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$",
+    )
+
+
 class HouseholdProfileCorrection(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     action_id: StrictStr
@@ -65,6 +90,7 @@ def build_household_input_router(
     verified_principal: Callable[..., Principal],
     profile_schema: HouseholdInputSchema | None = None,
     profile_access_authority: Callable[[Principal, str, str], bool] | None = None,
+    stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
 ) -> APIRouter:
     if not isinstance(ledger, SqliteSyntheticHouseholdInputLedger):
         raise ValueError("explicit local synthetic input ledger required")
@@ -75,6 +101,10 @@ def build_household_input_router(
             raise ValueError("profile intake needs same ledger, schema, and access authority")
     elif profile_access_authority is not None:
         raise ValueError("profile authority without profile schema")
+    if stage_context_authority is not None:
+        if (profile_schema is None
+                or not callable(stage_context_authority)):
+            raise ValueError("stage observations require current context authority")
     router = APIRouter()
 
     @router.get("/api/v1/domestic/household-intake/my-drafts/{ref}/input-revisions")
@@ -271,6 +301,79 @@ def build_household_input_router(
             if result is None:
                 raise HTTPException(404, detail="PROFILE_REVISION_NOT_FOUND")
             return result
+
+        if stage_context_authority is not None:
+            @router.get(
+                "/api/v1/domestic/household-intake/my-drafts/{ref}/stage-observations",
+            )
+            def read_stage_observations(
+                ref: str, p: Principal = Depends(verified_principal),
+            ) -> dict:
+                if not profile_allowed(p, ref):
+                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                try:
+                    result = profile_ledger.read_owned_stage_observations(
+                        ref, p, context_authority=stage_context_authority,
+                    )
+                except StageObservationConflict as exc:
+                    raise HTTPException(
+                        409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                    ) from exc
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(
+                        503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                    ) from exc
+                if result is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                return result
+
+            @router.post(
+                "/api/v1/domestic/household-intake/my-drafts/{ref}/stage-observations",
+                status_code=201,
+            )
+            def append_stage_observation(
+                ref: str, data: HouseholdStageObservationCommand,
+                authorization: str | None = Header(default=None),
+                p: Principal = Depends(verified_principal),
+            ) -> dict:
+                if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
+                    raise HTTPException(401, detail="BEARER_REQUIRED_FOR_MUTATION")
+                if not profile_allowed(p, ref):
+                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                try:
+                    command = StageObservationCommand(
+                        action_id=data.action_id,
+                        expected_case_version=data.expected_case_version,
+                        expected_input_revision=data.expected_input_revision,
+                        expected_input_snapshot_digest=data.expected_input_snapshot_digest,
+                        expected_plan_digest=data.expected_plan_digest,
+                        stage_ref=data.stage_ref,
+                        expected_observation_requirements_digest=
+                            data.expected_observation_requirements_digest,
+                        observed_at=data.observed_at,
+                        observation_artifact_digest=data.observation_artifact_digest,
+                    )
+                    result = profile_ledger.append_owned_stage_observation(
+                        ref, p, command,
+                        expected_observation_revision=
+                            data.expected_observation_revision,
+                        context_authority=stage_context_authority,
+                    )
+                except StageObservationConflict as exc:
+                    raise HTTPException(
+                        409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                    ) from exc
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(
+                        503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                    ) from exc
+                except ValueError as exc:
+                    raise HTTPException(
+                        422, detail="INVALID_STAGE_OBSERVATION",
+                    ) from exc
+                if result is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                return result
 
         @router.post(
             "/api/v1/domestic/household-intake/my-drafts/{ref}/cultivation-inputs",

@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from ronas_api.app import create_app
 from ronas_api.auth import Principal
+from ronas_api.domestic_stage_observation import CurrentStageContext, StageRequirement
 from ronas_api.household_input_profiles import (
     HouseholdInputField, HouseholdInputSchema,
     SqliteSyntheticHouseholdProfileLedger,
@@ -83,6 +84,8 @@ class HouseholdProfileFlowTests(unittest.TestCase):
                         source_ref="DEMO-SOURCE"),
         )
         self.ledger = self.reopen()
+        self.stage_plan_digest = "b" * 64
+        self.stage_plan_available = True
         self.sessions = Sessions()
 
         async def no_exchange(_code, _verifier):
@@ -106,13 +109,43 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         return (schema_ref == self.schema.schema_ref
                 and "household" in principal.roles)
 
-    def make_app(self, *, schema=True, authority=True):
+    def stage_context(self, ref):
+        if not self.stage_plan_available:
+            return None
+        lineage = self.ledger.internal_proposal_lineage(ref)
+        if lineage is None:
+            return None
+        version, input_revision, digest = lineage
+        return CurrentStageContext(
+            ref, version, input_revision, digest, self.stage_plan_digest,
+            (StageRequirement("DEMO-STAGE-01", "a" * 64),),
+        )
+
+    def make_app(self, *, schema=True, authority=True, stage_authority=True):
         return create_app(
             self.config, self.flow, scoped_registry=self.ledger,
             technical_review_ledger=self.ledger,
             household_profile_schema=self.schema if schema else None,
             household_profile_access_authority=self.allowed if authority else None,
+            household_stage_context_authority=(
+                self.stage_context if stage_authority and schema else None
+            ),
         )
+
+    def stage_command(self, *, action="DEMO-STAGE-OBS-1", revision=0):
+        version, input_revision, input_digest = self.ledger.internal_proposal_lineage(REF)
+        return {
+            "action_id": action,
+            "expected_observation_revision": revision,
+            "expected_case_version": version,
+            "expected_input_revision": input_revision,
+            "expected_input_snapshot_digest": input_digest,
+            "expected_plan_digest": self.stage_plan_digest,
+            "stage_ref": "DEMO-STAGE-01",
+            "expected_observation_requirements_digest": "a" * 64,
+            "observed_at": "2026-10-12T10:20:30+00:00",
+            "observation_artifact_digest": "c" * 64,
+        }
 
     def token(self, subject=OWNER, roles=("household",), expired=False):
         now = int(time.time())
@@ -202,6 +235,109 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             ROOT + "/revisions/9", headers=self.bearer(),
         )
         self.assertEqual(missing.status_code, 404)
+
+    def test_stage_observation_api_is_owner_bound_audited_and_lineage_current(self):
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(), headers=self.bearer(),
+        ).status_code, 201)
+        path = ROOT.replace("/cultivation-inputs", "/stage-observations")
+        command = self.stage_command()
+        saved = self.client.post(path, json=command, headers=self.bearer())
+        self.assertEqual(saved.status_code, 201, saved.text)
+        self.assertEqual(saved.json()["revision"], 1)
+        self.assertFalse(saved.json()["stage_completed"])
+        replay = self.client.post(path, json=command, headers=self.bearer())
+        self.assertTrue(replay.json()["idempotent_replay"])
+        current = self.client.get(path, headers=self.bearer())
+        self.assertEqual(current.status_code, 200, current.text)
+        self.assertEqual(current.json()["state"], "CURRENT_PLAN_AVAILABLE")
+        self.assertTrue(current.json()["observations"][0]["current"])
+        self.assertTrue(self.ledger.verify_integrity())
+        denied = self.client.get(
+            path, headers=self.bearer("synthetic-other", ("household",)),
+        )
+        self.assertEqual(denied.status_code, 404)
+
+        stale_command = self.stage_command(
+            action="DEMO-STAGE-OBS-STALE", revision=1,
+        )
+        corrected = self.client.post(
+            ROOT, json=self.command(
+                revision=1, action="DEMO-PROFILE-AFTER-STAGE",
+                values={"field_alpha": "corrected", "field_choice": "sample-b"},
+            ), headers=self.bearer(),
+        )
+        self.assertEqual(corrected.status_code, 201)
+        history = self.client.get(path, headers=self.bearer())
+        self.assertFalse(history.json()["observations"][0]["current"])
+        stale = self.client.post(
+            path, json=stale_command, headers=self.bearer(),
+        )
+        self.assertEqual(stale.status_code, 409)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_stage_observation_ui_uses_current_context_and_marks_old_receipts(self):
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(), headers=self.bearer(),
+        ).status_code, 201)
+        session = self.browser_session()
+        path = PAGE.replace("/cultivation-inputs", "/stage-observations")
+        intake = self.client.get(PAGE)
+        self.assertIn(path, intake.text)
+        page = self.client.get(path)
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("ثبت رسید مشاهده", page.text)
+        values = self.stage_command()
+        form = {
+            "csrf": session.csrf,
+            "case_version": str(values["expected_case_version"]),
+            "input_revision": str(values["expected_input_revision"]),
+            "input_snapshot_digest": values["expected_input_snapshot_digest"],
+            "plan_digest": values["expected_plan_digest"],
+            "stage_ref": values["stage_ref"],
+            "requirements_digest":
+                values["expected_observation_requirements_digest"],
+            "observation_revision": "0",
+            "artifact_digest": values["observation_artifact_digest"],
+        }
+        saved = self.client.post(
+            path, content=urlencode(form),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(saved.status_code, 303, saved.text)
+        self.assertIn("رسید جاری", self.client.get(path).text)
+        self.assertTrue(self.ledger.verify_integrity())
+
+        self.client.post(
+            ROOT, json=self.command(
+                revision=1, action="DEMO-PROFILE-UI-STAGE-2",
+                values={"field_alpha": "updated", "field_choice": "sample-b"},
+            ), headers=self.bearer(),
+        )
+        history = self.client.get(path)
+        self.assertIn("رسید قدیمی", history.text)
+        self.assertNotIn("رسید جاری", history.text)
+
+    def test_stage_observation_is_not_offered_without_current_plan(self):
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(), headers=self.bearer(),
+        ).status_code, 201)
+        self.stage_plan_available = False
+        page = self.client.get(
+            ROOT.replace("/cultivation-inputs", "/stage-observations"),
+            headers=self.bearer(),
+        )
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertEqual(page.json()["state"], "NO_CURRENT_PLAN")
+        self.assertEqual(page.json()["observations"], [])
+        self.assertEqual(
+            self.client.post(
+                ROOT.replace("/cultivation-inputs", "/stage-observations"),
+                json=self.stage_command(), headers=self.bearer(),
+            ).status_code, 409,
+        )
 
     def test_idempotent_replay_stale_revision_and_invalid_schema_values(self):
         command = self.command()

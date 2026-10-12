@@ -758,6 +758,8 @@ def build_authenticated_ui_router(
                 + progress_labels[item["state"]]
                 + (' · نسخه ' + str(item["observation_revision"])
                    if item["observation_revision"] is not None else '')
+                + (' · رسید مشاهده شد (بدون داوری)'
+                   if item["receipt_inspected"] else '')
                 + '</li>'
                 for item in data["stage_progress"]
             )
@@ -1995,6 +1997,8 @@ def build_authenticated_ui_router(
                         + progress_labels[item["state"]]
                         + (' · نسخه ' + str(item["observation_revision"])
                            if item["observation_revision"] is not None else '')
+                        + (' · رسید مشاهده شد (بدون داوری)'
+                           if item["receipt_inspected"] else '')
                         + '</li>'
                         for item in result["stage_progress"]
                     )

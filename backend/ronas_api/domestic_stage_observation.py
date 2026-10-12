@@ -151,6 +151,7 @@ def record_stage_observation(
     if (stage is None or stage.observation_requirements_digest
             != command.expected_observation_requirements_digest):
         raise StageObservationConflict("stage requirements changed")
+    prior = previous_receipt_digest or ("0" * 64)
     body = {
         "contract_version": CONTRACT_VERSION,
         "action_id": command.action_id,
@@ -165,7 +166,7 @@ def record_stage_observation(
         "observed_at": command.observed_at,
         "observation_artifact_digest": command.observation_artifact_digest,
         "revision": revision,
-        "previous_receipt_digest": previous_receipt_digest,
+        "previous_receipt_digest": prior,
     }
     digest = hashlib.sha256(json.dumps(
         body, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
@@ -182,7 +183,7 @@ def record_stage_observation(
         observed_at=command.observed_at,
         observation_artifact_digest=command.observation_artifact_digest,
         revision=revision,
-        previous_receipt_digest=previous_receipt_digest or ("0" * 64),
+        previous_receipt_digest=prior,
         receipt_digest=digest,
     )
 

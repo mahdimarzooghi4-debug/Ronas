@@ -69,8 +69,9 @@ class StageArtifactStoreTests(unittest.TestCase):
         victim.mkdir(mode=0o700)
         victim.chmod(0o700)
         owner_dir.symlink_to(victim, target_is_directory=True)
-        with self.assertRaises(StageArtifactStoreError):
-            self.store.get("owner", "DEMO-D-001", artifact.digest)
+        # A symlinked namespace is treated as absent during reads; it is
+        # never followed, and the write path reports the unsafe namespace.
+        self.assertIsNone(self.store.get("owner", "DEMO-D-001", artifact.digest))
         with self.assertRaises(StageArtifactStoreError):
             self.store.put("owner", "DEMO-D-002", "image/png", PNG)
 

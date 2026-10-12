@@ -48,8 +48,71 @@ class StageArtifact:
 
 
 class StageArtifactStore(Protocol):
+    @staticmethod
+    def _private_directory(parent_fd: int, name: str) -> int:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            child = os.open(name, flags, dir_fd=parent_fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            child = os.open(name, flags, dir_fd=parent_fd)
+        info = os.fstat(child)
+        if (not stat.S_ISDIR(info.st_mode)
+                or stat.S_IMODE(info.st_mode) & 0o077
+                or (hasattr(os, "getuid") and info.st_uid != os.getuid())):
+            os.close(child)
+            raise StageArtifactStoreError("artifact directory is not private")
+        return child
+
     def put(self, owner: str, case_ref: str, content_type: str,
-            content: bytes) -> StageArtifact: ...
+            content: bytes) -> StageArtifact:
+        if not isinstance(content, bytes) or not 1 <= len(content) <= MAX_ARTIFACT_BYTES:
+            raise ValueError("stage artifact size is outside the allowed range")
+        content_type = _validated_content_type(content_type, content)
+        digest = hashlib.sha256(content).hexdigest()
+        # Resolve every namespace from checked directory descriptors. This keeps
+        # uploads inside the private root even if a LOCAL/TEST path is replaced
+        # between calls.
+        self._path(owner, case_ref, digest)  # validate scope before opening it
+        descriptors: list[int] = []
+        try:
+            root_fd = os.open(
+                self.root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            descriptors.append(root_fd)
+            for name in (self._namespace(owner), self._namespace(case_ref)):
+                child = self._private_directory(descriptors[-1], name)
+                descriptors.append(child)
+            nonce = secrets.token_bytes(12)
+            ciphertext = nonce + self._cipher.encrypt(
+                nonce, content, self._aad(owner, case_ref, digest),
+            )
+            try:
+                fd = os.open(
+                    digest,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600, dir_fd=descriptors[-1],
+                )
+            except FileExistsError:
+                existing = self.get(owner, case_ref, digest)
+                if existing is None or existing[1] != content:
+                    raise StageArtifactStoreError("artifact digest collision")
+            else:
+                with os.fdopen(fd, "wb") as target:
+                    target.write(ciphertext)
+                    target.flush()
+                    os.fsync(target.fileno())
+        except (OSError, InvalidTag) as exc:
+            raise StageArtifactStoreError("artifact write failed") from exc
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+        return StageArtifact(digest, content_type, len(content))
 
     def get(self, owner: str, case_ref: str, digest: str
             ) -> tuple[StageArtifact, bytes] | None:

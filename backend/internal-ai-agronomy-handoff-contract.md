@@ -28,8 +28,12 @@ The matching GET-only API is
   duplicate references or non-envelope payloads.
 - A **separately injected input snapshot authority** must provide a version
   and SHA256-shaped digest; comparing the proposal digest against itself is
-  explicitly forbidden. Actual household inputs/consent are not available
-  in this LOCAL/TEST adapter and are not inferred by that separate callback.
+  explicitly forbidden. If the shared ledger is the schema-driven household
+  profile ledger, the workspace reads its current profile revision and digest
+  inside the same verified case transaction. Profile corrections or a changed
+  field schema immediately make a pinned proposal unavailable to the specialist.
+  Actual household inputs/consent are not available in this LOCAL/TEST adapter
+  and are not inferred by that separate callback.
 - Each read re-checks signed `agronomy_expert` role **and** current
   per-case specialist assignment. In one SQL transaction, the ledger
   verifies audit/case/version history, reads only that exact assigned case,

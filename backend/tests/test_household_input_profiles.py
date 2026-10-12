@@ -20,6 +20,12 @@ from ronas_api.household_input_profiles import (
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
+from ronas_api.agronomy_workspace import (
+    SyntheticAgronomyAssignment, SyntheticAgronomyWorkspace,
+)
+from ronas_api.internal_cultivation_plan_contract import (
+    InternalCultivationProposal, ProposedCultivationStage,
+)
 from ronas_api.internal_ai_proposal_runtime import (
     CandidateOutput, CandidateStage, ProfileBackedProposalContextAuthority,
     ProposalRuntimeBasis, ProposalRuntimeStale,
@@ -305,6 +311,69 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(context.input_revision, 1)
         self.assertEqual(context.input_snapshot_digest, lineage[2])
         self.assertFalse(hasattr(context, "input_values"))
+
+    def test_profile_lineage_flows_to_existing_assigned_specialist_handoff(self):
+        owner = Principal(OWNER, frozenset({"household"}))
+        self.ledger.append_owned_profile(
+            REF, owner, action_id="DEMO-PROFILE-SPECIALIST-1",
+            expected_case_version=2, expected_revision=0,
+            values={"field_alpha": "private synthetic value",
+                    "field_choice": "sample-a"},
+        )
+        case_version, profile_revision, snapshot_digest = (
+            self.ledger.internal_proposal_lineage(REF)
+        )
+        proposal = InternalCultivationProposal(
+            household_case_ref=REF, household_case_version=case_version,
+            household_input_revision=profile_revision,
+            household_input_snapshot_digest=snapshot_digest,
+            scientific_basis_manifest_digest="2" * 64,
+            internal_model_artifact_digest="3" * 64,
+            internal_run_ref="DEMO-RUN-SPECIALIST-1",
+            proposal_content_digest="4" * 64,
+            proposed_stages=(ProposedCultivationStage(
+                "DEMO-STAGE-PROFILE", "5" * 64, "6" * 64,
+            ),),
+        )
+        specialist = "synthetic-agronomist-profile"
+        workspace = SyntheticAgronomyWorkspace(
+            self.ledger,
+            (SyntheticAgronomyAssignment(REF, specialist, case_version),),
+            trusted_assignment_active=lambda subject, ref, version: (
+                subject == specialist and ref == REF and version == case_version
+            ),
+            proposal_fixtures=(proposal,),
+        )
+        app = create_app(
+            self.config, self.flow, scoped_registry=self.ledger,
+            technical_review_ledger=self.ledger, agronomy_workspace=workspace,
+            household_profile_schema=self.schema,
+            household_profile_access_authority=self.allowed,
+        )
+        client = TestClient(app, base_url=ORIGIN)
+        specialist_root = "/api/v1/agronomy/assigned-drafts/" + REF
+        first = client.get(
+            specialist_root + "/internal-plan-proposal",
+            headers=self.bearer(specialist, ("agronomy_expert",)),
+        )
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["input_revision"], 1)
+        self.assertEqual(first.json()["proposed_stage_refs"], ["DEMO-STAGE-PROFILE"])
+        self.assertNotIn("private synthetic value", first.text)
+
+        self.ledger.append_owned_profile(
+            REF, owner, action_id="DEMO-PROFILE-SPECIALIST-2",
+            expected_case_version=2, expected_revision=1,
+            values={"field_alpha": "private corrected synthetic value",
+                    "field_choice": "sample-b"},
+        )
+        stale = client.get(
+            specialist_root + "/internal-plan-proposal",
+            headers=self.bearer(specialist, ("agronomy_expert",)),
+        )
+        self.assertEqual(stale.status_code, 503, stale.text)
+        self.assertNotIn("DEMO-STAGE-PROFILE", stale.text)
+        self.assertNotIn("private corrected synthetic value", stale.text)
 
     def test_profile_correction_during_internal_generation_discards_proposal(self):
         owner = Principal(OWNER, frozenset({"household"}))

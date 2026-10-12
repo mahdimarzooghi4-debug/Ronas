@@ -231,6 +231,29 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticHouseholdInputLedger)
         if used != set(linked):
             raise LedgerIntegrityError("orphaned household profile audit")
 
+    def _profile_snapshot_from_verified_transaction(
+        self, db: sqlite3.Connection, ref: str, version: int,
+    ) -> tuple[int, str] | None:
+        """Read the schema-current profile from an already verified ledger txn."""
+        record = self._catalogue.get(("DOMESTIC", ref))
+        if record is None or record.version != version:
+            return None
+        row = db.execute(
+            "SELECT revision,schema_ref,schema_version,schema_digest,"
+            "content_digest FROM household_profile_revision "
+            "WHERE ref=? ORDER BY revision DESC LIMIT 1", (ref,),
+        ).fetchone()
+        if row is None:
+            return None
+        revision, schema_ref, schema_version, schema_digest, content_digest = row
+        if (schema_ref != self.profile_schema.schema_ref
+                or schema_version != self.profile_schema.version
+                or schema_digest != self.profile_schema.digest
+                or type(revision) is not int or revision < 1
+                or not _digest(content_digest)):
+            return None
+        return revision, content_digest
+
     def internal_proposal_lineage(self, ref: str) -> tuple[int, int, str] | None:
         """Return current case/profile version and digest for internal execution.
 
@@ -243,23 +266,12 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticHouseholdInputLedger)
         with self._transaction() as db:
             self._verify(db)
             record = self._catalogue.get(("DOMESTIC", ref))
-            if record is None:
+            snapshot = self._profile_snapshot_from_verified_transaction(
+                db, ref, record.version,
+            ) if record is not None else None
+            if record is None or snapshot is None:
                 return None
-            row = db.execute(
-                "SELECT revision,schema_ref,schema_version,schema_digest,"
-                "content_digest FROM household_profile_revision "
-                "WHERE ref=? ORDER BY revision DESC LIMIT 1", (ref,),
-            ).fetchone()
-            if row is None:
-                return None
-            revision, schema_ref, schema_version, schema_digest, content_digest = row
-            if (schema_ref != self.profile_schema.schema_ref
-                    or schema_version != self.profile_schema.version
-                    or schema_digest != self.profile_schema.digest
-                    or type(revision) is not int or revision < 1
-                    or not _digest(content_digest)):
-                return None
-            return record.version, revision, content_digest
+            return record.version, snapshot[0], snapshot[1]
 
     def read_owned_profile(self, ref: str, principal: Principal) -> dict | None:
         with self._transaction() as db:

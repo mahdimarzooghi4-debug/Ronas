@@ -13,6 +13,7 @@ from typing import Callable, Iterable
 from .auth import Principal
 from .grant_ledger_sqlite import LedgerIntegrityError
 from .household_input_ledger_sqlite import SqliteSyntheticHouseholdInputLedger
+from .household_input_profiles import SqliteSyntheticHouseholdProfileLedger
 from .domestic_preparation_preview import domestic_preparation_preview
 from .internal_cultivation_plan_contract import (
     InternalCultivationProposal, _digest, inspect_proposal_structure,
@@ -380,7 +381,14 @@ class SyntheticAgronomyWorkspace:
                 else:
                     authority = self._trusted_input_snapshot
                     try:
-                        if isinstance(self.ledger, SqliteSyntheticHouseholdInputLedger):
+                        if isinstance(self.ledger, SqliteSyntheticHouseholdProfileLedger):
+                            # The current schema-driven owner profile is the
+                            # proposal lineage when this richer ledger is used.
+                            # Read through the existing verified transaction.
+                            snapshot = self.ledger._profile_snapshot_from_verified_transaction(
+                                db, ref, record.version,
+                            )
+                        elif isinstance(self.ledger, SqliteSyntheticHouseholdInputLedger):
                             # Current persisted owner revision always wins.
                             # No callback can override the revised snapshot;
                             # reuse the verified transaction (no DB deadlock).

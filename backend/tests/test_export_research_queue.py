@@ -738,7 +738,7 @@ class ExportResearchQueueTests(unittest.TestCase):
                 payload.update(change)
                 self.assertEqual(
                     self.post_evidence(
-                        payload=payload, action="DEMO-EVIDENCE-BAD",
+                        payload=payload,
                     ).status_code, 422,
                 )
         good = self.evidence_payload()

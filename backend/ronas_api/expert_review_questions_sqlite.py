@@ -387,6 +387,18 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
         if self._inspection_ready:
             self._verify_response_inspections(db)
 
+    def _current_household_question_input(
+        self, db: sqlite3.Connection, ref: str, case_version: int,
+    ) -> tuple[int, str] | None:
+        profile_reader = getattr(
+            self, "_profile_snapshot_from_verified_transaction", None,
+        )
+        if callable(profile_reader):
+            return profile_reader(db, ref, case_version)
+        return self._input_snapshot_from_verified_transaction(
+            db, ref, case_version,
+        )
+
     def append_owned_question_response(
         self, ref: str, principal, *, action_id: str,
         track: str, expected_question_revision: int,
@@ -419,7 +431,7 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
             if question is None:
                 raise ReviewQuestionConflict("question not present")
             latest_revision, _ = self._revision(db, ref, track)
-            current_input = self._input_snapshot_from_verified_transaction(
+            current_input = self._current_household_question_input(
                 db, ref, record.version,
             )
             if (latest_revision != expected_question_revision
@@ -492,7 +504,7 @@ class SqliteSyntheticExpertQuestionLedger(SqliteSyntheticHouseholdInputLedger):
             if not self._owner(ref, principal):
                 return None
             record = self._catalogue[("DOMESTIC", ref)]
-            latest = self._input_snapshot_from_verified_transaction(
+            latest = self._current_household_question_input(
                 db, ref, record.version,
             )
             questions = list(db.execute(

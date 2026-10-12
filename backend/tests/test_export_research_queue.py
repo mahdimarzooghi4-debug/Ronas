@@ -661,6 +661,65 @@ class ExportResearchQueueTests(unittest.TestCase):
             headers=headers if headers is not None else self.headers(),
         )
 
+    def test_export_connector_capture_browser_form_end_to_end(self):
+        class Connector:
+            connector_ref = "DEMO-CONNECTOR-ALPHA"
+
+            def __init__(self):
+                self.calls = []
+
+            def fetch_snapshot(self, *, source_ref, product_ref, destination_ref):
+                self.calls.append((source_ref, product_ref, destination_ref))
+                return ExportSourceSnapshot(
+                    "DEMO-EVIDENCE-BROWSER", b"browser connector snapshot",
+                )
+
+        connector = Connector()
+        registry = ExportSourceConnectorRegistry([connector])
+        self.client = self.client_for(self.ledger, registry)
+        self.assertEqual(self.post_question().status_code, 201)
+        self.login()
+        base = "/admin/export/research/drafts/DEMO-E-001"
+        page = self.client.get(base)
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("evidence-reference/capture", page.text)
+        self.assertIn(connector.connector_ref, page.text)
+        payload = {
+            "csrf": self.demo_export_evidence_form()["csrf"],
+            "case_version": "3", "question_revision": "1",
+            "evidence_revision": "0",
+            "connector_ref": connector.connector_ref,
+        }
+        route = base + "/evidence-reference/capture"
+        missing_origin = self.client.post(route, data=payload, follow_redirects=False)
+        self.assertEqual(missing_origin.status_code, 403)
+        bad_csrf = {**payload, "csrf": "invalid"}
+        self.assertEqual(self.client.post(
+            route, data=bad_csrf, headers={"Origin": ORIGIN},
+            follow_redirects=False,
+        ).status_code, 403)
+        post = self.client.post(
+            route, data=payload, headers={"Origin": ORIGIN},
+            follow_redirects=False,
+        )
+        self.assertEqual(post.status_code, 303, post.text)
+        digest = hashlib.sha256(b"browser connector snapshot").hexdigest()
+        rendered = self.client.get(base)
+        self.assertEqual(rendered.status_code, 200, rendered.text)
+        self.assertIn("DEMO-EVIDENCE-BROWSER", rendered.text)
+        self.assertIn(digest, rendered.text)
+        self.assertNotIn("browser connector snapshot", rendered.text)
+        self.assertEqual(connector.calls, [(
+            "DEMO-SOURCE-001", "DEMO-PRODUCT-ALPHA", "DEMO-DEST-ALPHA",
+        )])
+        stale_replay = self.client.post(
+            route, data=payload, headers={"Origin": ORIGIN},
+            follow_redirects=False,
+        )
+        self.assertEqual(stale_replay.status_code, 409, stale_replay.text)
+        self.assertEqual(len(connector.calls), 1)
+        self.assertTrue(self.reopen().verify_integrity())
+
     def test_export_connector_capture_hashes_ephemeral_snapshot_and_records_reference(self):
         class Connector:
             connector_ref = "DEMO-CONNECTOR-ALPHA"

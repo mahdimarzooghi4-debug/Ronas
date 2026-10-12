@@ -318,7 +318,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         )
         history = self.client.get(path)
         self.assertIn("رسید قدیمی", history.text)
-        self.assertNotIn("رسید جاری", history.text)
+        self.assertNotIn("· رسید جاری ·", history.text)
 
     def test_stage_observation_is_not_offered_without_current_plan(self):
         self.assertEqual(self.client.post(

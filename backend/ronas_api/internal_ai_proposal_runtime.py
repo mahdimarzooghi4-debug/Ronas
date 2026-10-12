@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import hmac
 import json
 from typing import Protocol
 
@@ -59,6 +60,41 @@ class CandidateOutput:
     stages: tuple[CandidateStage, ...]
 
 
+def candidate_structure_digest(
+    model_artifact_digest: str, stages: tuple[CandidateStage, ...],
+) -> str:
+    """Hash the exact ordered structural output emitted by the adapter.
+
+    The digest binds the model artifact and every stage reference/digest. It
+    contains no household text, agronomic advice, approval, or inferred science.
+    """
+    if (not _digest(model_artifact_digest) or type(stages) is not tuple
+            or not stages or any(not isinstance(stage, CandidateStage)
+                                 for stage in stages)):
+        raise ValueError("invalid candidate structure")
+    body = {
+        "contract": "ronas.domestic.internal-ai-candidate-structure.v0",
+        "model_artifact_digest": model_artifact_digest,
+        "stages": [{
+            "ref": stage.ref,
+            "instructions_digest": stage.instructions_digest,
+            "observation_requirements_digest":
+                stage.observation_requirements_digest,
+        } for stage in stages],
+    }
+    # Validate all fields before hashing. This gives malformed values the same
+    # fail-closed behavior as the proposal envelope.
+    for stage in stages:
+        ProposedCultivationStage(
+            stage.ref, stage.instructions_digest,
+            stage.observation_requirements_digest,
+        )
+    encoded = json.dumps(
+        body, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 class InternalModelAdapter(Protocol):
     """Adapter port for a Ronas-owned, internally hosted model runtime."""
 
@@ -100,6 +136,15 @@ def run_synthetic_internal_proposal(
             or any(not isinstance(stage, CandidateStage) for stage in output.stages)):
         raise ProposalRuntimeUnavailable("internal model output shape rejected")
     try:
+        computed_content_digest = candidate_structure_digest(
+            output.model_artifact_digest, output.stages,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ProposalRuntimeUnavailable("internal model output shape rejected") from exc
+    if not hmac.compare_digest(output.proposal_content_digest,
+                               computed_content_digest):
+        raise ProposalRuntimeUnavailable("internal model content digest mismatch")
+    try:
         stages = tuple(ProposedCultivationStage(
             stage.ref, stage.instructions_digest,
             stage.observation_requirements_digest,
@@ -112,7 +157,7 @@ def run_synthetic_internal_proposal(
             scientific_basis_manifest_digest=context.scientific_basis_manifest_digest,
             internal_model_artifact_digest=output.model_artifact_digest,
             internal_run_ref=context.run_ref,
-            proposal_content_digest=output.proposal_content_digest,
+            proposal_content_digest=computed_content_digest,
             proposed_stages=stages,
         )
         structural = inspect_proposal_structure(
@@ -133,7 +178,7 @@ def run_synthetic_internal_proposal(
         "scientific_basis_manifest_digest": context.scientific_basis_manifest_digest,
         "model_artifact_digest": output.model_artifact_digest,
         "run_ref": context.run_ref,
-        "proposal_content_digest": output.proposal_content_digest,
+        "proposal_content_digest": computed_content_digest,
         "stage_refs": [stage.ref for stage in stages],
         "runtime_status": "LOCAL_TEST_STRUCTURE_ONLY",
     }

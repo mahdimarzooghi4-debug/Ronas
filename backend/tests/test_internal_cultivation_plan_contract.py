@@ -190,19 +190,21 @@ class RonasInternalCultivationProposalContractTests(unittest.TestCase):
 
 from ronas_api.internal_ai_proposal_runtime import (
     CandidateOutput, CandidateStage, ProposalRuntimeContext,
-    ProposalRuntimeUnavailable, run_synthetic_internal_proposal,
+    ProposalRuntimeUnavailable, candidate_structure_digest,
+    run_synthetic_internal_proposal,
 )
 
 
 class _InternalModelFixture:
     def __init__(self, output=None, error=None):
+        stages = (
+            CandidateStage("DEMO-STAGE-A", "5" * 64, "6" * 64),
+            CandidateStage("DEMO-STAGE-B", "7" * 64, "8" * 64),
+        )
         self.output = output or CandidateOutput(
             model_artifact_digest=MODEL,
-            proposal_content_digest=PROPOSAL,
-            stages=(
-                CandidateStage("DEMO-STAGE-A", "5" * 64, "6" * 64),
-                CandidateStage("DEMO-STAGE-B", "7" * 64, "8" * 64),
-            ),
+            proposal_content_digest=candidate_structure_digest(MODEL, stages),
+            stages=stages,
         )
         self.error = error
         self.calls = []
@@ -241,6 +243,41 @@ class RonasInternalProposalRuntimeTests(unittest.TestCase):
                     "model_attestation_verified", "supervision_stages_activated",
                     "new_cultivation_advice_enabled", "real_data"):
             self.assertIs(result.structural_record[key], False)
+
+
+    def test_candidate_content_digest_binds_artifact_and_ordered_stage_structure(self):
+        original = _InternalModelFixture().output
+        self.assertEqual(
+            candidate_structure_digest(original.model_artifact_digest,
+                                       original.stages),
+            original.proposal_content_digest,
+        )
+        mutations = (
+            CandidateOutput(
+                MODEL, original.proposal_content_digest,
+                (CandidateStage("DEMO-STAGE-X", "5"*64, "6"*64),
+                 original.stages[1]),
+            ),
+            CandidateOutput(
+                MODEL, original.proposal_content_digest,
+                (CandidateStage(original.stages[0].ref, "9"*64, "6"*64),
+                 original.stages[1]),
+            ),
+            CandidateOutput(
+                MODEL, original.proposal_content_digest,
+                tuple(reversed(original.stages)),
+            ),
+            CandidateOutput(
+                "9"*64, original.proposal_content_digest, original.stages,
+            ),
+        )
+        for output in mutations:
+            with self.subTest(output=output), self.assertRaises(
+                ProposalRuntimeUnavailable
+            ):
+                run_synthetic_internal_proposal(
+                    runtime_context(), _InternalModelFixture(output=output),
+                )
 
     def test_runtime_context_rejects_export_real_or_malformed_lineage(self):
         for changes in (

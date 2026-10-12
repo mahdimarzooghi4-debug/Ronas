@@ -605,6 +605,24 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 "status": "OBSERVATION_REFERENCE_RECORDED",
                 "stage_completed": False,
             })
+        latest_by_stage = {}
+        for observation in items:
+            latest_by_stage[observation["stage_ref"]] = observation
+        stage_progress = []
+        if context is not None:
+            for requirement in context.requirements:
+                latest = latest_by_stage.get(requirement.stage_ref)
+                stage_progress.append({
+                    "stage_ref": requirement.stage_ref,
+                    "state": (
+                        "NOT_REPORTED" if latest is None else
+                        "CURRENT_RECEIPT" if latest["current"] else
+                        "HISTORICAL_RECEIPT"
+                    ),
+                    "observation_revision": (
+                        latest["revision"] if latest is not None else None
+                    ),
+                })
         return {
             "engine": "DOMESTIC", "ref": ref,
             "case_version": record.version,
@@ -622,6 +640,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
             } if context else None),
             "current_revision": rows[-1][9] if rows else 0,
             "observations": items,
+            "stage_progress": stage_progress,
             "real_data": False,
             "scientific_review_approved": False,
             "plan_accepted": False,

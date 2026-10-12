@@ -33,6 +33,14 @@ class SyntheticQuestionCommand(BaseModel):
     expected_question_revision: StrictInt
     reason_ref: StrictStr
     evidence_ref: StrictStr
+    stage_ref: StrictStr | None = Field(default=None, min_length=1, max_length=64)
+    expected_stage_observation_revision: StrictInt | None = Field(
+        default=None, ge=1,
+    )
+    expected_stage_observation_receipt_digest: StrictStr | None = Field(
+        default=None, min_length=64, max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
 
 class SyntheticReceiptInspectionCommand(BaseModel):
@@ -433,6 +441,14 @@ def build_agronomy_workspace_router(
                     expected_question_revision=command.expected_question_revision,
                     reason_ref=command.reason_ref,
                     evidence_ref=command.evidence_ref,
+                    stage_context_authority=stage_context_authority,
+                    stage_ref=command.stage_ref,
+                    expected_stage_observation_revision=(
+                        command.expected_stage_observation_revision
+                    ),
+                    expected_stage_observation_receipt_digest=(
+                        command.expected_stage_observation_receipt_digest
+                    ),
                 )
             except ReviewQuestionConflict as exc:
                 raise HTTPException(

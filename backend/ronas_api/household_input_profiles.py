@@ -572,6 +572,61 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
             raise StageObservationConflict("current household input changed")
         return context
 
+    def _stage_observation_read_view(self, db, ref, record, context) -> dict:
+        rows = db.execute(
+            "SELECT action_id,case_version,input_revision,input_snapshot_digest,"
+            "plan_digest,stage_ref,requirements_digest,observed_at,artifact_digest,"
+            "revision,previous_receipt_digest,receipt_digest "
+            "FROM household_stage_observation WHERE ref=? ORDER BY revision",
+            (ref,),
+        ).fetchall()
+        items = []
+        for row in rows:
+            (action, version, input_revision, input_digest, plan_digest,
+             stage_ref, requirements_digest, observed_at, artifact_digest,
+             revision, previous, digest) = row
+            receipt = StageObservationReceipt(
+                contract_version="ronas.domestic.stage-observation-receipt.v0",
+                case_ref=ref, case_version=version,
+                input_revision=input_revision,
+                input_snapshot_digest=input_digest, plan_digest=plan_digest,
+                stage_ref=stage_ref,
+                observation_requirements_digest=requirements_digest,
+                observed_at=observed_at,
+                observation_artifact_digest=artifact_digest,
+                revision=revision, previous_receipt_digest=previous,
+                receipt_digest=digest,
+            )
+            items.append({
+                "revision": revision, "stage_ref": stage_ref,
+                "observed_at": observed_at,
+                "observation_artifact_digest": artifact_digest,
+                "current": bool(context and receipt_is_current(receipt, context)),
+                "status": "OBSERVATION_REFERENCE_RECORDED",
+                "stage_completed": False,
+            })
+        return {
+            "engine": "DOMESTIC", "ref": ref,
+            "case_version": record.version,
+            "state": "CURRENT_PLAN_AVAILABLE" if context else "NO_CURRENT_PLAN",
+            "current_context": ({
+                "case_version": context.case_version,
+                "input_revision": context.input_revision,
+                "input_snapshot_digest": context.input_snapshot_digest,
+                "plan_digest": context.plan_digest,
+                "stages": [{
+                    "stage_ref": item.stage_ref,
+                    "observation_requirements_digest":
+                        item.observation_requirements_digest,
+                } for item in context.requirements],
+            } if context else None),
+            "current_revision": rows[-1][9] if rows else 0,
+            "observations": items,
+            "real_data": False,
+            "scientific_review_approved": False,
+            "plan_accepted": False,
+        }
+
     def read_owned_stage_observations(
         self, ref: str, principal: Principal, *,
         context_authority: Callable[[str], CurrentStageContext | None],
@@ -585,63 +640,12 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 return None
             record = self._catalogue[("DOMESTIC", ref)]
             context = self._resolve_stage_context(db, ref, provided_context)
-            rows = db.execute(
-                "SELECT action_id,case_version,input_revision,input_snapshot_digest,"
-                "plan_digest,stage_ref,requirements_digest,observed_at,artifact_digest,"
-                "revision,previous_receipt_digest,receipt_digest "
-                "FROM household_stage_observation WHERE ref=? ORDER BY revision",
-                (ref,),
-            ).fetchall()
-            items = []
-            for row in rows:
-                (action, version, input_revision, input_digest, plan_digest,
-                 stage_ref, requirements_digest, observed_at, artifact_digest,
-                 revision, previous, digest) = row
-                receipt = StageObservationReceipt(
-                    contract_version="ronas.domestic.stage-observation-receipt.v0",
-                    case_ref=ref, case_version=version,
-                    input_revision=input_revision,
-                    input_snapshot_digest=input_digest, plan_digest=plan_digest,
-                    stage_ref=stage_ref,
-                    observation_requirements_digest=requirements_digest,
-                    observed_at=observed_at,
-                    observation_artifact_digest=artifact_digest,
-                    revision=revision, previous_receipt_digest=previous,
-                    receipt_digest=digest,
-                )
-                items.append({
-                    "revision": revision, "stage_ref": stage_ref,
-                    "observed_at": observed_at,
-                    "observation_artifact_digest": artifact_digest,
-                    "current": bool(context and receipt_is_current(receipt, context)),
-                    "status": "OBSERVATION_REFERENCE_RECORDED",
-                    "stage_completed": False,
-                })
+            result = self._stage_observation_read_view(db, ref, record, context)
             self._append(
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                 actor=principal.subject, mode="HOUSEHOLD_STAGE_OBSERVATIONS",
             )
-            return {
-                "engine": "DOMESTIC", "ref": ref,
-                "case_version": record.version,
-                "state": "CURRENT_PLAN_AVAILABLE" if context else "NO_CURRENT_PLAN",
-                "current_context": ({
-                    "case_version": context.case_version,
-                    "input_revision": context.input_revision,
-                    "input_snapshot_digest": context.input_snapshot_digest,
-                    "plan_digest": context.plan_digest,
-                    "stages": [{
-                        "stage_ref": item.stage_ref,
-                        "observation_requirements_digest":
-                            item.observation_requirements_digest,
-                    } for item in context.requirements],
-                } if context else None),
-                "current_revision": rows[-1][9] if rows else 0,
-                "observations": items,
-                "real_data": False,
-                "scientific_review_approved": False,
-                "plan_accepted": False,
-            }
+            return result
 
     def append_owned_stage_observation(
         self, ref: str, principal: Principal, command: StageObservationCommand, *,

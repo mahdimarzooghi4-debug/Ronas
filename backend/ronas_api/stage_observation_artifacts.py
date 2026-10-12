@@ -52,8 +52,84 @@ class StageArtifactStore(Protocol):
             content: bytes) -> StageArtifact: ...
 
     def get(self, owner: str, case_ref: str, digest: str
-            ) -> tuple[StageArtifact, bytes] | None: ...
-
+            ) -> tuple[StageArtifact, bytes] | None:
+        # Walk from the configured root using directory descriptors. This avoids
+        # following a leaf or namespace symlink if a local directory is replaced
+        # after initialization, and binds the read to the checked file descriptor.
+        if (not isinstance(owner, str) or not owner or len(owner) > 256
+                or not isinstance(case_ref, str) or not case_ref
+                or not isinstance(digest, str) or not _DIGEST.fullmatch(digest)):
+            raise ValueError("invalid stage artifact scope")
+        directory_flag = getattr(os, "O_DIRECTORY", 0)
+        nofollow_flag = getattr(os, "O_NOFOLLOW", 0)
+        descriptors: list[int] = []
+        try:
+            root_fd = os.open(self.root, os.O_RDONLY | directory_flag | nofollow_flag)
+            descriptors.append(root_fd)
+            for directory in (self._namespace(owner), self._namespace(case_ref)):
+                try:
+                    child_fd = os.open(
+                        directory, os.O_RDONLY | directory_flag | nofollow_flag,
+                        dir_fd=descriptors[-1],
+                    )
+                except FileNotFoundError:
+                    return None
+                info = os.fstat(child_fd)
+                if (not stat.S_ISDIR(info.st_mode)
+                        or stat.S_IMODE(info.st_mode) & 0o077
+                        or (hasattr(os, "getuid") and info.st_uid != os.getuid())):
+                    os.close(child_fd)
+                    raise StageArtifactStoreError(
+                        "artifact directory is not private",
+                    )
+                descriptors.append(child_fd)
+            try:
+                fd = os.open(
+                    digest, os.O_RDONLY | nofollow_flag,
+                    dir_fd=descriptors[-1],
+                )
+            except FileNotFoundError:
+                return None
+            try:
+                info = os.fstat(fd)
+                if (not stat.S_ISREG(info.st_mode)
+                        or stat.S_IMODE(info.st_mode) & 0o077
+                        or (hasattr(os, "getuid") and info.st_uid != os.getuid())):
+                    raise StageArtifactStoreError("artifact file is not private")
+                chunks, size = [], 0
+                while True:
+                    chunk = os.read(fd, min(64 * 1024, MAX_ARTIFACT_BYTES + 29 - size))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > MAX_ARTIFACT_BYTES + 28:
+                        raise StageArtifactStoreError("artifact file size is invalid")
+                encrypted = b"".join(chunks)
+            finally:
+                os.close(fd)
+            if not 28 <= len(encrypted) <= MAX_ARTIFACT_BYTES + 28:
+                raise StageArtifactStoreError("artifact file size is invalid")
+            content = self._cipher.decrypt(
+                encrypted[:12], encrypted[12:], self._aad(owner, case_ref, digest),
+            )
+            if not hmac.compare_digest(hashlib.sha256(content).hexdigest(), digest):
+                raise StageArtifactStoreError("artifact digest verification failed")
+            # Infer media type from authenticated bytes; no mutable sidecar exists.
+            media = next((kind for kind, matches in _MIME_SIGNATURES.items()
+                          if matches(content)), None)
+            if media is None:
+                raise StageArtifactStoreError("artifact media signature is invalid")
+            return StageArtifact(digest, media, len(content)), content
+        except FileNotFoundError:
+            return None
+        except (OSError, InvalidTag) as exc:
+            raise StageArtifactStoreError(
+                "artifact read or integrity check failed",
+            ) from exc
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
     def contains(self, owner: str, case_ref: str, digest: str) -> bool: ...
 
 

@@ -302,6 +302,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(before_receipt.json()["stage_progress"], [{
             "stage_ref": "DEMO-STAGE-01", "state": "NOT_REPORTED",
             "observation_revision": None,
+            "receipt_inspected": False,
         }])
         saved = self.client.post(path, json=command, headers=self.bearer())
         self.assertEqual(saved.status_code, 201, saved.text)
@@ -316,6 +317,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(current.json()["stage_progress"], [{
             "stage_ref": "DEMO-STAGE-01", "state": "CURRENT_RECEIPT",
             "observation_revision": 1,
+            "receipt_inspected": False,
         }])
         self.assertTrue(self.ledger.verify_integrity())
         denied = self.client.get(
@@ -338,6 +340,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(history.json()["stage_progress"], [{
             "stage_ref": "DEMO-STAGE-01", "state": "HISTORICAL_RECEIPT",
             "observation_revision": 1,
+            "receipt_inspected": False,
         }])
         stale = self.client.post(
             path, json=stale_command, headers=self.bearer(),
@@ -481,6 +484,9 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertTrue(owner_history.json()["observations"][0][
             "receipt_inspected"
         ])
+        self.assertTrue(owner_history.json()["stage_progress"][0][
+            "receipt_inspected"
+        ])
 
         second_observation = self.stage_command(
             action="DEMO-STAGE-OBS-2", revision=1,
@@ -530,7 +536,10 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(browser_post.status_code, 303, browser_post.text)
         inspected_page = client.get(page_path)
         self.assertIn("رسید مشاهده شد (بدون داوری تخصصی)", inspected_page.text)
+        self.assertIn("رسید مشاهده شد (بدون داوری)", inspected_page.text)
         self.assertNotIn("ثبت مشاهده رسید (بدون بررسی)", inspected_page.text)
+        refreshed = client.get(api_path, headers=specialist_headers).json()
+        self.assertTrue(refreshed["stage_progress"][0]["receipt_inspected"])
         browser_download = client.get(
             page_path + "/artifacts/DEMO-STAGE-01/" + artifact.digest,
         )

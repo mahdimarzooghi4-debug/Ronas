@@ -21,6 +21,9 @@ from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedge
 from .household_input_ledger_sqlite import (
     InputRevisionConflict, SqliteSyntheticHouseholdInputLedger,
 )
+from .household_input_profiles import (
+    HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
+)
 from .export_research_question import (
     ExportResearchQuestionConflict, valid_question_refs,
 )
@@ -189,6 +192,8 @@ def build_authenticated_ui_router(
     technical_review_ledger: SqliteSyntheticHumanReviewLedger | None = None,
     owned_case_ledger: SqliteSyntheticGrantLedger | None = None,
     household_input_ledger: SqliteSyntheticHouseholdInputLedger | None = None,
+    household_profile_schema: HouseholdInputSchema | None = None,
+    household_profile_access_authority: Callable[[Principal, str, str], bool] | None = None,
     gate_handoff_ledger: SqliteSyntheticGateEvidenceHandoff | None = None,
     authority_enquiry_ledger: SqliteSyntheticAuthorityEnquiryLedger | None = None,
     agronomy_workspace: SyntheticAgronomyWorkspace | None = None,
@@ -209,6 +214,13 @@ def build_authenticated_ui_router(
                  or household_input_ledger is not owned_case_ledger
                  or household_input_ledger is not technical_review_ledger)):
         raise ValueError("household input must use same explicit review ledger")
+    if household_profile_schema is not None:
+        if (not isinstance(household_input_ledger, SqliteSyntheticHouseholdProfileLedger)
+                or household_input_ledger.profile_schema != household_profile_schema
+                or not callable(household_profile_access_authority)):
+            raise ValueError("household profile UI needs exact ledger/schema/authority")
+    elif household_profile_access_authority is not None:
+        raise ValueError("household profile authority requires explicit schema")
     if (gate_handoff_ledger is not None
             and not isinstance(gate_handoff_ledger,
                                SqliteSyntheticGateEvidenceHandoff)):
@@ -236,7 +248,8 @@ def build_authenticated_ui_router(
 
     async def checked_browser_form(
         request: Request, sid: str | None, *,
-        fields: frozenset[str],
+        fields: frozenset[str], max_bytes: int = 1200,
+        max_fields: int = 8, max_value_length: int = 150,
     ) -> tuple[Principal, dict[str, str]]:
         """Verified server session, strict Origin+CSRF and bounded form input.
 
@@ -253,18 +266,18 @@ def build_authenticated_ui_router(
         except InvalidToken:
             raise HTTPException(401, detail="INVALID_SESSION") from None
         raw = await request.body()
-        if len(raw) > 1200:
+        if len(raw) > max_bytes:
             raise HTTPException(413, detail="LOCAL_TEST_FORM_TOO_LARGE")
         try:
             form = parse_qs(
                 raw.decode("ascii"), keep_blank_values=True,
-                strict_parsing=True, max_num_fields=8,
+                strict_parsing=True, max_num_fields=max_fields,
                 encoding="ascii", errors="strict",
             )
         except (ValueError, UnicodeError) as exc:
             raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
         if (set(form) != fields
-                or any(len(items) != 1 or len(items[0]) > 150
+                or any(len(items) != 1 or len(items[0]) > max_value_length
                        for items in form.values())):
             raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
         data = {key: values[0] for key, values in form.items()}
@@ -1418,6 +1431,150 @@ def build_authenticated_ui_router(
             return page("روناس — تاریخچه اصلاح آزمایشی اطلاعات خانوار",
                         body, logged_in=True, local_test_form=True)
 
+
+        if (household_profile_schema is not None
+                and household_profile_access_authority is not None
+                and isinstance(household_input_ledger,
+                               SqliteSyntheticHouseholdProfileLedger)):
+            @router.get("/my-drafts/{ref}/cultivation-inputs")
+            def household_cultivation_inputs_page(
+                ref: str,
+                sid: str | None = Cookie(default=None, alias=cookie_name),
+            ) -> HTMLResponse:
+                try:
+                    session = flow.session(sid)
+                except InvalidToken:
+                    raise HTTPException(401, detail="INVALID_SESSION") from None
+                principal = Principal(session.subject, session.roles)
+                try:
+                    permitted = household_profile_access_authority(
+                        principal, ref, household_profile_schema.schema_ref,
+                    )
+                except Exception as exc:
+                    raise HTTPException(
+                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                    ) from exc
+                if permitted is not True:
+                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                try:
+                    result = household_input_ledger.read_owned_profile(ref, principal)
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE") from exc
+                if result is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                controls = []
+                for field in household_profile_schema.fields:
+                    value = result["current_values"].get(field.key, "")
+                    label = escape(field.label)
+                    key = escape(field.key, quote=True)
+                    safe_value = escape(value, quote=True)
+                    required = " required" if field.required else ""
+                    if field.kind == "choice":
+                        options = ['<option value="">انتخاب کنید</option>']
+                        options.extend(
+                            '<option value="' + escape(choice, quote=True) + '"'
+                            + (" selected" if choice == value else "") + ">"
+                            + escape(choice) + "</option>"
+                            for choice in field.choices
+                        )
+                        control = '<select id="' + key + '" name="' + key + '"' + required + '>' + ''.join(options) + '</select>'
+                    elif field.kind == "text":
+                        control = '<textarea id="' + key + '" name="' + key + '" maxlength="' + str(field.max_length) + '"' + required + '>' + escape(value) + '</textarea>'
+                    else:
+                        control = '<input id="' + key + '" name="' + key + '" type="' + field.kind + '" maxlength="' + str(field.max_length) + '" value="' + safe_value + '"' + required + '>'
+                    controls.append('<label for="' + key + '">' + label + '</label>' + control)
+                history = ''.join(
+                    '<li>نسخه ' + str(item["revision"]) + '</li>'
+                    for item in result["revisions"]
+                )
+                fields = frozenset(
+                    {"csrf", "case_version", "profile_revision"}
+                    | {field.key for field in household_profile_schema.fields}
+                )
+                body = (
+                    '<article class="panel"><h2>اطلاعات ساختاریافته پرونده کشت</h2>'
+                    '<p>پرونده ' + escape(ref) + ' · نسخه پرونده '
+                    + str(result["case_version"]) + '</p>'
+                    '<p>این فرم فقط برای پرونده آزمایشی محلی فعال است. '
+                    'اطلاعات ساختگی وارد کنید؛ تأیید علمی یا برنامه کشت تولید نمی‌شود.</p>'
+                    + ('<p role="status">نسخه فرم تغییر کرده است؛ '
+                       'مقادیر نسخه قبلی برای این فرم نمایش داده نمی‌شوند.</p>'
+                       if result["schema_changed"] else '')
+                    + '<form method="post" action="/my-drafts/' + quote(ref)
+                    + '/cultivation-inputs"><input type="hidden" name="csrf" value="'
+                    + escape(session.csrf, quote=True) + '">'
+                    '<input type="hidden" name="case_version" value="'
+                    + str(result["case_version"]) + '">'
+                    '<input type="hidden" name="profile_revision" value="'
+                    + str(result["current_revision"]) + '">'
+                    + ''.join(controls)
+                    + '<button type="submit">ذخیره نسخه جدید</button></form>'
+                    + '<h3>تاریخچه اصلاح</h3>'
+                    + ('<ol>' + history + '</ol>' if history else
+                       '<p>هنوز نسخه‌ای ثبت نشده است.</p>')
+                    + '<p>مقادیر فقط برای صاحب پرونده قابل مشاهده‌اند. '
+                    'ثبت آن‌ها به معنی رضایت، تأیید متخصص یا پذیرش طرح نیست.</p>'
+                    '<p><a href="/my-drafts/' + quote(ref) + '">بازگشت به پرونده</a></p>'
+                    '</article>'
+                )
+                return page("روناس — اطلاعات پرونده کشت",
+                            body, logged_in=True, local_test_form=True)
+
+            @router.post("/my-drafts/{ref}/cultivation-inputs")
+            async def household_cultivation_inputs_submit(
+                ref: str, request: Request,
+                sid: str | None = Cookie(default=None, alias=cookie_name),
+            ) -> RedirectResponse:
+                profile_fields = frozenset(
+                    {"csrf", "case_version", "profile_revision"}
+                    | {field.key for field in household_profile_schema.fields}
+                )
+                principal, form = await checked_browser_form(
+                    request, sid, fields=profile_fields,
+                    max_bytes=8192, max_fields=9,
+                    max_value_length=300,
+                )
+                try:
+                    permitted = household_profile_access_authority(
+                        principal, ref, household_profile_schema.schema_ref,
+                    )
+                except Exception as exc:
+                    raise HTTPException(
+                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                    ) from exc
+                if permitted is not True:
+                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                values = {
+                    field.key: form[field.key]
+                    for field in household_profile_schema.fields
+                }
+                try:
+                    saved = household_input_ledger.append_owned_profile(
+                        ref, principal,
+                        action_id="DEMO-PROFILE-" + secrets.token_hex(10).upper(),
+                        expected_case_version=form_version(
+                            form["case_version"], zero_allowed=False,
+                        ),
+                        expected_revision=form_version(form["profile_revision"]),
+                        values=values,
+                    )
+                except InputRevisionConflict as exc:
+                    raise HTTPException(
+                        409, detail="HOUSEHOLD_PROFILE_VERSION_CONFLICT",
+                    ) from exc
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(
+                        503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE",
+                    ) from exc
+                except ValueError as exc:
+                    raise HTTPException(422, detail="INVALID_HOUSEHOLD_PROFILE") from exc
+                if saved is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                return RedirectResponse(
+                    "/my-drafts/" + quote(ref) + "/cultivation-inputs",
+                    status_code=303,
+                )
+
         @router.post("/my-drafts/{ref}/input-revisions/demo-correction")
         async def household_demo_correction(
             ref: str, request: Request,
@@ -1703,6 +1860,10 @@ def build_authenticated_ui_router(
                    + quote(ref) + '/input-revisions">'
                    'تاریخچه آزمایشی اصلاح اطلاعات خانوار</a></p>'
                    if household_input_ledger is not None else '')
+                + ('<p><a href="/my-drafts/' + quote(ref)
+                   + '/cultivation-inputs">اطلاعات ساختاریافته پرونده کشت</a></p>'
+                   if (household_profile_schema is not None
+                       and household_profile_access_authority is not None) else '')
                 + ('<p><a href="/my-drafts/' + quote(ref)
                    + '/progress-notes">یادداشت پیشرفت ساختگی (DEMO)</a></p>'
                    if household_input_ledger is not None else '')

@@ -605,49 +605,36 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
         ):
             event = json.loads(payload)
             mode = event.get("access_mode")
-            if (event.get("kind") == STAGE_QUESTION_LINK_EVENT
-                    or isinstance(mode, str)
-                       and mode.startswith(STAGE_QUESTION_LINK_MODE)):
-                linked[sequence] = event
-        used = set()
-        for row in db.execute(
-            "SELECT question_action_id,ref,case_version,track,question_revision,"
-            "stage_ref,observation_revision,observation_receipt_digest,"
-            "actor_digest,binding_receipt,audit_sequence "
-            "FROM expert_stage_question_binding ORDER BY audit_sequence"
-        ):
-            (action, ref, case_version, track, question_revision, stage_ref,
-             observation_revision, observation_digest, actor_digest, receipt,
-             sequence) = row
-            question = db.execute(
-                "SELECT ref,track,revision,case_version,actor_digest,audit_sequence "
-                "FROM expert_review_question WHERE action_id=?", (action,),
-            ).fetchone()
-            observation = db.execute(
-                "SELECT case_version,receipt_digest FROM household_stage_observation "
-                "WHERE ref=? AND stage_ref=? AND revision=?",
-                (ref, stage_ref, observation_revision),
-            ).fetchone()
-            event = linked.get(sequence)
-            binding = self._stage_question_binding(
-                action, ref, case_version, track, question_revision, stage_ref,
-                observation_revision, observation_digest, actor_digest,
+            structural_mismatch = (
+                not _synthetic_ref(action) or not _synthetic_ref(ref)
+                or not _synthetic_ref(stage_ref)
+                or type(case_version) is not int or case_version < 1
+                or track != "HOUSEHOLD_INPUT_ADEQUACY"
+                or type(question_revision) is not int or question_revision < 1
+                or type(observation_revision) is not int or observation_revision < 1
+                or not _digest(observation_digest)
             )
-            expected_receipt = _hash(_json(binding))
-            if (not _synthetic_ref(action) or not _synthetic_ref(ref)
-                    or not _synthetic_ref(stage_ref)
-                    or type(case_version) is not int or case_version < 1
-                    or track != "HOUSEHOLD_INPUT_ADEQUACY"
-                    or type(question_revision) is not int or question_revision < 1
-                    or type(observation_revision) is not int or observation_revision < 1
-                    or not _digest(observation_digest)
-                    or observation != (case_version, observation_digest)
-                    or question is None
+            if structural_mismatch:
+                raise LedgerIntegrityError(
+                    "stage follow-up question structural binding mismatch"
+                )
+            if observation != (case_version, observation_digest):
+                raise LedgerIntegrityError(
+                    "stage follow-up question receipt mismatch"
+                )
+            if (question is None
                     or question[:5] != (
                         ref, track, question_revision, case_version, actor_digest,
                     )
-                    or question[5] >= sequence
-                    or receipt != expected_receipt or event is None
+                    or question[5] >= sequence):
+                raise LedgerIntegrityError(
+                    "stage follow-up question record mismatch"
+                )
+            if receipt != expected_receipt:
+                raise LedgerIntegrityError(
+                    "stage follow-up question binding digest mismatch"
+                )
+            if (event is None
                     or event.get("kind") != STAGE_QUESTION_LINK_EVENT
                     or event.get("engine") != "DOMESTIC"
                     or event.get("ref") != ref
@@ -658,7 +645,9 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                     or event.get("target_digest") != _hash(receipt)
                     or event.get("access_mode") != STAGE_QUESTION_LINK_MODE + receipt
                     or sequence in used):
-                raise LedgerIntegrityError("stage follow-up question binding mismatch")
+                raise LedgerIntegrityError(
+                    "stage follow-up question audit mismatch"
+                )
             used.add(sequence)
         if used != set(linked):
             raise LedgerIntegrityError("orphaned stage follow-up question binding audit")

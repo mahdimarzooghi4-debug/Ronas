@@ -620,7 +620,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
              observation_revision, observation_digest, actor_digest, receipt,
              sequence) = row
             question = db.execute(
-                "SELECT case_version,actor_digest,audit_sequence "
+                "SELECT ref,track,revision,case_version,actor_digest,audit_sequence "
                 "FROM expert_review_question WHERE action_id=?", (action,),
             ).fetchone()
             observation = db.execute(
@@ -636,15 +636,17 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
             expected_receipt = _hash(_json(binding))
             if (not _synthetic_ref(action) or not _synthetic_ref(ref)
                     or not _synthetic_ref(stage_ref)
-                    or case_version < 1
+                    or type(case_version) is not int or case_version < 1
                     or track != "HOUSEHOLD_INPUT_ADEQUACY"
                     or type(question_revision) is not int or question_revision < 1
                     or type(observation_revision) is not int or observation_revision < 1
                     or not _digest(observation_digest)
                     or observation != (case_version, observation_digest)
                     or question is None
-                    or question != (case_version, actor_digest, question[2])
-                    or question[2] >= sequence
+                    or question[:5] != (
+                        ref, track, question_revision, case_version, actor_digest,
+                    )
+                    or question[5] >= sequence
                     or receipt != expected_receipt or event is None
                     or event.get("kind") != STAGE_QUESTION_LINK_EVENT
                     or event.get("engine") != "DOMESTIC"

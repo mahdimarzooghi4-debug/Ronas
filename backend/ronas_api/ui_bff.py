@@ -1090,6 +1090,24 @@ def build_authenticated_ui_router(
                 )
             except LedgerIntegrityError:
                 pass
+            current_stage_observations = []
+            if (household_stage_context_authority is not None
+                    and isinstance(
+                        agronomy_workspace.ledger,
+                        SqliteSyntheticHouseholdProfileLedger,
+                    )):
+                try:
+                    stage_data = agronomy_workspace.read_assigned_stage_observations(
+                        ref, Principal(session.subject, session.roles),
+                        context_authority=household_stage_context_authority,
+                    )
+                    if stage_data is not None:
+                        current_stage_observations = [
+                            item for item in stage_data["observations"]
+                            if item["current"]
+                        ]
+                except (StageObservationConflict, LedgerIntegrityError, sqlite3.Error):
+                    current_stage_observations = []
             expert_forms = ""
             if (current_proposal is not None
                     and current_proposal["proposal_status"]
@@ -1118,9 +1136,40 @@ def build_authenticated_ui_router(
                         + str(revision) + '">'
                         '<input type="hidden" name="track" value="'
                         + track + '">'
+                        '<input type="hidden" name="stage_ref" value="">'
+                        '<input type="hidden" name="stage_observation_revision" value="">'
+                        '<input type="hidden" name="stage_observation_receipt_digest" value="">'
                         '<p><button type="submit">' + escape(label)
                         + ' (فقط DEMO)</button></p></form>'
                     )
+                if household_stage_context_authority is not None:
+                    revision = max((
+                        q["question_revision"] for q in notes["questions"]
+                        if q["track"] == "HOUSEHOLD_INPUT_ADEQUACY"
+                    ), default=0)
+                    for item in current_stage_observations:
+                        expert_forms += (
+                            '<form method="post" action="/agronomy/assigned-drafts/'
+                            + quote(ref) + '/review-questions/demo-question">'
+                            '<input type="hidden" name="csrf" value="'
+                            + escape(session.csrf, quote=True) + '">'
+                            '<input type="hidden" name="case_version" value="'
+                            + str(notes["case_version"]) + '">'
+                            '<input type="hidden" name="input_revision" value="'
+                            + str(current_proposal["input_revision"]) + '">'
+                            '<input type="hidden" name="question_revision" value="'
+                            + str(revision) + '">'
+                            '<input type="hidden" name="track" value="HOUSEHOLD_INPUT_ADEQUACY">'
+                            '<input type="hidden" name="stage_ref" value="'
+                            + escape(item["stage_ref"], quote=True) + '">'
+                            '<input type="hidden" name="stage_observation_revision" value="'
+                            + str(item["revision"]) + '">'
+                            '<input type="hidden" name="stage_observation_receipt_digest" value="'
+                            + escape(item["receipt_digest"], quote=True) + '">'
+                            '<p><button type="submit">پرسش درباره رسید جاری '
+                            + escape(item["stage_ref"]) + ' · نسخه '
+                            + str(item["revision"]) + ' (فقط DEMO)</button></p></form>'
+                        )
             inspections = ""
             if current_proposal is not None and type(
                 current_proposal.get("input_revision")
@@ -1171,6 +1220,9 @@ def build_authenticated_ui_router(
                 + ' · نسخه ورودی ' + str(q["bound_input_revision"])
                 + ' · ارجاع دلیل ' + escape(q["draft_reason_ref"])
                 + ' · ارجاع شاهد ' + escape(q["draft_evidence_ref"])
+                + (' · متصل به رسید مرحله ' + escape(q["stage_ref"])
+                   + ' · نسخه ' + str(q["stage_observation_revision"])
+                   if q.get("stage_ref") else '')
                 + (' · پاسخ ساختاری خانوار دریافت شده (بررسی نشده)'
                    if q["synthetic_household_response_received"]
                    else ' · پاسخی ثبت نشده')
@@ -1208,7 +1260,9 @@ def build_authenticated_ui_router(
             principal, form = await checked_browser_form(
                 request, sid, fields=frozenset({
                     "csrf", "case_version", "input_revision",
-                    "question_revision", "track",
+                    "question_revision", "track", "stage_ref",
+                    "stage_observation_revision",
+                    "stage_observation_receipt_digest",
                 }),
             )
             track = form["track"]
@@ -1217,6 +1271,12 @@ def build_authenticated_ui_router(
                 "SCIENTIFIC_BASIS_AND_USE_RIGHTS",
                 "INDIVIDUAL_CULTIVATION_PROPOSAL",
             ):
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+            stage_fields = (
+                form["stage_ref"], form["stage_observation_revision"],
+                form["stage_observation_receipt_digest"],
+            )
+            if any(stage_fields) and not all(stage_fields):
                 raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
             try:
                 created = agronomy_workspace.record_assigned_synthetic_review_question(
@@ -1234,6 +1294,15 @@ def build_authenticated_ui_router(
                     ),
                     reason_ref="DEMO-UI-MISSING-REF",
                     evidence_ref="DEMO-UI-PENDING-REF",
+                    stage_context_authority=household_stage_context_authority,
+                    stage_ref=form["stage_ref"] or None,
+                    expected_stage_observation_revision=(
+                        form_version(form["stage_observation_revision"], zero_allowed=False)
+                        if form["stage_observation_revision"] else None
+                    ),
+                    expected_stage_observation_receipt_digest=(
+                        form["stage_observation_receipt_digest"] or None
+                    ),
                 )
             except ReviewQuestionConflict as exc:
                 raise HTTPException(
@@ -2355,6 +2424,9 @@ def build_authenticated_ui_router(
                    if q["response_ref"] else '')
                 + (' · ارجاع شاهد ' + escape(q["evidence_ref"])
                    if q["evidence_ref"] else '')
+                + (' · متصل به رسید مرحله ' + escape(q["stage_ref"])
+                   + ' · نسخه رسید ' + str(q["stage_observation_revision"])
+                   if q.get("stage_ref") else '')
                 + (' · نسخه فعلی' if q["is_current_input_version"]
                    else ' · نسخه تاریخی')
                 + '</li>'

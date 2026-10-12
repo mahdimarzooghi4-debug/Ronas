@@ -36,6 +36,8 @@ STAGE_OBSERVATION_EVENT = "DOMESTIC_STAGE_OBSERVATION_REFERENCE_RECORDED"
 STAGE_OBSERVATION_MODE = "DOMESTIC_STAGE_OBSERVATION_RECEIPT:"
 STAGE_INSPECTION_EVENT = "DOMESTIC_STAGE_RECEIPT_INSPECTED"
 STAGE_INSPECTION_MODE = "DOMESTIC_STAGE_RECEIPT_INSPECTION:"
+STAGE_QUESTION_LINK_EVENT = "DOMESTIC_STAGE_FOLLOWUP_QUESTION_LINKED"
+STAGE_QUESTION_LINK_MODE = "DOMESTIC_STAGE_FOLLOWUP_QUESTION:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +190,24 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 CREATE TRIGGER IF NOT EXISTS stage_receipt_inspection_no_delete
                 BEFORE DELETE ON expert_stage_receipt_inspection
                 BEGIN SELECT RAISE(ABORT, 'stage receipt inspections immutable'); END;
+                CREATE TABLE IF NOT EXISTS expert_stage_question_binding (
+                    question_action_id TEXT PRIMARY KEY,
+                    ref TEXT NOT NULL, case_version INTEGER NOT NULL,
+                    track TEXT NOT NULL, question_revision INTEGER NOT NULL,
+                    stage_ref TEXT NOT NULL, observation_revision INTEGER NOT NULL,
+                    observation_receipt_digest TEXT NOT NULL,
+                    actor_digest TEXT NOT NULL,
+                    binding_receipt TEXT NOT NULL UNIQUE,
+                    audit_sequence INTEGER NOT NULL UNIQUE,
+                    UNIQUE(ref, track, question_revision),
+                    FOREIGN KEY(audit_sequence) REFERENCES audit_event(sequence)
+                );
+                CREATE TRIGGER IF NOT EXISTS stage_question_binding_no_update
+                BEFORE UPDATE ON expert_stage_question_binding
+                BEGIN SELECT RAISE(ABORT, 'stage question bindings immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS stage_question_binding_no_delete
+                BEFORE DELETE ON expert_stage_question_binding
+                BEGIN SELECT RAISE(ABORT, 'stage question bindings immutable'); END;
             """)
         self._profile_ready = True
         with self._transaction() as db:
@@ -196,6 +216,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
     def _extended_audit_kinds(self):
         return super()._extended_audit_kinds() | frozenset({
             PROFILE_EVENT, STAGE_OBSERVATION_EVENT, STAGE_INSPECTION_EVENT,
+            STAGE_QUESTION_LINK_EVENT,
         })
 
     @staticmethod
@@ -558,6 +579,137 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
         if used != set(linked):
             raise LedgerIntegrityError("orphaned Domestic stage observation audit")
         self._verify_stage_receipt_inspections(db)
+        self._verify_stage_question_bindings(db)
+
+    @staticmethod
+    def _stage_question_binding(
+        action: str, ref: str, case_version: int, track: str,
+        question_revision: int, stage_ref: str, observation_revision: int,
+        observation_receipt_digest: str, actor_digest: str,
+    ) -> dict:
+        return {
+            "question_action_id": action, "engine": "DOMESTIC", "ref": ref,
+            "case_version": case_version, "track": track,
+            "question_revision": question_revision, "stage_ref": stage_ref,
+            "observation_revision": observation_revision,
+            "observation_receipt_digest": observation_receipt_digest,
+            "actor_digest": actor_digest,
+        }
+
+    def _verify_stage_question_bindings(
+        self, db: sqlite3.Connection,
+    ) -> None:
+        linked = {}
+        for sequence, payload in db.execute(
+            "SELECT sequence,payload FROM audit_event ORDER BY sequence"
+        ):
+            event = json.loads(payload)
+            mode = event.get("access_mode")
+            if (event.get("kind") == STAGE_QUESTION_LINK_EVENT
+                    or isinstance(mode, str)
+                       and mode.startswith(STAGE_QUESTION_LINK_MODE)):
+                linked[sequence] = event
+        used = set()
+        for row in db.execute(
+            "SELECT question_action_id,ref,case_version,track,question_revision,"
+            "stage_ref,observation_revision,observation_receipt_digest,"
+            "actor_digest,binding_receipt,audit_sequence "
+            "FROM expert_stage_question_binding ORDER BY audit_sequence"
+        ):
+            (action, ref, case_version, track, question_revision, stage_ref,
+             observation_revision, observation_digest, actor_digest, receipt,
+             sequence) = row
+            question = db.execute(
+                "SELECT case_version,actor_digest,audit_sequence "
+                "FROM expert_review_question WHERE action_id=?", (action,),
+            ).fetchone()
+            observation = db.execute(
+                "SELECT case_version,receipt_digest FROM household_stage_observation "
+                "WHERE ref=? AND stage_ref=? AND revision=?",
+                (ref, stage_ref, observation_revision),
+            ).fetchone()
+            event = linked.get(sequence)
+            binding = self._stage_question_binding(
+                action, ref, case_version, track, question_revision, stage_ref,
+                observation_revision, observation_digest, actor_digest,
+            )
+            expected_receipt = _hash(_json(binding))
+            if (not _synthetic_ref(action) or not _synthetic_ref(ref)
+                    or not _synthetic_ref(stage_ref)
+                    or case_version < 1
+                    or track != "HOUSEHOLD_INPUT_ADEQUACY"
+                    or type(question_revision) is not int or question_revision < 1
+                    or type(observation_revision) is not int or observation_revision < 1
+                    or not _digest(observation_digest)
+                    or observation != (case_version, observation_digest)
+                    or question is None
+                    or question != (case_version, actor_digest, question[2])
+                    or question[2] >= sequence
+                    or receipt != expected_receipt or event is None
+                    or event.get("kind") != STAGE_QUESTION_LINK_EVENT
+                    or event.get("engine") != "DOMESTIC"
+                    or event.get("ref") != ref
+                    or event.get("case_version") != case_version
+                    or event.get("action_id") != action
+                    or event.get("actor_digest") != actor_digest
+                    or event.get("reason_ref") != stage_ref
+                    or event.get("target_digest") != _hash(receipt)
+                    or event.get("access_mode") != STAGE_QUESTION_LINK_MODE + receipt
+                    or sequence in used):
+                raise LedgerIntegrityError("stage follow-up question binding mismatch")
+            used.add(sequence)
+        if used != set(linked):
+            raise LedgerIntegrityError("orphaned stage follow-up question binding audit")
+
+    def _append_verified_stage_question_binding(
+        self, db: sqlite3.Connection, *, question_action_id: str,
+        ref: str, case_version: int, track: str, question_revision: int,
+        stage_ref: str, observation_revision: int,
+        observation_receipt_digest: str, actor: str,
+    ) -> None:
+        actor_digest = _hash(actor)
+        binding = self._stage_question_binding(
+            question_action_id, ref, case_version, track, question_revision,
+            stage_ref, observation_revision, observation_receipt_digest,
+            actor_digest,
+        )
+        receipt = _hash(_json(binding))
+        prior = db.execute(
+            "SELECT ref,case_version,track,question_revision,stage_ref,"
+            "observation_revision,observation_receipt_digest,actor_digest,"
+            "binding_receipt FROM expert_stage_question_binding "
+            "WHERE question_action_id=?", (question_action_id,),
+        ).fetchone()
+        expected = (
+            ref, case_version, track, question_revision, stage_ref,
+            observation_revision, observation_receipt_digest, actor_digest, receipt,
+        )
+        if prior is not None:
+            if prior == expected:
+                return
+            raise StageObservationConflict("stage question replay differs")
+        if db.execute(
+            "SELECT 1 FROM expert_stage_question_binding "
+            "WHERE ref=? AND track=? AND question_revision=?",
+            (ref, track, question_revision),
+        ).fetchone() is not None:
+            raise StageObservationConflict("question already linked to a stage")
+        audit = self._append(
+            db, kind=STAGE_QUESTION_LINK_EVENT, engine="DOMESTIC",
+            ref=ref, actor=actor, target=receipt,
+            action_id=question_action_id, reason_ref=stage_ref,
+            mode=STAGE_QUESTION_LINK_MODE + receipt,
+        )
+        db.execute(
+            "INSERT INTO expert_stage_question_binding "
+            "(question_action_id,ref,case_version,track,question_revision,"
+            "stage_ref,observation_revision,observation_receipt_digest,"
+            "actor_digest,binding_receipt,audit_sequence) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (question_action_id, ref, case_version, track, question_revision,
+             stage_ref, observation_revision, observation_receipt_digest,
+             actor_digest, receipt, audit.sequence),
+        )
 
     @staticmethod
     def _stage_inspection_binding(

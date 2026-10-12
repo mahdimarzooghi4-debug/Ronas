@@ -318,8 +318,9 @@ def build_authenticated_ui_router(
 
     async def checked_browser_form(
         request: Request, sid: str | None, *,
-        fields: frozenset[str], max_bytes: int = 1200,
-        max_fields: int = 8, max_value_length: int = 150,
+        fields: frozenset[str], optional_fields: frozenset[str] = frozenset(),
+        max_bytes: int = 1200, max_fields: int = 8,
+        max_value_length: int = 150,
     ) -> tuple[Principal, dict[str, str]]:
         """Verified server session, strict Origin+CSRF and bounded form input.
 
@@ -346,11 +347,14 @@ def build_authenticated_ui_router(
             )
         except (ValueError, UnicodeError) as exc:
             raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
-        if (set(form) != fields
+        present = set(form)
+        if (not fields.issubset(present)
+                or not present.issubset(fields | optional_fields)
                 or any(len(items) != 1 or len(items[0]) > max_value_length
                        for items in form.values())):
             raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
         data = {key: values[0] for key, values in form.items()}
+        data.update({key: "" for key in optional_fields if key not in data})
         if not hmac.compare_digest(session.csrf, data["csrf"]):
             raise HTTPException(403, detail="CSRF_REQUIRED")
         return Principal(session.subject, session.roles), data
@@ -1260,8 +1264,9 @@ def build_authenticated_ui_router(
             principal, form = await checked_browser_form(
                 request, sid, fields=frozenset({
                     "csrf", "case_version", "input_revision",
-                    "question_revision", "track", "stage_ref",
-                    "stage_observation_revision",
+                    "question_revision", "track",
+                }), optional_fields=frozenset({
+                    "stage_ref", "stage_observation_revision",
                     "stage_observation_receipt_digest",
                 }),
             )

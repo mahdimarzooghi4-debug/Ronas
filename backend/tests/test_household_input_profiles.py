@@ -532,7 +532,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             expected_input_revision=1, answer_ref="DEMO-ANSWER-REF",
             evidence_ref="DEMO-ANSWER-EVIDENCE",
         )
-        self.assertEqual(owner_reply["record_state"], "SYNTHETIC_RESPONSE_ONLY_NOT_REVIEWED")
+        self.assertEqual(owner_reply["record_state"], "SYNTHETIC_RESPONSE_RECEIVED_NOT_REVIEWED")
         owner_questions = self.ledger.read_owned_question_responses(
             REF, Principal(OWNER, frozenset({"household"})),
         )

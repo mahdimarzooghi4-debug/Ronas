@@ -8,10 +8,11 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import Response
-from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from .auth import Principal
 from .agronomy_workspace import SyntheticAgronomyWorkspace
+from .household_input_profiles import SqliteSyntheticHouseholdProfileLedger
 from .domestic_stage_observation import CurrentStageContext, StageObservationConflict
 from .stage_observation_artifacts import StageArtifactStore, StageArtifactStoreError
 from .grant_ledger_sqlite import LedgerIntegrityError
@@ -40,6 +41,17 @@ class SyntheticReceiptInspectionCommand(BaseModel):
     expected_case_version: StrictInt
     expected_input_revision: StrictInt
     expected_question_revision: StrictInt
+
+
+class SyntheticStageReceiptInspectionCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: StrictStr = Field(min_length=1, max_length=96)
+    expected_case_version: StrictInt = Field(ge=1)
+    stage_ref: StrictStr = Field(min_length=1, max_length=64)
+    expected_observation_revision: StrictInt = Field(ge=1)
+    expected_observation_receipt_digest: StrictStr = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$",
+    )
 
 
 def build_agronomy_workspace_router(
@@ -80,6 +92,50 @@ def build_agronomy_workspace_router(
             if result is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
             return result
+
+        if isinstance(workspace.ledger, SqliteSyntheticHouseholdProfileLedger):
+            @router.post(
+                "/api/v1/agronomy/assigned-drafts/{ref}/stage-observations/"
+                "inspections",
+                status_code=201,
+            )
+            def inspect_assigned_stage_receipt(
+                ref: str, command: SyntheticStageReceiptInspectionCommand,
+                authorization: str | None = Header(default=None),
+                p: Principal = Depends(verified_principal),
+            ) -> dict:
+                if (not isinstance(authorization, str)
+                        or not authorization.startswith("Bearer ")):
+                    raise HTTPException(
+                        401, detail="BEARER_REQUIRED_FOR_MUTATION",
+                    )
+                try:
+                    result = workspace.inspect_assigned_stage_receipt(
+                        ref, p, action_id=command.action_id,
+                        expected_case_version=command.expected_case_version,
+                        stage_ref=command.stage_ref,
+                        expected_observation_revision=(
+                            command.expected_observation_revision
+                        ),
+                        expected_observation_receipt_digest=(
+                            command.expected_observation_receipt_digest
+                        ),
+                    )
+                except ReviewQuestionConflict as exc:
+                    raise HTTPException(
+                        409, detail="STAGE_RECEIPT_CONTEXT_CHANGED",
+                    ) from exc
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(
+                        503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                    ) from exc
+                except ValueError as exc:
+                    raise HTTPException(
+                        422, detail="INVALID_STAGE_RECEIPT_INSPECTION",
+                    ) from exc
+                if result is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                return result
 
     if stage_artifact_store is not None:
         @router.get(

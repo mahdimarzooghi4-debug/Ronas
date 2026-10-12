@@ -53,6 +53,10 @@ class ExportSourceConnectorRegistry:
             items[ref] = connector
         self._connectors = items
 
+    def refs(self) -> tuple[str, ...]:
+        """Return only explicitly configured connector identifiers."""
+        return tuple(sorted(self._connectors))
+
     def fetch(
         self, connector_ref: str, *, source_ref: str,
         product_ref: str, destination_ref: str,

@@ -212,7 +212,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticHouseholdInputLedger)
             if (record is None or not _synthetic_ref(action)
                     or version != record.version or type(revision) is not int
                     or revision != expected_revision or actor != _hash(record.owner_subject)
-                    or not _SCHEMA_REF.fullmatch(schema_ref)
+                    or not isinstance(schema_ref, str) or not _SCHEMA_REF.fullmatch(schema_ref)
                     or type(schema_version) is not int or schema_version < 1
                     or not _digest(schema_digest) or not value_valid
                     or content_digest != expected_content or previous != expected_previous

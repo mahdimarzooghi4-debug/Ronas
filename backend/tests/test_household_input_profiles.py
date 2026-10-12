@@ -356,6 +356,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         page = self.client.get(path)
         self.assertEqual(page.status_code, 200, page.text)
         self.assertIn("ثبت رسید مشاهده", page.text)
+        self.assertIn("هنوز رسیدی ثبت نشده", page.text)
         values = self.stage_command()
         form = {
             "csrf": session.csrf,
@@ -376,7 +377,9 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             follow_redirects=False,
         )
         self.assertEqual(saved.status_code, 303, saved.text)
-        self.assertIn("رسید جاری", self.client.get(path).text)
+        current_page = self.client.get(path)
+        self.assertIn("رسید جاری", current_page.text)
+        self.assertIn("رسید جاری ثبت شده", current_page.text)
         self.assertTrue(self.ledger.verify_integrity())
 
         self.client.post(
@@ -387,6 +390,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         )
         history = self.client.get(path)
         self.assertIn("رسید قدیمی", history.text)
+        self.assertIn("فقط رسید تاریخی موجود است", history.text)
         self.assertNotIn("· رسید جاری ·", history.text)
 
     def test_assigned_specialist_reads_receipt_and_private_artifact(self):

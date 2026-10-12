@@ -11,7 +11,7 @@ from ronas_api.auth import Principal
 from ronas_api.domestic_stage_observation import CurrentStageContext, StageRequirement
 from ronas_api.stage_observation_artifacts import (
     MAX_ARTIFACT_BYTES, PrivateFilesystemStageArtifactStore,
-    build_stage_artifact_router,
+    StageArtifactStoreError, build_stage_artifact_router,
 )
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"test-image-bytes"
@@ -57,7 +57,7 @@ class StageArtifactStoreTests(unittest.TestCase):
         victim.write_bytes(b"private unrelated bytes")
         path.unlink()
         path.symlink_to(victim)
-        with self.assertRaises(Exception):
+        with self.assertRaises(StageArtifactStoreError):
             self.store.get("owner", "DEMO-D-001", artifact.digest)
 
     def test_private_directory_and_ciphertext_tampering_fail_closed(self):

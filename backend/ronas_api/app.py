@@ -24,6 +24,7 @@ from .stage_observation_artifacts import StageArtifactStore, build_stage_artifac
 
 from .household_input_api import build_household_input_router
 from .technical_review_api import build_technical_review_read_router
+from .export_source_connector import ExportSourceConnectorRegistry
 from .shared_workspaces import build_user_workspaces_router
 from .agronomy_workspace import SyntheticAgronomyWorkspace
 from .agronomy_workspace_api import build_agronomy_workspace_router
@@ -63,7 +64,14 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                household_profile_schema: HouseholdInputSchema | None = None,
                household_profile_access_authority=None,
                household_stage_context_authority=None,
-               household_stage_artifact_store: StageArtifactStore | None = None) -> FastAPI:
+               household_stage_artifact_store: StageArtifactStore | None = None,
+               export_source_connectors: ExportSourceConnectorRegistry | None = None) -> FastAPI:
+    if export_source_connectors is not None and (
+            not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
+            or not isinstance(config, KeycloakConfig)
+            or not isinstance(technical_review_ledger,
+                              SqliteSyntheticHumanReviewLedger)):
+        raise ValueError("Export source connector requires Keycloak and the scoped review ledger")
     if (household_stage_context_authority is not None
             and (household_profile_schema is None
                  or not callable(household_stage_context_authority))):
@@ -141,6 +149,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             agronomy_workspace=agronomy_workspace,
             export_supplier_workspace=export_supplier_workspace,
             domestic_partner_workspace=domestic_partner_workspace,
+            export_source_connectors=export_source_connectors,
         ))
 
     @app.middleware("http")
@@ -315,7 +324,8 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                 or scoped_registry is not technical_review_ledger):
             raise ValueError("review API requires the same explicit Keycloak-scoped human review ledger")
         app.include_router(build_technical_review_read_router(
-            technical_review_ledger, principal
+            technical_review_ledger, principal,
+            export_source_connectors=export_source_connectors,
         ))
 
     def grant(name: str):

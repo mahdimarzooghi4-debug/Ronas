@@ -15,6 +15,10 @@ from .grant_ledger_sqlite import LedgerIntegrityError
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
 from .export_research_question import ExportResearchQuestionConflict
 from .export_research_evidence import ExportEvidenceReferenceConflict
+from .export_source_connector import (
+    ExportSourceConnectorRegistry, ExportSourceConnectorUnavailable,
+    capture_export_source_reference,
+)
 
 
 class SyntheticExportQuestionCommand(BaseModel):
@@ -40,6 +44,7 @@ class SyntheticExportEvidenceReferenceCommand(BaseModel):
 def build_technical_review_read_router(
     ledger: SqliteSyntheticHumanReviewLedger,
     verified_principal: Callable[..., Principal],
+    export_source_connectors: ExportSourceConnectorRegistry | None = None,
 ) -> APIRouter:
     """This router is safe only when mounted with real Keycloak verification.
 
@@ -228,5 +233,58 @@ def build_technical_review_read_router(
         if result is None:
             raise HTTPException(404, detail="DRAFT_NOT_FOUND")
         return result
+
+    if export_source_connectors is not None:
+        if not isinstance(export_source_connectors, ExportSourceConnectorRegistry):
+            raise ValueError("explicit Export connector registry required")
+
+        class SyntheticExportConnectorCaptureCommand(BaseModel):
+            model_config = ConfigDict(extra="forbid", strict=True)
+            action_id: StrictStr
+            expected_case_version: StrictInt
+            expected_question_revision: StrictInt
+            expected_evidence_revision: StrictInt
+            connector_ref: StrictStr
+
+        @router.post(
+            "/api/v1/admin/export/research/drafts/{ref}/evidence-references/capture",
+            status_code=201,
+        )
+        def capture_export_source(
+            ref: str, command: SyntheticExportConnectorCaptureCommand,
+            authorization: str | None = Header(default=None),
+            p: Principal = Depends(verified_principal),
+        ) -> dict:
+            if (not isinstance(authorization, str)
+                    or not authorization.startswith("Bearer ")):
+                raise HTTPException(401, detail="BEARER_REQUIRED")
+            try:
+                result = capture_export_source_reference(
+                    ledger, export_source_connectors, ref, p,
+                    expected_case_version=command.expected_case_version,
+                    expected_question_revision=command.expected_question_revision,
+                    expected_evidence_revision=command.expected_evidence_revision,
+                    action_id=command.action_id,
+                    connector_ref=command.connector_ref,
+                )
+            except ExportEvidenceReferenceConflict as exc:
+                raise HTTPException(
+                    409, detail="EXPORT_EVIDENCE_REFERENCE_CHANGED",
+                ) from exc
+            except ExportSourceConnectorUnavailable as exc:
+                raise HTTPException(
+                    503, detail="EXPORT_SOURCE_CONNECTOR_UNAVAILABLE",
+                ) from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(
+                    422, detail="INVALID_EXPORT_SOURCE_CONNECTOR",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return result
 
     return router

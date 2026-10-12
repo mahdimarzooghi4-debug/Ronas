@@ -14,6 +14,8 @@ from .auth import Principal
 from .grant_ledger_sqlite import LedgerIntegrityError
 from .household_input_ledger_sqlite import SqliteSyntheticHouseholdInputLedger
 from .household_input_profiles import SqliteSyntheticHouseholdProfileLedger
+from .domestic_stage_observation import CurrentStageContext
+from .stage_observation_artifacts import StageArtifactStore
 from .domestic_preparation_preview import domestic_preparation_preview
 from .internal_cultivation_plan_contract import (
     InternalCultivationProposal, _digest, inspect_proposal_structure,
@@ -293,6 +295,102 @@ class SyntheticAgronomyWorkspace:
                 mode="AGRONOMY_ASSIGNED_CASE",
             )
             return result
+
+    def read_assigned_stage_observations(
+        self, ref: str, principal: Principal, *,
+        context_authority: Callable[[str], CurrentStageContext | None],
+    ) -> dict | None:
+        """Read household-reported receipts only for a live assigned expert."""
+        ledger = self.ledger
+        if (not isinstance(ledger, SqliteSyntheticHouseholdProfileLedger)
+                or not _synthetic_ref(ref) or not callable(context_authority)):
+            return None
+        provided_context = ledger._read_stage_context(ref, context_authority)
+        with ledger._transaction() as db:
+            ledger._verify(db)
+            record = ledger._catalogue.get(("DOMESTIC", ref))
+            subject = self._actor(principal)
+            if record is None or subject is None:
+                return None
+            allowed = self._allowed(subject, ref, record.version)
+            if not allowed:
+                ledger._append(
+                    db, kind="READ_DENIED", engine="DOMESTIC", ref=ref,
+                    actor=subject, mode="AGRONOMY_ASSIGNED_STAGE_OBSERVATIONS",
+                )
+                return None
+            context = ledger._resolve_stage_context(db, ref, provided_context)
+            result = ledger._stage_observation_read_view(db, ref, record, context)
+            ledger._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=subject, mode="AGRONOMY_ASSIGNED_STAGE_OBSERVATIONS",
+            )
+            return result
+
+    def read_assigned_stage_artifact(
+        self, ref: str, stage_ref: str, digest: str, principal: Principal, *,
+        store: StageArtifactStore,
+    ):
+        """Read one receipt-bound file after live assignment and audit checks."""
+        ledger = self.ledger
+        if (not isinstance(ledger, SqliteSyntheticHouseholdProfileLedger)
+                or not _synthetic_ref(ref) or not _synthetic_ref(stage_ref)
+                or not _digest(digest)
+                or not callable(getattr(store, "get", None))):
+            return None
+        with ledger._transaction() as db:
+            ledger._verify(db)
+            record = ledger._catalogue.get(("DOMESTIC", ref))
+            subject = self._actor(principal)
+            if record is None or subject is None:
+                return None
+            if not self._allowed(subject, ref, record.version):
+                ledger._append(
+                    db, kind="READ_DENIED", engine="DOMESTIC", ref=ref,
+                    actor=subject, mode="AGRONOMY_ASSIGNED_STAGE_ARTIFACT",
+                )
+                return None
+            bound = db.execute(
+                "SELECT 1 FROM household_stage_observation "
+                "WHERE ref=? AND stage_ref=? AND artifact_digest=? LIMIT 1",
+                (ref, stage_ref, digest),
+            ).fetchone()
+            if bound is None:
+                ledger._append(
+                    db, kind="READ_DENIED", engine="DOMESTIC", ref=ref,
+                    actor=subject, mode="AGRONOMY_ASSIGNED_STAGE_ARTIFACT",
+                )
+                return None
+            owner = record.owner_subject
+
+        stored = store.get(owner, ref + ":" + stage_ref, digest)
+        if stored is None:
+            return None
+
+        with ledger._transaction() as db:
+            ledger._verify(db)
+            record = ledger._catalogue.get(("DOMESTIC", ref))
+            current_subject = self._actor(principal)
+            if (record is None or current_subject != subject
+                    or record.owner_subject != owner
+                    or not self._allowed(current_subject, ref, record.version)
+                    or db.execute(
+                        "SELECT 1 FROM household_stage_observation "
+                        "WHERE ref=? AND stage_ref=? AND artifact_digest=? LIMIT 1",
+                        (ref, stage_ref, digest),
+                    ).fetchone() is None):
+                if record is not None and current_subject is not None:
+                    ledger._append(
+                        db, kind="READ_DENIED", engine="DOMESTIC", ref=ref,
+                        actor=current_subject,
+                        mode="AGRONOMY_ASSIGNED_STAGE_ARTIFACT",
+                    )
+                return None
+            ledger._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=current_subject, mode="AGRONOMY_ASSIGNED_STAGE_ARTIFACT",
+            )
+            return stored
 
     def list_assigned_cases(
         self, principal: Principal, *, after_ref: str | None = None,

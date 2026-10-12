@@ -748,6 +748,19 @@ def build_authenticated_ui_router(
                 ) from exc
             if data is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            progress_labels = {
+                "NOT_REPORTED": "رسیدی گزارش نشده",
+                "CURRENT_RECEIPT": "رسید جاری",
+                "HISTORICAL_RECEIPT": "رسید تاریخی",
+            }
+            stage_progress = ''.join(
+                '<li>' + escape(item["stage_ref"]) + ' · '
+                + progress_labels[item["state"]]
+                + (' · نسخه ' + str(item["observation_revision"])
+                   if item["observation_revision"] is not None else '')
+                + '</li>'
+                for item in data["stage_progress"]
+            )
             items = []
             for item in data["observations"]:
                 state = "جاری با زمینه فعلی" if item["current"] else "تاریخی"
@@ -772,6 +785,10 @@ def build_authenticated_ui_router(
                 ' (فقط رسید خانوار)</h2>'
                 '<p>پرونده ' + escape(data["ref"])
                 + ' · نسخه پرونده ' + str(data["case_version"]) + '</p>'
+                + ('<h3>وضعیت گزارش مرحله‌های طرح جاری</h3><ul>'
+                   + stage_progress + '</ul>'
+                   if data["current_context"] is not None else
+                   '<p>مرجع جاری برای تعیین مرحله‌های موردنیاز موجود نیست.</p>')
                 + (''.join(items) if items else '<p>رسیدی ثبت نشده است.</p>')
                 + '<p>این رسیدها گزارش خانوار هستند و تکمیل مرحله، '
                 'ارزیابی علمی، توصیه یا تأیید برنامه کشت را نشان نمی‌دهند.</p>'
@@ -1904,6 +1921,19 @@ def build_authenticated_ui_router(
                     if result is None:
                         raise HTTPException(404, detail="DRAFT_NOT_FOUND")
                     current = result["current_context"]
+                    progress_labels = {
+                        "NOT_REPORTED": "هنوز رسیدی ثبت نشده",
+                        "CURRENT_RECEIPT": "رسید جاری ثبت شده",
+                        "HISTORICAL_RECEIPT": "فقط رسید تاریخی موجود است",
+                    }
+                    stage_progress_html = ''.join(
+                        '<li>' + escape(item["stage_ref"]) + ' · '
+                        + progress_labels[item["state"]]
+                        + (' · نسخه ' + str(item["observation_revision"])
+                           if item["observation_revision"] is not None else '')
+                        + '</li>'
+                        for item in result["stage_progress"]
+                    )
                     forms = []
                     if current:
                         for index, stage in enumerate(current["stages"], start=1):
@@ -1984,7 +2014,9 @@ def build_authenticated_ui_router(
                            'ثبت مشاهده تا دریافت نسخه جاری غیرفعال است.</p>'
                            if not current else
                            '<p>طرح و الزامات مشاهده از مرجع جاری دریافت شده‌اند؛ '
-                           'هیچ معیار کشاورزی در این فرم ساخته نمی‌شود.</p>')
+                           'هیچ معیار کشاورزی در این فرم ساخته نمی‌شود.</p>'
+                           + '<h3>وضعیت گزارش هر مرحله</h3><ul>'
+                           + stage_progress_html + '</ul>')
                         + ''.join(forms)
                         + ('<ol>' + history + '</ol>' if history else
                            '<p>رسیدی ثبت نشده است.</p>')

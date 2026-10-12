@@ -24,6 +24,7 @@ from .expert_review_questions_sqlite import (
 from .household_input_profiles import (
     HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
 )
+from .stage_observation_artifacts import StageArtifactStore, StageArtifactStoreError
 
 
 class SyntheticManifestCorrection(BaseModel):
@@ -91,6 +92,7 @@ def build_household_input_router(
     profile_schema: HouseholdInputSchema | None = None,
     profile_access_authority: Callable[[Principal, str, str], bool] | None = None,
     stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
+    stage_artifact_store: StageArtifactStore | None = None,
 ) -> APIRouter:
     if not isinstance(ledger, SqliteSyntheticHouseholdInputLedger):
         raise ValueError("explicit local synthetic input ledger required")
@@ -105,6 +107,9 @@ def build_household_input_router(
         if (profile_schema is None
                 or not callable(stage_context_authority)):
             raise ValueError("stage observations require current context authority")
+    if stage_artifact_store is not None and (
+            stage_context_authority is None or profile_schema is None):
+        raise ValueError("stage artifact store requires the current stage context")
     router = APIRouter()
 
     @router.get("/api/v1/domestic/household-intake/my-drafts/{ref}/input-revisions")
@@ -353,6 +358,10 @@ def build_household_input_router(
                         observed_at=data.observed_at,
                         observation_artifact_digest=data.observation_artifact_digest,
                     )
+                    if (stage_artifact_store is not None
+                            and not stage_artifact_store.contains(
+                                p.subject, ref, command.observation_artifact_digest)):
+                        raise HTTPException(422, detail="STAGE_ARTIFACT_NOT_UPLOADED")
                     result = profile_ledger.append_owned_stage_observation(
                         ref, p, command,
                         expected_observation_revision=
@@ -362,6 +371,10 @@ def build_household_input_router(
                 except StageObservationConflict as exc:
                     raise HTTPException(
                         409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                    ) from exc
+                except StageArtifactStoreError as exc:
+                    raise HTTPException(
+                        503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
                     ) from exc
                 except (LedgerIntegrityError, sqlite3.Error) as exc:
                     raise HTTPException(

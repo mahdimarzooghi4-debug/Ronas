@@ -20,6 +20,7 @@ from .household_input_profiles import (
     HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
 )
 from .domestic_stage_observation import CurrentStageContext
+from .stage_observation_artifacts import StageArtifactStore, build_stage_artifact_router
 
 from .household_input_api import build_household_input_router
 from .technical_review_api import build_technical_review_read_router
@@ -61,11 +62,20 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                domestic_partner_workspace: SyntheticDomesticPartnerWorkspace | None = None,
                household_profile_schema: HouseholdInputSchema | None = None,
                household_profile_access_authority=None,
-               household_stage_context_authority=None) -> FastAPI:
+               household_stage_context_authority=None,
+               household_stage_artifact_store: StageArtifactStore | None = None) -> FastAPI:
     if (household_stage_context_authority is not None
             and (household_profile_schema is None
                  or not callable(household_stage_context_authority))):
         raise ValueError("stage observations require profile schema and context authority")
+    if household_stage_artifact_store is not None and (
+            browser_flow is None
+            or not isinstance(scoped_registry, SqliteSyntheticHouseholdProfileLedger)
+            or technical_review_ledger is not scoped_registry
+            or household_profile_schema is None
+            or not callable(household_profile_access_authority)
+            or not callable(household_stage_context_authority)):
+        raise ValueError("stage artifact storage requires the shared household ledger, browser, profile, and current-context authorities")
     app = FastAPI(
         title="Ronas bounded read-only API foundation",
         docs_url=None, redoc_url=None, openapi_url=None,
@@ -283,7 +293,15 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             profile_schema=household_profile_schema,
             profile_access_authority=household_profile_access_authority,
             stage_context_authority=household_stage_context_authority,
+            stage_artifact_store=household_stage_artifact_store,
         ))
+        if household_stage_artifact_store is not None:
+            app.include_router(build_stage_artifact_router(
+                household_stage_artifact_store, principal,
+                household_profile_schema.schema_ref,
+                household_profile_access_authority,
+                household_stage_context_authority,
+            ))
 
     if technical_review_ledger is not None:
         # Opt-in LOCAL/TEST only: the review store and the case-grant store

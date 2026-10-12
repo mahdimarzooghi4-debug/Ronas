@@ -260,6 +260,8 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             )
         app.include_router(build_agronomy_workspace_router(
             agronomy_workspace, principal,
+            stage_context_authority=household_stage_context_authority,
+            stage_artifact_store=household_stage_artifact_store,
         ))
 
     if scoped_registry is not None:

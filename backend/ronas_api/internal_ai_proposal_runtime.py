@@ -102,7 +102,19 @@ class InternalModelAdapter(Protocol):
 
 
 class ProposalRuntimeUnavailable(RuntimeError):
-    """The injected internal model adapter failed or returned an invalid shape."""
+    """A model adapter or independent runtime authority was unavailable."""
+
+
+class ProposalRuntimeStale(ProposalRuntimeUnavailable):
+    """The pinned Domestic context changed while the model was running."""
+
+
+class ProposalContextAuthority(Protocol):
+    """Independent current-state source; never trust the run request itself."""
+
+    def read_current_context(
+        self, case_ref: str, run_ref: str,
+    ) -> ProposalRuntimeContext | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,3 +199,43 @@ def run_synthetic_internal_proposal(
         proposal=proposal, structural_record=structural,
         runtime_receipt_digest=hashlib.sha256(encoded).hexdigest(),
     )
+
+
+
+def run_current_synthetic_internal_proposal(
+    case_ref: str, run_ref: str, authority: ProposalContextAuthority,
+    adapter: InternalModelAdapter,
+) -> ProposalRuntimeResult:
+    """Run only if the same independent context is current before and after.
+
+    A model may take long enough for a household correction or scientific-source
+    revision to arrive. The caller supplies identifiers only; the authority
+    independently constructs the context twice. Any difference discards the
+    generated proposal before it can be handed to a consumer.
+    """
+    domestic_case = (
+        isinstance(case_ref, str) and _synthetic_ref(case_ref)
+        and case_ref.startswith(("DEMO-D", "DEMO-H"))
+    )
+    if (not domestic_case or not _synthetic_ref(run_ref)
+            or not callable(getattr(authority, "read_current_context", None))):
+        raise ValueError("synthetic Domestic context authority required")
+
+    def current() -> ProposalRuntimeContext:
+        try:
+            context = authority.read_current_context(case_ref, run_ref)
+        except Exception as exc:
+            raise ProposalRuntimeUnavailable(
+                "proposal context authority unavailable",
+            ) from exc
+        if (not isinstance(context, ProposalRuntimeContext)
+                or context.case_ref != case_ref or context.run_ref != run_ref):
+            raise ProposalRuntimeStale("current proposal context unavailable")
+        return context
+
+    before = current()
+    result = run_synthetic_internal_proposal(before, adapter)
+    after = current()
+    if after != before:
+        raise ProposalRuntimeStale("proposal context changed during model run")
+    return result

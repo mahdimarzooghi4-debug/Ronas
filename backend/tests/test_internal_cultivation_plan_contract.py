@@ -190,7 +190,8 @@ class RonasInternalCultivationProposalContractTests(unittest.TestCase):
 
 from ronas_api.internal_ai_proposal_runtime import (
     CandidateOutput, CandidateStage, ProposalRuntimeContext,
-    ProposalRuntimeUnavailable, candidate_structure_digest,
+    ProposalRuntimeUnavailable, ProposalRuntimeStale,
+    candidate_structure_digest, run_current_synthetic_internal_proposal,
     run_synthetic_internal_proposal,
 )
 
@@ -324,6 +325,101 @@ class RonasInternalProposalRuntimeTests(unittest.TestCase):
             with self.subTest(context=context, adapter=adapter), self.assertRaises(ValueError):
                 run_synthetic_internal_proposal(context, adapter)
 
+
+
+class _CurrentProposalContextAuthority:
+    def __init__(self, context, *, fail_on_call=None):
+        self.context = context
+        self.calls = []
+        self.fail_on_call = fail_on_call
+
+    def read_current_context(self, case_ref, run_ref):
+        self.calls.append((case_ref, run_ref))
+        if self.fail_on_call == len(self.calls):
+            raise RuntimeError("private authority detail")
+        return self.context
+
+
+class CurrentRonasInternalProposalRuntimeTests(unittest.TestCase):
+    def test_current_context_is_independently_read_before_and_after_model_run(self):
+        context = runtime_context()
+        authority = _CurrentProposalContextAuthority(context)
+        result = run_current_synthetic_internal_proposal(
+            CASE, context.run_ref, authority, _InternalModelFixture(),
+        )
+        self.assertEqual(authority.calls, [(CASE, context.run_ref)] * 2)
+        self.assertEqual(result.proposal.household_input_revision, 3)
+
+    def test_missing_or_mismatched_current_context_stops_before_model_call(self):
+        for context in (None, runtime_context(case_ref="DEMO-D-OTHER"),
+                        runtime_context(run_ref="DEMO-RUNTIME-OTHER")):
+            authority = _CurrentProposalContextAuthority(context)
+            adapter = _InternalModelFixture()
+            with self.subTest(context=context), self.assertRaises(
+                ProposalRuntimeStale
+            ):
+                run_current_synthetic_internal_proposal(
+                    CASE, runtime_context().run_ref, authority, adapter,
+                )
+            self.assertEqual(adapter.calls, [])
+
+    def test_case_input_source_or_artifact_revision_during_run_discards_result(self):
+        context = runtime_context()
+        mutations = (
+            {"case_version": 3},
+            {"input_revision": 4},
+            {"input_snapshot_digest": "9" * 64},
+            {"scientific_basis_manifest_digest": "8" * 64},
+            {"model_artifact_digest": "7" * 64},
+        )
+        for changes in mutations:
+            with self.subTest(changes=changes):
+                authority = _CurrentProposalContextAuthority(context)
+                class ChangingAdapter:
+                    def generate(self, seen):
+                        self.assert_context(seen, context)
+                        out = _InternalModelFixture().generate(seen)
+                        authority.context = replace(context, **changes)
+                        return out
+                    @staticmethod
+                    def assert_context(seen, expected):
+                        if seen != expected:
+                            raise AssertionError("unexpected context")
+                with self.assertRaises(ProposalRuntimeStale):
+                    run_current_synthetic_internal_proposal(
+                        CASE, context.run_ref, authority, ChangingAdapter(),
+                    )
+                self.assertEqual(len(authority.calls), 2)
+
+    def test_authority_outage_is_sanitized_before_or_after_generation(self):
+        context = runtime_context()
+        for failure_call in (1, 2):
+            authority = _CurrentProposalContextAuthority(
+                context, fail_on_call=failure_call,
+            )
+            adapter = _InternalModelFixture()
+            with self.subTest(failure_call=failure_call), self.assertRaises(
+                ProposalRuntimeUnavailable
+            ) as caught:
+                run_current_synthetic_internal_proposal(
+                    CASE, context.run_ref, authority, adapter,
+                )
+            self.assertNotIn("private authority detail", str(caught.exception))
+            self.assertEqual(len(adapter.calls), 1 if failure_call == 2 else 0)
+
+    def test_context_authority_requires_synthetic_domestic_identifiers(self):
+        context = runtime_context()
+        authority = _CurrentProposalContextAuthority(context)
+        for case_ref, run_ref in (
+            ("DEMO-E-1", context.run_ref), (CASE, "LIVE-RUN-1"),
+        ):
+            with self.subTest(case_ref=case_ref, run_ref=run_ref), self.assertRaises(
+                ValueError
+            ):
+                run_current_synthetic_internal_proposal(
+                    case_ref, run_ref, authority, _InternalModelFixture(),
+                )
+        self.assertEqual(authority.calls, [])
 
 if __name__ == "__main__":
     unittest.main()

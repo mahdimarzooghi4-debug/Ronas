@@ -20,6 +20,10 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from .auth import InvalidToken, Principal
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES as TECHNICAL_STATES
 from .export_research_evidence import ExportEvidenceReferenceConflict
+from .export_source_connector import (
+    ExportSourceConnectorRegistry, ExportSourceConnectorUnavailable,
+    capture_export_source_reference,
+)
 from .scoped_drafts import _synthetic_ref
 from .export_research_evidence import valid_evidence_refs, valid_snapshot_digest
 from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
@@ -260,7 +264,12 @@ def build_authenticated_ui_router(
     export_supplier_workspace: SyntheticSupplierWorkspace | None = None,
     domestic_partner_workspace: SyntheticDomesticPartnerWorkspace | None = None,
     household_stage_artifact_store: StageArtifactStore | None = None,
+    export_source_connectors: ExportSourceConnectorRegistry | None = None,
 ) -> APIRouter:
+    if export_source_connectors is not None and (
+            not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
+            or technical_review_ledger is None):
+        raise ValueError("Export connector UI requires the explicit review ledger")
     # Only the opt-in same-instance ledger injected by create_app may
     # provide the synthetic worklist. Never trust a client-side role list.
     if (technical_review_ledger is not None
@@ -2921,7 +2930,31 @@ def build_authenticated_ui_router(
                     '<h3>ثبت fingerprint اتصال منبع (DEMO)</h3>'
                     '<p>ابتدا پرسش محصول–مقصد نسخه‌دار ثبت کنید. مقادیر فقط '
                     'شناسه‌های نمونه‌اند و این فرم گزارش پژوهش نمی‌سازد.</p>'
-                    '<form method="post" action="/admin/export/research/drafts/'
+                    + (
+                        '<form method="post" action="/admin/export/research/drafts/'
+                        + quote(ref) + '/evidence-reference/capture">'
+                        '<input type="hidden" name="csrf" value="'
+                        + escape(session.csrf, quote=True) + '">'
+                        '<input type="hidden" name="case_version" value="'
+                        + str(data["case_version"]) + '">'
+                        '<input type="hidden" name="question_revision" value="'
+                        + str(question["question_revision"]) + '">'
+                        '<input type="hidden" name="evidence_revision" value="'
+                        + str(sum(1 for item in data["local_test_evidence_references"]
+                                  if item["question_revision"] == question["question_revision"])) + '">'
+                        '<label for="export-source-connector">اتصال منبع پیکربندی‌شده</label>'
+                        '<select id="export-source-connector" name="connector_ref">'
+                        + ''.join(
+                            '<option value="' + escape(connector_ref, quote=True) + '">'
+                            + escape(connector_ref) + '</option>'
+                            for connector_ref in export_source_connectors.refs()
+                        )
+                        + '</select><button type="submit">گرفتن snapshot و ثبت fingerprint</button>'
+                        '</form><p>محتوای snapshot ذخیره نمی‌شود؛ این ثبت، مجوز یا یافته بازار نیست.</p>'
+                        if export_source_connectors is not None and export_source_connectors.refs()
+                        else ''
+                    )
+                    + '<form method="post" action="/admin/export/research/drafts/'
                     + quote(ref) + '/evidence-reference">'
                     '<input type="hidden" name="csrf" value="'
                     + escape(session.csrf, quote=True) + '">'
@@ -3068,6 +3101,61 @@ def build_authenticated_ui_router(
                 "/admin/export/research/drafts/" + quote(ref),
                 status_code=303,
             )
+
+        if export_source_connectors is not None:
+            @router.post("/admin/export/research/drafts/{ref}/evidence-reference/capture")
+            async def export_demo_evidence_reference_capture_browser(
+                ref: str, request: Request,
+                sid: str | None = Cookie(default=None, alias=cookie_name),
+            ) -> RedirectResponse:
+                principal, form = await checked_browser_form(
+                    request, sid,
+                    fields=frozenset({
+                        "csrf", "case_version", "question_revision",
+                        "evidence_revision", "connector_ref",
+                    }),
+                )
+                if form["connector_ref"] not in export_source_connectors.refs():
+                    raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+                try:
+                    result = capture_export_source_reference(
+                        technical_review_ledger, export_source_connectors, ref,
+                        principal,
+                        expected_case_version=form_version(
+                            form["case_version"], zero_allowed=False,
+                        ),
+                        expected_question_revision=form_version(
+                            form["question_revision"], zero_allowed=False,
+                        ),
+                        expected_evidence_revision=form_version(
+                            form["evidence_revision"],
+                        ),
+                        action_id="DEMO-UI-CAPTURE-"
+                        + secrets.token_hex(10).upper(),
+                        connector_ref=form["connector_ref"],
+                    )
+                except ExportEvidenceReferenceConflict as exc:
+                    raise HTTPException(
+                        409, detail="EXPORT_EVIDENCE_REFERENCE_CHANGED",
+                    ) from exc
+                except ExportSourceConnectorUnavailable as exc:
+                    raise HTTPException(
+                        503, detail="EXPORT_SOURCE_CONNECTOR_UNAVAILABLE",
+                    ) from exc
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(
+                        503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+                    ) from exc
+                except ValueError as exc:
+                    raise HTTPException(
+                        422, detail="INVALID_EXPORT_SOURCE_CONNECTOR",
+                    ) from exc
+                if result is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                return RedirectResponse(
+                    "/admin/export/research/drafts/" + quote(ref),
+                    status_code=303,
+                )
 
     if authority_enquiry_ledger is not None:
         @router.get("/admin/gate-evidence/{domain}/readiness")

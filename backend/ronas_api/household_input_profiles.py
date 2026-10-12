@@ -652,7 +652,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
         if (record is None or record.version != case_version
                 or observed != (case_version, observation_receipt_digest)
                 or actor_digest == _hash(record.owner_subject)):
-            raise InputRevisionConflict("stage receipt or reviewer context changed")
+            raise StageObservationConflict("stage receipt or reviewer context changed")
         binding = self._stage_inspection_binding(
             action_id, ref, case_version, stage_ref, observation_revision,
             observation_receipt_digest, actor_digest,
@@ -673,7 +673,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 return self._stage_inspection_ack(
                     ref, stage_ref, observation_revision, True,
                 )
-            raise InputRevisionConflict("stage inspection action replay differs")
+            raise StageObservationConflict("stage inspection action replay differs")
         prior_receipt = db.execute(
             "SELECT action_id,inspection_receipt "
             "FROM expert_stage_receipt_inspection "
@@ -685,7 +685,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 return self._stage_inspection_ack(
                     ref, stage_ref, observation_revision, True,
                 )
-            raise InputRevisionConflict("stage receipt was already inspected")
+            raise StageObservationConflict("stage receipt was already inspected")
         audit = self._append(
             db, kind=STAGE_INSPECTION_EVENT, engine="DOMESTIC", ref=ref,
             actor=actor, target=receipt, action_id=action_id,

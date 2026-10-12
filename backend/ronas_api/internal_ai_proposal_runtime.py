@@ -31,7 +31,11 @@ class ProposalRuntimeContext:
     engine: str = "DOMESTIC"
 
     def __post_init__(self) -> None:
-        if (self.engine != "DOMESTIC" or not _synthetic_ref(self.case_ref)
+        domestic_case = (
+            _synthetic_ref(self.case_ref)
+            and self.case_ref.startswith(("DEMO-D", "DEMO-H"))
+        )
+        if (self.engine != "DOMESTIC" or not domestic_case
                 or type(self.case_version) is not int or self.case_version < 1
                 or type(self.input_revision) is not int or self.input_revision < 1
                 or not _digest(self.input_snapshot_digest)

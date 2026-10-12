@@ -327,6 +327,46 @@ class SyntheticAgronomyWorkspace:
             )
             return result
 
+    def inspect_assigned_stage_receipt(
+        self, ref: str, principal: Principal, *, action_id: str,
+        expected_case_version: int, stage_ref: str,
+        expected_observation_revision: int,
+        expected_observation_receipt_digest: str,
+    ) -> dict | None:
+        """Record that an assigned specialist saw one receipt; never assess it."""
+        ledger = self.ledger
+        if (not isinstance(ledger, SqliteSyntheticHouseholdProfileLedger)
+                or not _synthetic_ref(ref) or not _synthetic_ref(stage_ref)):
+            return None
+        with ledger._transaction() as db:
+            ledger._verify(db)
+            record = ledger._catalogue.get(("DOMESTIC", ref))
+            actor = self._actor(principal)
+            if record is None or actor is None:
+                return None
+            if not self._allowed(actor, ref, record.version):
+                return None
+            if (type(expected_case_version) is not int
+                    or expected_case_version != record.version
+                    or type(expected_observation_revision) is not int
+                    or expected_observation_revision < 1
+                    or not _digest(expected_observation_receipt_digest)):
+                raise ReviewQuestionConflict("stage receipt context is invalid")
+            try:
+                return ledger._append_verified_stage_receipt_inspection(
+                    db, ref=ref, case_version=record.version,
+                    stage_ref=stage_ref,
+                    observation_revision=expected_observation_revision,
+                    observation_receipt_digest=(
+                        expected_observation_receipt_digest
+                    ),
+                    actor=actor, action_id=action_id,
+                )
+            except StageObservationConflict as exc:
+                raise ReviewQuestionConflict(
+                    "stage receipt changed or inspection already recorded"
+                ) from exc
+
     def read_assigned_stage_artifact(
         self, ref: str, stage_ref: str, digest: str, principal: Principal, *,
         store: StageArtifactStore,

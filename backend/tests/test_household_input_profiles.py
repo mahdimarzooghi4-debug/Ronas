@@ -302,12 +302,21 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(saved.status_code, 201, saved.text)
         self.assertEqual(saved.json()["revision"], 1)
         self.assertFalse(saved.json()["stage_completed"])
+        before_receipt = self.client.get(path, headers=self.bearer())
+        self.assertEqual(before_receipt.json()["stage_progress"], [{
+            "stage_ref": "DEMO-STAGE-01", "state": "NOT_REPORTED",
+            "observation_revision": None,
+        }])
         replay = self.client.post(path, json=command, headers=self.bearer())
         self.assertTrue(replay.json()["idempotent_replay"])
         current = self.client.get(path, headers=self.bearer())
         self.assertEqual(current.status_code, 200, current.text)
         self.assertEqual(current.json()["state"], "CURRENT_PLAN_AVAILABLE")
         self.assertTrue(current.json()["observations"][0]["current"])
+        self.assertEqual(current.json()["stage_progress"], [{
+            "stage_ref": "DEMO-STAGE-01", "state": "CURRENT_RECEIPT",
+            "observation_revision": 1,
+        }])
         self.assertTrue(self.ledger.verify_integrity())
         denied = self.client.get(
             path, headers=self.bearer("synthetic-other", ("household",)),
@@ -326,6 +335,10 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(corrected.status_code, 201)
         history = self.client.get(path, headers=self.bearer())
         self.assertFalse(history.json()["observations"][0]["current"])
+        self.assertEqual(history.json()["stage_progress"], [{
+            "stage_ref": "DEMO-STAGE-01", "state": "HISTORICAL_RECEIPT",
+            "observation_revision": 1,
+        }])
         stale = self.client.post(
             path, json=stale_command, headers=self.bearer(),
         )

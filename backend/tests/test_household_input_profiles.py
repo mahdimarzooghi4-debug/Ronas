@@ -408,9 +408,12 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(profile.status_code, 201, profile.text)
         command = self.stage_command()
         command["observation_artifact_digest"] = artifact.digest
+        stage_api_path = (
+            "/api/v1/domestic/household-intake/my-drafts/" + REF
+            + "/stage-observations"
+        )
         submitted = client.post(
-            ROOT + "/stage-observations", json=command,
-            headers=self.bearer(),
+            stage_api_path, json=command, headers=self.bearer(),
         )
         self.assertEqual(submitted.status_code, 201, submitted.text)
 

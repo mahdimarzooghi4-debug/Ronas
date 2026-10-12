@@ -1,0 +1,29 @@
+name: Business draft decision integrity
+
+on:
+  push:
+    branches:
+      - business/ronas-foundation-v0-1
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  draft-business-contracts:
+    name: Domestic Export Finance decision and source invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate business draft document and accounting-source boundaries
+        run: python scripts/check_core_business_review.py --json
+      - name: Test negative cases and source tampering
+        run: python -m unittest discover -s scripts/tests -v
+      - name: Syntax check
+        run: python -m compileall -q scripts

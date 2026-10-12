@@ -1,0 +1,136 @@
+# روناس — دفتر پوشش ساختاری و برنامه بازبینی نهاییِ موکول‌شده | Structural Draft v0.15
+
+**STATUS UPDATE (2026-10-09): FIRST INTEGRATED STRUCTURAL CHECK COMPLETED WITH OPEN FINDINGS; see [Review 51](51-integrated-business-review-findings.md). All Business Gates remain OPEN. The earlier DEFERRED references below describe the pre-review baseline, not an approval.**
+
+**HISTORICAL STATUS (before user requested check): STRUCTURE INVENTORY PREPARED / FINAL REVIEW DEFERRED / BUSINESS GATES OPEN**  
+**User direction:** ابتدا **ساختار کامل شود**، سپس **چک نهایی** انجام شود. مطابق این دستور، بررسی نهایی Business/Technical/Quality و انتخاب Stack در این مرحله انجام نمی‌شوند.  
+**Trace:** [نقشه مسئولیت‌های منطقی](29-logical-product-responsibility-map.md)، [تعامل‌ها و تحویل کار](30-business-interaction-and-handoff-map.md)، [ناوبری مفهومی](31-conceptual-experience-navigation-map.md)، [استثنا و بازبینی](32-exceptions-and-human-decision-points.md)، [بسته تجمیع بعدی](33-structure-integration-and-deferred-checklist.md)، [نقشه کلان](24-complete-business-structure-map.md)، [نقش‌ها/کانال‌ها](25-actors-channels-and-workspaces.md)، [واژگان داده](26-conceptual-information-structure.md)، [خدمات/مرزها](27-shared-services-and-external-boundaries.md)، [سفر Domestic](21-domestic-service-blueprints.md)، [سفر Export](22-export-service-blueprints.md)، [۱۹ نیازمندی](18-dual-engine-business-requirements.md).
+
+## ۱. واژه‌شناسی وضعیت
+
+| وضعیت | معنی | ادعایی که نباید از آن برداشت شود |
+| --- | --- | --- |
+| STRUCTURE MAPPED | سرفصل، نقش و ارتباط مفهومی در سندِ پیش‌نویس موجود است | محصول مصوب/تکمیل نرم‌افزار نیست |
+| SOURCE | مطلب طرح‌نامه؛ با ذکر بخش/صفحه | تصمیم عملیاتی یا منبع داده واقعی نیست |
+| PROPOSED | گزینه ساختاری برای تصمیم بعدی | الزام قرارداد/قیمت/API/State Machine نیست |
+| OPEN / UNVERIFIED | داده، تصمیم، شخص یا سند معتبر موجود/احراز نشده | مقدار صفر، تأیید فرضی یا غیرلازم بودن نیست |
+| FINAL REVIEW DEFERRED | صحت و کفایت کل بسته در پایان ساختار سنجیده می‌شود | نادیده گرفتن ریسک یا باز بودن گیت نیست |
+
+## ۲. ماتریس پوشش قابل ردگیری — منبع و قابلیت
+
+| موضوع ساختاری | پوشش فعلی در مخزن | وضعیت انطباق |
+| --- | --- | --- |
+| چشم‌انداز، دو موتور و ارزش پیشنهادی | 00, 01, 02, 24 | STRUCTURE MAPPED / DRAFT |
+| ۱۰ جریان Domestic (D-01..10) | 01, 06, 18, 21, 24, 26 | STRUCTURE MAPPED / DRAFT |
+| ۹ جریان Export (E-01..09) | 02, 07, 11–13, 18, 22, 24, 26 | STRUCTURE MAPPED / DRAFT |
+| مدل چندقراردادی مستقل Export | 11–13, 22, 24, 27 | APPROVED DIRECTION; contract details OPEN |
+| بازیگران خانوار، خریدار، تأمین‌کننده، هاب، صادرکننده | 08, 21–22, 25 | STRUCTURE MAPPED / DRAFT |
+| امکانات آموزش/محتوا/کانال‌ها | 01, 02, 21–22, 24–25, 27 | STRUCTURE MAPPED / policies OPEN |
+| هوشمندسازی، Multi-Agent، داده/ارزیابی | 06–08, 19, 24, 26–27 | SOURCE / candidate, algorithm OPEN |
+| بازی‌وارسازی، RXP، باشگاه و انگیزش | 24–25, 27؛ Source صفحات فایل ۱۷ و ۲۲ | SOURCE / candidate, rules OPEN |
+| خیّر/سرمایه‌گذار و بازیگران اکوسیستم | 25؛ Source صفحه فایل ۲۲ | SOURCE SEGMENT ONLY; services OPEN |
+| تجهیزات/پشتیبانی/شکایت و تحویل | 01, 06, 21, 24–27 | STRUCTURE MAPPED / policies OPEN |
+| کنترل کیفیت و ایمنی Domestic/Export | 01–02, 06–07, 19–22, 26–27 | STRUCTURE MAPPED / criteria OPEN |
+| پول/قیمت/تسویه و مدل مالی جداگانه | 03–04, 08, 20–22, 24–27 | SOURCE / contradictory assumptions, OPEN |
+| امور خارجی و واسطه‌های بیرونی | 02, 07, 11–13, 22, 25, 27 | STRUCTURE MAPPED / integrations unselected |
+| امنیت/رضایت/مالکیت داده | 08, 18–20, 25–27 | STRUCTURE MAPPED / contractual rules OPEN |
+| سنجه و گزارش مدیریتی | 03, 09, 19, 24, 27 | STRUCTURE MAPPED / KPI unapproved |
+| گیت‌های مستقل و زنجیره تولید محصول | 04–05, 09, 20, 23, 28 | APPROVED PROCESS / GATES OPEN |
+| UX/navigation conceptual workspaces | 25 | PROPOSED; not UI validated |
+| شبکه شریک بانکی، کشاورزی، حمل و فرآوری | 08, 22, 25, 27 | SOURCE candidates; no provider connected |
+
+**تذکر صریح:** این ماتریس **پوشش ساختار روی کاغذ** را نشان می‌دهد، نه ممیزی تطبیقی سطر به سطر اصل DOCX، کفایت حقوقی، رضایت بازار، قابل ساخت بودن برنامه یا پذیرش مشتری؛ این بررسی‌ها برای مرحله نهایی جدا ثبت می‌شوند.
+
+### افزوده ساختاری v0.11 — هنوز بدون ممیزی نهایی
+
+| لایه تکمیلی | مرجع | وضعیت |
+| --- | --- | --- |
+| مرز مسئولیت اجزای منطقی، بدون انتخاب معماری | 29 | MAPPED / PROPOSED |
+| تحویل اطلاعات/شواهد میان بخش‌ها و مرز تعهد | 30 | MAPPED / PROPOSED |
+| تجربه و ناوبری مفهومی نقش‌ها | 31 | MAPPED / PROPOSED |
+| سناریوهای استثنا و نیاز به تصمیم انسانی | 32 | MAPPED / PROPOSED |
+| تجمیع خروجی‌ها و بسته چک نهایی موکول‌شده | 33 | PREPARED / NOT REVIEWED |
+
+**نه عددی برای پوشش کامل/موفقیت ممیزی تعیین شده و نه Business Gate پاس شده است.**
+
+### افزوده v0.12 — نقشه‌های شرکا/ارزش/مدیریت
+
+| بخش | مرجع تکمیل‌شده | وضعیت بررسی |
+| --- | --- | --- |
+| شریک‌ها و نقاط همکاری Domestic/Export | [۳۴](34-partner-ecosystem-and-relationship-map.md) | MAPPED / UNVERIFIED |
+| مسئولیت قراردادی و خروجی ارزش هر رابطه | [۳۵](35-business-commercial-responsibility-map.md) | MAPPED / CONTRACTS OPEN |
+| گزارش‌ها، تعریف KPI و کیفیت داده | [۳۶](36-management-reporting-and-metric-candidates.md) | CANDIDATE METRICS / NO TARGETS |
+| اقتصاد و تفکیک ثبت مالی در گزارش‌ها | [۳۷](37-economic-flow-and-report-boundaries.md) | CONCEPTUAL / FIN-001..007 OPEN |
+
+این جدول «ساخته‌شدن سند» را گزارش می‌کند و به معنای «پاس‌شدن پوشش نهایی» نیست.
+
+### افزوده v0.13 — عملیات، شرکا و شواهد (بدون آزمون نهایی)
+
+| موضوع تکمیلی | پرونده ساختاری | وضعیت |
+| --- | --- | --- |
+| مسیر همکاری احتمالی و توقف/بازنگری شریک | [۳۸](38-partner-engagement-lifecycle.md) | PROPOSED / NO PARTNER ACTIVE |
+| نقاط اتصال کار حضوری به ثبت دیجیتال | [۳۹](39-physical-digital-operations-map.md) | PROPOSED / NO LIVE CHANNEL |
+| مدیریت/بازبینی عملیاتی هر موتور | [۴۰](40-business-operations-oversight-map.md) | PROPOSED / NO DELEGATED AUTHORITY |
+| پرونده انحراف، مدرک و ارجاع تخصصی | [۴۱](41-operations-evidence-and-escalation-map.md) | PROPOSED / NO INCIDENT SLA OR AUTO RULE |
+
+هیچ‌یک از این چهار سند اجرای پایلوت، تأیید قرارداد یا بستن گیت Business نیست.
+
+### افزوده v0.14 — مرجع اختیار، تغییر و وابستگی
+
+| موضوع تکمیلی | مدرک ساختاری | وضعیت |
+| --- | --- | --- |
+| جداسازی پیشنهاد، شاهد، بازبینی، تصویب و اجرا | [۴۲](42-business-governance-and-authority-map.md) | PROPOSED / NO AUTHORITY DELEGATED |
+| چرخه مفهوم تغییر سیاست/قرارداد، اثر بر سوابق | [۴۳](43-business-policy-and-change-versioning.md) | PROPOSED / NO POLICY PROMOTED |
+| ماتریس وابستگی ۱۹ جریان و توانمندسازها | [۴۴](44-cross-engine-dependency-and-responsibility-matrix.md) | MAPPED / NOT FINAL VERIFIED |
+| پرونده تجمیع حاکمیت و مطالبات بررسی پایانی | [۴۵](45-governance-integration-and-deferred-review-intake.md) | PREPARED / FINAL REVIEW DEFERRED |
+
+پوشش سندیِ این موضوعات، **نه تأیید تکمیل طرح اولیه و نه مجوز Business/Technical** است.
+
+### افزوده v0.15 — یکپارچگی و دفتر ناتمام‌ها، بدون چک نهایی
+
+| خروجی | مرجع | وضعیت دقیق |
+| --- | --- | --- |
+| نقطه ورود واحد و نقشه ۱۹ جریان دو موتور | [۴۶](46-integrated-business-structure-atlas.md) | STRUCTURE ASSEMBLED / CONTENT UNVERIFIED |
+| پیوند مسائل باز با شواهد، اسناد و گیت‌های خودشان | [۴۷](47-open-structure-gaps-and-evidence-register.md) | OPEN ITEMS INDEXED / NOT RESOLVED |
+| بسته مبنا برای بررسی نهایی آینده | [۴۸](48-structural-baseline-and-future-review-package.md) | HANDOFF PREPARED / REVIEW NOT STARTED |
+
+**شماره سند و داشتن پیوند، معیار قبولی یا صحت روایت طرح‌نامه نیست.**
+
+## ۳. مواردی که عمداً تصمیم یا اجرا نشده‌اند
+
+1. **Scope واقعی اولیه** هر موتور، مخاطبان/منطقه/محصول Domestic، محصول–مقصد Export و ترتیب تحویل.
+2. **مدل حقوق/اختیار کار عملیاتی** برای فروش، QC، قراردادهای تجاری، مالی و پرداخت، بدون ورود به جزئیات ساختار سهام و شرکت.
+3. **مدل درآمد و هزینه:** تصحیح فرضیات و سناریوها FIN-001..007 با داده قابل اتکا، نه ارقام منبع.
+4. **سیاست داده/AI:** حق استفاده، نقش بازبین انسانی، کیفیت و اعتبار توصیه، Dataset، Algorithm و تصمیم اتوماسیون.
+5. **استاندارد فنی/معماری:** Backend, frontend, mobile, database, deployment, cloud, security architecture, service boundaries و ADR.
+6. **محصول اجرایی:** UI/UX نهایی، مدل اطلاعات، API، Workflow/State Machine، تست کد یا پیاده‌سازی.
+7. **ارزیابی بازار/اجرایی:** شواهد واقعی نیاز، عرضه، توان شریک، هزینه کیفیت/لجستیک، مقررات مقصد.
+8. **شاخص‌های کیفیت:** SLA، SLO، RTO/RPO، ظرفیت، نرخ موفقیت، دسترس‌پذیری و معیارهای مالی معتبر.
+9. **تصویب گیت‌ها:** Business Gate اختصاصی هر موتور، Technical Approval، Backlog Acceptance، Sprint Authorization، Code Review مستقل، Stage/QA/Release/Production.
+
+## ۴. بسته چک نهایی — فقط وقتی کارفرما دستور دهد
+
+| گروه کنترل آینده | روش بررسی پیشنهادی | پیش‌نیاز |
+| --- | --- | --- |
+| پوشش اصل طرح‌نامه | تطبیق ادعاهای SOURCE و صفحات با همه ساختارها؛ گزارش کمبود/تعارض | نسخه تأییدشده فایل مبنا |
+| انسجام مسیرها | آزمون بازبینی دستی ۱۹ جریان و عدم اختلاط نقش/مدرک دو موتور | ساختار همه بخش‌ها تثبیت شده |
+| سازگاری تصمیم‌ها | بررسی تناقض تصمیم‌های APPROVED با Proposed/Open و اسناد گیت | دفتر تصمیم نسخه‌دار |
+| سلامت خوراکی و صادرات | مرور کارشناس واقعیِ محصول/مقصد، مدارک و حقوق طرف‌ها | Scope محدود و شواهد معتبر |
+| اقتصاد و جریان وجوه | تطبیق نمونه‌های واقعی با مدل مالی مستقل هر موتور و هر قرارداد | مدارک و مسئول مالی |
+| امنیت/داده/AI | مرور حریم خصوصی، مسئولیت، خطا و موارد عدم‌دسترسی | سیاست Business و منبع داده |
+| قابل‌فهم بودن تجربه | مرور Journey/Role/Channel با مخاطب یا نماینده واقعی | نمونه نقش و دامنه |
+| آمادگی ورود به Technical | تصویب Scope و استثناها، گیت هر موتور، مالک تصمیم و شواهد | Business contract قابل پذیرش |
+
+**هنوز هیچ‌کدام از ردیف‌های بالا به‌عنوان FINAL REVIEW PASS علامت نخورده‌اند.** بازبینی/تصویب را به‌جای کارفرما یا تأییدکننده‌های تخصصی انجام نمی‌دهیم.
+
+## ۵. تحویل این مرحله و حرکت بعدی
+
+- [x] **نقشه کلان Business** با ۲ موتور مستقل + توانمندسازهای هوشمندِ میان‌رشته‌ای رسم و ثبت شد.
+- [x] نقش‌ها، کانال‌ها، workspaceهای مفهومی، اطلاعات، خدمات پشتیبان و وابستگی‌های بیرونی **در حد ساختار پیشنهادی** فهرست شدند.
+- [x] پیوند سرفصل‌ها به جریان‌های D/E، طرح‌نامه و مدارک قبلی برقرار شد.
+- [ ] پوشش/دقت محتوایی **در چک نهایی آینده** سنجیده شود؛ هیچ نقصی از پیش «بسته‌شده» ادعا نشود.
+- [ ] نتیجه گیت Business Domestic در [Issue #2](https://github.com/mahdimarzooghi4-debug/Ronas/issues/2) و Export در [Issue #3](https://github.com/mahdimarzooghi4-debug/Ronas/issues/3) با تصمیم/مدرک واقعی ثبت شود.
+- [ ] تنها پس از تصویب Scope مشخص، Technical/ADR و سپس Backlog/Sprint/Code آغاز شود.
+- [ ] PR #6 در HOLD باقی بماند.
+
+**وضعیت دقیق خروجی v0.10:** ساختار **ترسیم و مستندسازی شده**، اما **تأیید نهایی و پذیرش Business موکول** است. هیچ انتخاب فناوری/مدل AI/معامله/استقرار یا مصوبه جدید عملیاتی صادر نشده است.

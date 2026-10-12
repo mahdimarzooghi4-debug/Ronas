@@ -231,6 +231,36 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticHouseholdInputLedger)
         if used != set(linked):
             raise LedgerIntegrityError("orphaned household profile audit")
 
+    def internal_proposal_lineage(self, ref: str) -> tuple[int, int, str] | None:
+        """Return current case/profile version and digest for internal execution.
+
+        This is an internal LOCAL/TEST adapter port. Never expose it through
+        household API or BFF responses. Profile values remain inside this ledger.
+        """
+        if (not isinstance(ref, str) or not _synthetic_ref(ref)
+                or not ref.startswith(("DEMO-D", "DEMO-H"))):
+            return None
+        with self._transaction() as db:
+            self._verify(db)
+            record = self._catalogue.get(("DOMESTIC", ref))
+            if record is None:
+                return None
+            row = db.execute(
+                "SELECT revision,schema_ref,schema_version,schema_digest,"
+                "content_digest FROM household_profile_revision "
+                "WHERE ref=? ORDER BY revision DESC LIMIT 1", (ref,),
+            ).fetchone()
+            if row is None:
+                return None
+            revision, schema_ref, schema_version, schema_digest, content_digest = row
+            if (schema_ref != self.profile_schema.schema_ref
+                    or schema_version != self.profile_schema.version
+                    or schema_digest != self.profile_schema.digest
+                    or type(revision) is not int or revision < 1
+                    or not _digest(content_digest)):
+                return None
+            return record.version, revision, content_digest
+
     def read_owned_profile(self, ref: str, principal: Principal) -> dict | None:
         with self._transaction() as db:
             self._verify(db)

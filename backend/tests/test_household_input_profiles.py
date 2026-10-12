@@ -20,6 +20,11 @@ from ronas_api.household_input_profiles import (
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
+from ronas_api.internal_ai_proposal_runtime import (
+    CandidateOutput, CandidateStage, ProfileBackedProposalContextAuthority,
+    ProposalRuntimeBasis, ProposalRuntimeStale,
+    candidate_structure_digest, run_current_synthetic_internal_proposal,
+)
 
 ISS = "https://identity.example.test/realms/ronas"
 API, WEB, ORIGIN = "ronas-api", "ronas-web", "https://ronas.example.test"
@@ -275,6 +280,74 @@ class HouseholdProfileFlowTests(unittest.TestCase):
                 ('{"field_alpha":"tampered"}', REF),
             )
         self.assertEqual(self.client.get(ROOT, headers=self.bearer()).status_code, 503)
+
+
+    def test_internal_runtime_lineage_requires_current_profile_and_hides_values(self):
+        self.assertIsNone(self.ledger.internal_proposal_lineage(REF))
+        owner = Principal(OWNER, frozenset({"household"}))
+        self.ledger.append_owned_profile(
+            REF, owner, action_id="DEMO-PROFILE-RUNTIME-1",
+            expected_case_version=2, expected_revision=0,
+            values={"field_alpha": "private synthetic value",
+                    "field_choice": "sample-a"},
+        )
+        lineage = self.ledger.internal_proposal_lineage(REF)
+        self.assertEqual(lineage[0:2], (2, 1))
+        self.assertEqual(len(lineage[2]), 64)
+        self.assertNotIn("private synthetic value", repr(lineage))
+
+        class BasisAuthority:
+            def read_current_basis(self, case_ref, run_ref):
+                return ProposalRuntimeBasis(case_ref, 2, "2" * 64, "3" * 64)
+
+        authority = ProfileBackedProposalContextAuthority(self.ledger, BasisAuthority())
+        context = authority.read_current_context(REF, "DEMO-RUN-PROFILE-1")
+        self.assertEqual(context.input_revision, 1)
+        self.assertEqual(context.input_snapshot_digest, lineage[2])
+        self.assertFalse(hasattr(context, "input_values"))
+
+    def test_profile_correction_during_internal_generation_discards_proposal(self):
+        owner = Principal(OWNER, frozenset({"household"}))
+        self.ledger.append_owned_profile(
+            REF, owner, action_id="DEMO-PROFILE-RACE-1",
+            expected_case_version=2, expected_revision=0,
+            values={"field_alpha": "synthetic before", "field_choice": "sample-a"},
+        )
+
+        class BasisAuthority:
+            def read_current_basis(self, case_ref, run_ref):
+                return ProposalRuntimeBasis(case_ref, 2, "2" * 64, "3" * 64)
+
+        authority = ProfileBackedProposalContextAuthority(self.ledger, BasisAuthority())
+
+        class CorrectingAdapter:
+            def __init__(self):
+                self.contexts = []
+
+            def generate(self, context):
+                self.contexts.append(context)
+                stages = (CandidateStage("DEMO-STAGE-PROFILE", "5" * 64, "6" * 64),)
+                output = CandidateOutput(
+                    context.model_artifact_digest,
+                    candidate_structure_digest(context.model_artifact_digest, stages),
+                    stages,
+                )
+                self.ledger.append_owned_profile(
+                    REF, owner, action_id="DEMO-PROFILE-RACE-2",
+                    expected_case_version=2, expected_revision=1,
+                    values={"field_alpha": "synthetic corrected", "field_choice": "sample-b"},
+                )
+                return output
+
+        adapter = CorrectingAdapter()
+        adapter.ledger = self.ledger
+        with self.assertRaises(ProposalRuntimeStale):
+            run_current_synthetic_internal_proposal(
+                REF, "DEMO-RUN-PROFILE-1", authority, adapter,
+            )
+        self.assertEqual(len(adapter.contexts), 1)
+        self.assertEqual(adapter.contexts[0].input_revision, 1)
+        self.assertEqual(self.ledger.internal_proposal_lineage(REF)[:2], (2, 2))
 
 
 if __name__ == "__main__":

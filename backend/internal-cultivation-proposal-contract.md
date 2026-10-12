@@ -54,7 +54,14 @@ is inferred**.
 
 `inspect_proposal_structure(...)` compares expected DOMESTIC engine, case
 identity/version, input revision and input digest supplied by a **separate
-authoritative source**; mismatches/stale inputs, external origin strings,
+authoritative source**. The LOCAL/TEST `ProfileBackedProposalContextAuthority`
+can now compose an explicit current case/source/model basis with the exact
+profile ledger: it binds the current profile revision and canonical content
+digest without returning profile values. Missing profiles, changed schema,
+case-version mismatch or changed lineage fail closed; the runtime re-reads this
+composite context around adapter execution, so a profile correction discards
+an in-flight proposal. These internal ports are not mounted on HTTP and do not
+make profile values available to the model adapter. Mismatches/stale inputs, external origin strings,
 malformed hashes or unbound stages fail closed. This is a deterministic
 LOCAL/TEST integrity-shape check: it does not fetch or cryptographically attest
 scientific source rights, model weights, user consent, signing keys, or expert
@@ -67,10 +74,10 @@ stage activation, new cultivation advice, commercial actions and real-data
 flags remain **false**. It exposes stage **references only**, not advice or
 content. The `origin` marker is not a real internal AI execution attestation.
 No HTTP endpoint, dataset, executable AI, professional review command, public
-case mutation or business activation is created. Code is NOT wired into
-the existing runtime DOMESTIC draft or user UI yet, precisely because
-authoritative case/input/consent/evidence producers and the actual AI and
-expert decision adapters are not admitted or implemented.
+case mutation or business activation is created. The internal adapter and
+profile-lineage ports are composable in LOCAL/TEST, while actual AI execution,
+consent authority, evidence admission and expert decision adapters remain
+separate integrations.
 
 ## Evidence required before moving beyond this offline boundary
 

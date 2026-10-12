@@ -47,6 +47,80 @@ class ProposalRuntimeContext:
 
 
 @dataclass(frozen=True, slots=True)
+class ProposalRuntimeBasis:
+    """Current non-household source/model basis supplied by an independent port."""
+
+    case_ref: str
+    case_version: int
+    scientific_basis_manifest_digest: str
+    model_artifact_digest: str
+
+    def __post_init__(self) -> None:
+        if (not _synthetic_ref(self.case_ref)
+                or not self.case_ref.startswith(("DEMO-D", "DEMO-H"))
+                or type(self.case_version) is not int or self.case_version < 1
+                or not _digest(self.scientific_basis_manifest_digest)
+                or not _digest(self.model_artifact_digest)):
+            raise ValueError("invalid synthetic proposal runtime basis")
+
+
+class ProposalRuntimeBasisAuthority(Protocol):
+    def read_current_basis(
+        self, case_ref: str, run_ref: str,
+    ) -> ProposalRuntimeBasis | None: ...
+
+
+class ProposalInputLineageSource(Protocol):
+    def internal_proposal_lineage(
+        self, case_ref: str,
+    ) -> tuple[int, int, str] | None: ...
+
+
+class ProfileBackedProposalContextAuthority:
+    """Join current synthetic case/source basis with the owner profile digest.
+
+    The source/model basis port and profile ledger are read independently on
+    every checkpoint. Profile contents never leave the ledger; only version and
+    canonical digest enter the internal runtime context.
+    """
+
+    def __init__(
+        self, profile_lineage: ProposalInputLineageSource,
+        basis_authority: ProposalRuntimeBasisAuthority,
+    ):
+        if (not callable(getattr(profile_lineage, "internal_proposal_lineage", None))
+                or not callable(getattr(basis_authority, "read_current_basis", None))):
+            raise ValueError("profile lineage and current basis authorities required")
+        self._profile_lineage = profile_lineage
+        self._basis_authority = basis_authority
+
+    def read_current_context(
+        self, case_ref: str, run_ref: str,
+    ) -> ProposalRuntimeContext | None:
+        basis = self._basis_authority.read_current_basis(case_ref, run_ref)
+        lineage = self._profile_lineage.internal_proposal_lineage(case_ref)
+        if (not isinstance(basis, ProposalRuntimeBasis)
+                or basis.case_ref != case_ref or lineage is None
+                or type(lineage) is not tuple or len(lineage) != 3):
+            return None
+        case_version, input_revision, snapshot_digest = lineage
+        if basis.case_version != case_version:
+            return None
+        try:
+            return ProposalRuntimeContext(
+                case_ref=case_ref, case_version=case_version,
+                input_revision=input_revision,
+                input_snapshot_digest=snapshot_digest,
+                scientific_basis_manifest_digest=
+                    basis.scientific_basis_manifest_digest,
+                model_artifact_digest=basis.model_artifact_digest,
+                run_ref=run_ref,
+            )
+        except (TypeError, ValueError):
+            return None
+
+
+@dataclass(frozen=True, slots=True)
 class CandidateStage:
     ref: str
     instructions_digest: str

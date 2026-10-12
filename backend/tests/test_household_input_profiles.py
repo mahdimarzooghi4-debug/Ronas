@@ -502,7 +502,8 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             expected_stage_observation_receipt_digest=receipt["receipt_digest"],
         )
         self.assertEqual(direct_question["question_revision"], 1)
-        self.assertTrue(self.ledger.verify_integrity())
+        with self.ledger._transaction() as db:
+            self.ledger._verify(db)
         linked_question = client.post(
             question_path,
             json={**stale_question,

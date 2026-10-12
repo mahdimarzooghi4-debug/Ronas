@@ -7,10 +7,13 @@ from collections.abc import Callable
 import sqlite3
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
 
 from .auth import Principal
 from .agronomy_workspace import SyntheticAgronomyWorkspace
+from .domestic_stage_observation import CurrentStageContext, StageObservationConflict
+from .stage_observation_artifacts import StageArtifactStore, StageArtifactStoreError
 from .grant_ledger_sqlite import LedgerIntegrityError
 from .expert_review_questions_sqlite import (
     SqliteSyntheticExpertQuestionLedger, ReviewQuestionConflict,
@@ -42,10 +45,74 @@ class SyntheticReceiptInspectionCommand(BaseModel):
 def build_agronomy_workspace_router(
     workspace: SyntheticAgronomyWorkspace,
     verified_principal: Callable[..., Principal],
+    *,
+    stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
+    stage_artifact_store: StageArtifactStore | None = None,
 ) -> APIRouter:
     if not isinstance(workspace, SyntheticAgronomyWorkspace):
         raise ValueError("explicit agronomy workspace required")
+    if stage_context_authority is not None and not callable(stage_context_authority):
+        raise ValueError("callable current stage context authority required")
+    if stage_artifact_store is not None and (
+            stage_context_authority is None
+            or not all(callable(getattr(stage_artifact_store, name, None))
+                       for name in ("get", "put", "contains"))):
+        raise ValueError("stage artifact adapter requires current context authority")
     router = APIRouter()
+
+    if stage_context_authority is not None:
+        @router.get("/api/v1/agronomy/assigned-drafts/{ref}/stage-observations")
+        def assigned_stage_observations(
+            ref: str, p: Principal = Depends(verified_principal),
+        ) -> dict:
+            try:
+                result = workspace.read_assigned_stage_observations(
+                    ref, p, context_authority=stage_context_authority,
+                )
+            except StageObservationConflict as exc:
+                raise HTTPException(
+                    409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                ) from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return result
+
+    if stage_artifact_store is not None:
+        @router.get(
+            "/api/v1/agronomy/assigned-drafts/{ref}/stage-observations/"
+            "artifacts/{stage_ref}/{digest}",
+        )
+        def assigned_stage_artifact(
+            ref: str, stage_ref: str, digest: str,
+            p: Principal = Depends(verified_principal),
+        ) -> Response:
+            try:
+                stored = workspace.read_assigned_stage_artifact(
+                    ref, stage_ref, digest, p, store=stage_artifact_store,
+                )
+            except StageArtifactStoreError as exc:
+                raise HTTPException(
+                    503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
+                ) from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            if stored is None:
+                raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
+            artifact, content = stored
+            return Response(
+                content=content, media_type=artifact.content_type,
+                headers={
+                    "Content-Disposition": 'attachment; filename="stage-observation"',
+                    "Cache-Control": "no-store",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
 
 
     # Explicit opt-in ONLY. No POST route on the existing/default workspace.

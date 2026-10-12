@@ -773,12 +773,33 @@ def build_authenticated_ui_router(
                         + quote(item["observation_artifact_digest"])
                         + '">دریافت فایل مشاهده</a></p>'
                     )
+                if item["receipt_inspected"]:
+                    inspection = (
+                        '<p>رسید مشاهده شد (بدون داوری تخصصی).</p>'
+                    )
+                else:
+                    inspection = (
+                        '<form method="post" action="/agronomy/assigned-drafts/'
+                        + quote(ref) + '/stage-observations/inspect">'
+                        '<input type="hidden" name="csrf" value="'
+                        + escape(session.csrf, quote=True) + '">'
+                        '<input type="hidden" name="case_version" value="'
+                        + str(data["case_version"]) + '">'
+                        '<input type="hidden" name="stage_ref" value="'
+                        + escape(item["stage_ref"], quote=True) + '">'
+                        '<input type="hidden" name="observation_revision" value="'
+                        + str(item["revision"]) + '">'
+                        '<input type="hidden" name="receipt_digest" value="'
+                        + escape(item["receipt_digest"], quote=True) + '">'
+                        '<button type="submit">ثبت مشاهده رسید (بدون بررسی)</button>'
+                        '</form>'
+                    )
                 items.append(
                     '<section><h3>' + escape(item["stage_ref"]) + '</h3>'
                     '<p>نسخه رسید: ' + str(item["revision"])
                     + ' · ' + escape(state) + '</p>'
                     '<p>زمان ثبت: ' + escape(item["observed_at"]) + '</p>'
-                    + file_link + '</section>'
+                    + file_link + inspection + '</section>'
                 )
             body = (
                 '<article class="panel"><h2>مشاهده‌های مرحله‌ای ثبت‌شده'
@@ -797,7 +818,50 @@ def build_authenticated_ui_router(
             )
             return page(
                 "روناس — رسیدهای مرحله‌ای خانوار",
-                body, logged_in=True,
+                body, logged_in=True, local_test_form=True,
+            )
+
+        @router.post(
+            "/agronomy/assigned-drafts/{ref}/stage-observations/inspect",
+        )
+        async def inspect_stage_receipt_from_browser(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            principal, form = await checked_browser_form(
+                request, sid, fields=frozenset({
+                    "csrf", "case_version", "stage_ref",
+                    "observation_revision", "receipt_digest",
+                }),
+            )
+            try:
+                result = agronomy_workspace.inspect_assigned_stage_receipt(
+                    ref, principal,
+                    action_id="DEMO-UI-SI-" + secrets.token_hex(10).upper(),
+                    expected_case_version=form_version(
+                        form["case_version"], zero_allowed=False,
+                    ),
+                    stage_ref=form["stage_ref"],
+                    expected_observation_revision=form_version(
+                        form["observation_revision"], zero_allowed=False,
+                    ),
+                    expected_observation_receipt_digest=form["receipt_digest"],
+                )
+            except ReviewQuestionConflict as exc:
+                raise HTTPException(
+                    409, detail="STAGE_RECEIPT_CONTEXT_CHANGED",
+                ) from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_STAGE_RECEIPT_INSPECTION") from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return RedirectResponse(
+                "/agronomy/assigned-drafts/" + quote(ref)
+                + "/stage-observations", status_code=303,
             )
 
     if (agronomy_workspace is not None

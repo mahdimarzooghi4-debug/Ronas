@@ -2060,6 +2060,8 @@ def build_authenticated_ui_router(
                         + ' · ' + ('رسید جاری' if item["current"]
                                    else 'رسید قدیمی') + ' · نسخه '
                         + str(item["revision"])
+                        + (' · رسید مشاهده شد (بدون داوری)'
+                           if item["receipt_inspected"] else '')
                         + (' · <a href="/api/v1/domestic/household-intake/my-drafts/'
                            + quote(ref) + '/stage-observations/artifacts/'
                            + quote(item["stage_ref"]) + '/'

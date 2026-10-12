@@ -1693,6 +1693,25 @@ class SyntheticAgronomyWorkspace:
                 "FROM expert_response_receipt_inspection WHERE ref=?",
                 (ref,),
             ))
+            has_stage_links = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='expert_stage_question_binding'",
+            ).fetchone() is not None
+            stage_links = {}
+            if has_stage_links:
+                stage_links = {
+                    revision: {
+                        "stage_ref": stage_ref,
+                        "stage_observation_revision": observation_revision,
+                    }
+                    for track, revision, stage_ref, observation_revision
+                    in db.execute(
+                        "SELECT track,question_revision,stage_ref,"
+                        "observation_revision FROM expert_stage_question_binding "
+                        "WHERE ref=? AND track='HOUSEHOLD_INPUT_ADEQUACY'",
+                        (ref,),
+                    )
+                }
             self.ledger._append(
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                 actor=actor, mode="AGRONOMY_SYNTHETIC_QUESTION_HISTORY",
@@ -1714,7 +1733,11 @@ class SyntheticAgronomyWorkspace:
                      "synthetic_receipt_inspected_not_reviewed": (
                          track, rev
                      ) in inspected,
-                     "inspection_is_expert_decision": False}
+                     "inspection_is_expert_decision": False,
+                     **stage_links.get(rev, {
+                         "stage_ref": None,
+                         "stage_observation_revision": None,
+                     })}
                     for track, rev, bound_input_revision, reason, evidence in rows
                 ],
                 "qualification_verified": False,

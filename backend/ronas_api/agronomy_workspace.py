@@ -693,9 +693,14 @@ class SyntheticAgronomyWorkspace:
                 # No fake model proposal or technical-response event can be
                 # substituted for a reviewable snapshot.
                 raise ReviewQuestionConflict("no pinned synthetic proposal")
-            snapshot = self.ledger._input_snapshot_from_verified_transaction(
-                db, ref, record.version,
-            )
+            if isinstance(self.ledger, SqliteSyntheticHouseholdProfileLedger):
+                snapshot = self.ledger._profile_snapshot_from_verified_transaction(
+                    db, ref, record.version,
+                )
+            else:
+                snapshot = self.ledger._input_snapshot_from_verified_transaction(
+                    db, ref, record.version,
+                )
             if (snapshot is None or type(expected_input_revision) is not int
                     or snapshot[0] != expected_input_revision):
                 raise ReviewQuestionConflict("current household input differs")

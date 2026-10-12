@@ -4,6 +4,7 @@ The default production entrypoint never mounts these routes. The HTML is
 rendered from fixed templates, not client-supplied text or arbitrary files.
 No live workflow or personal data exists in this UI foundation.
 """
+from collections.abc import Callable
 from html import escape
 from urllib.parse import quote, parse_qs
 from pathlib import Path

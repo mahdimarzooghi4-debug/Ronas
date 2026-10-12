@@ -1,0 +1,17 @@
+# Ronas — historical synthetic review-binding drift report (LOCAL/TEST)
+
+**Scope:** opt-in read-only `GET /api/v1/agronomy/assigned-drafts/{ref}/historical-binding-drift`. This is an audit/diagnostic view, not an operational review, AI inference, expert qualification verification, scientific adequacy, source-use licence or Business Gate admission. RON-DEC-033 and unapproved D1-DATA-01/02, D1-SCI-01, D1-REV-01..04 remain unchanged.
+
+## Boundary and verification
+
+The same signed `agronomy_expert` role plus **current exact case assignment** is checked, with immutable case/input/question/owner reply/receipt inspection and audit history verified inside the same SQLite transaction. The latest household-owned input revision and digest come only from that ledger. Historical question bindings are loaded from the existing append-only rows; never from caller-supplied digests. There is **one audited `READ_ALLOWED`** on successful read. A corrupt ledger or unavailable source catalogue produces sanitized 503 and no partial response, invalid token 401, unauthorized/revoked case 404. The route is not mounted on the default app and has no write method.
+
+This report is intentionally **not** the strict current provenance dossier: it can show old historical questions even when household input, proposal fixture or independently supplied scientific source candidate pointers have changed. The strict `provenance-dossier`, review question writer and receipt-inspection writer remain fail-closed on stale input/source.
+
+## Per-revision structural classification (never eligibility)
+
+The report covers all historic revisions across the three separate canonical specialist tracks and indicates: question revision, bound input revision, newer-question supersession, **presence** of synthetic owner reply / specialist receipt sighting only, and one reasoned structural context (e.g. changed household input revision/digest, absent/stale synthetic proposal, different proposal/science manifest, changed current scientific-source **candidate pointer**, source catalogue not checked, or structural fixture match only/unreviewed). A source pointer comparison uses a separate current source-catalogue callback and the existing versioned source/rights/review-candidate shape; it is **not a real rights or scientific review**. If the callback is unavailable or returns a malformed catalogue, the read fails 503, not a fabricated drift result. With no catalogue fixture, state is `NO_SEPARATE_SOURCE_CATALOGUE` and matching can never establish scientific approval.
+
+All revisions, including superseded questions and previously sighted receipts, remain **historical only**, and `eligible_for_operational_reuse=false`. Matching a structurally pinned fixture does not authorize using a program or evidence. The projection discloses no owner answer/evidence ref, question reason/evidence ref, model-run or artifact ID, source/review/licence document ref, digest, instruction or private record. It creates no new event except one read audit, does not delete/rewrite historical rows and does not introduce a second ledger.
+
+All consequential flags remain false: no real consent/Training permission, lawful service use, verified scientific validity, truly qualified specialist, independent reasoned human decision, plan activation, advice or Production. SQLite is LOCAL/TEST only. Both PRs remain Draft/Open/Unmerged; Domestic #2, Export #3, Finance #4 stay OPEN; no Stage/QA Gate/Release/Production.

@@ -1,0 +1,369 @@
+"""Security-first Ronas HTTP admission slice: signed tokens and read-only fixtures.
+
+These routes are not operating household/market/export endpoints. All records
+are synthetic and fixed: no live personal data ingestion or mutation routes.
+"""
+import sqlite3
+
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi.responses import JSONResponse
+from .auth import AuthConfig, InvalidToken, Principal, TokenVerifier, require_role
+from .keycloak import KeycloakConfig, KeycloakTokenVerifier
+from .oidc_browser import BrowserOIDC, build_browser_router
+from .ui_bff import build_authenticated_ui_router
+from .scoped_drafts import ScopedSyntheticDraftRegistry, build_scoped_draft_router
+from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
+from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
+from .owner_case_api import build_owned_household_router
+from .household_input_ledger_sqlite import SqliteSyntheticHouseholdInputLedger
+from .household_input_profiles import (
+    HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
+)
+from .domestic_stage_observation import CurrentStageContext
+from .stage_observation_artifacts import StageArtifactStore, build_stage_artifact_router
+
+from .household_input_api import build_household_input_router
+from .technical_review_api import build_technical_review_read_router
+from .shared_workspaces import build_user_workspaces_router
+from .agronomy_workspace import SyntheticAgronomyWorkspace
+from .agronomy_workspace_api import build_agronomy_workspace_router
+from .export_supplier_workspace import SyntheticSupplierWorkspace
+from .export_supplier_api import build_export_supplier_router
+from .domestic_partner_workspace import SyntheticDomesticPartnerWorkspace
+from .domestic_partner_api import build_domestic_partner_router
+from .business_gate_evidence import (build_business_gate_evidence_router,
+                                     BusinessSourceSnapshotError)
+from .gate_evidence_handoff_sqlite import (SqliteSyntheticGateEvidenceHandoff,
+                                          HandoffIntegrityError)
+from .gate_evidence_handoff_api import build_gate_handoff_read_router
+from .gate_evidence_authority_enquiry_sqlite import SqliteSyntheticAuthorityEnquiryLedger
+from .gate_evidence_authority_enquiry_api import build_authority_enquiry_read_router
+
+DOMESTIC_EXAMPLE = {
+    "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
+    "real_consent_verified": False, "accepted": False, "expert_approved": False,
+    "source": "SYNTHETIC_ONLY",
+}
+EXPORT_EXAMPLE = {
+    "engine": "EXPORT", "ref": "DEMO-E01", "status": "DEMO_RIGHTS_UNVERIFIED",
+    "product": None, "destination": None,
+    "source_ref": "DEMO-SOURCE-01", "source_rights_verified": False,
+    "buyer_verified": False, "contracted": False, "source": "SYNTHETIC_ONLY",
+}
+
+def create_app(config: AuthConfig | KeycloakConfig | None = None,
+               browser_flow: BrowserOIDC | None = None,
+               scoped_registry: ScopedSyntheticDraftRegistry | None = None,
+               technical_review_ledger: SqliteSyntheticHumanReviewLedger | None = None,
+               gate_handoff_ledger: SqliteSyntheticGateEvidenceHandoff | None = None,
+               authority_enquiry_ledger: SqliteSyntheticAuthorityEnquiryLedger | None = None,
+               agronomy_workspace: SyntheticAgronomyWorkspace | None = None,
+               export_supplier_workspace: SyntheticSupplierWorkspace | None = None,
+               domestic_partner_workspace: SyntheticDomesticPartnerWorkspace | None = None,
+               household_profile_schema: HouseholdInputSchema | None = None,
+               household_profile_access_authority=None,
+               household_stage_context_authority=None,
+               household_stage_artifact_store: StageArtifactStore | None = None) -> FastAPI:
+    if (household_stage_context_authority is not None
+            and (household_profile_schema is None
+                 or not callable(household_stage_context_authority))):
+        raise ValueError("stage observations require profile schema and context authority")
+    if household_stage_artifact_store is not None and (
+            browser_flow is None
+            or not isinstance(scoped_registry, SqliteSyntheticHouseholdProfileLedger)
+            or technical_review_ledger is not scoped_registry
+            or household_profile_schema is None
+            or not callable(household_profile_access_authority)
+            or not callable(household_stage_context_authority)):
+        raise ValueError("stage artifact storage requires the shared household ledger, browser, profile, and current-context authorities")
+    app = FastAPI(
+        title="Ronas bounded read-only API foundation",
+        docs_url=None, redoc_url=None, openapi_url=None,
+    )
+    @app.exception_handler(LedgerIntegrityError)
+    @app.exception_handler(sqlite3.DatabaseError)
+    async def synthetic_ledger_unavailable(_request, _exc) -> JSONResponse:
+        # A corrupted optional ledger/session must not leak internals or
+        # masquerade as a successfully authorized case read.
+        return JSONResponse(status_code=503,
+                            content={"detail": "SYNTHETIC_LEDGER_UNAVAILABLE"})
+
+    @app.exception_handler(HandoffIntegrityError)
+    async def technical_handoff_unavailable(_request, _exc) -> JSONResponse:
+        return JSONResponse(
+            status_code=503, content={"detail": "TECHNICAL_HANDOFF_UNAVAILABLE"},
+        )
+
+    @app.exception_handler(BusinessSourceSnapshotError)
+    async def pinned_business_source_unavailable(_request, _exc) -> JSONResponse:
+        # Never serve a stale Business gate claim or expose local file paths.
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "PINNED_BUSINESS_SOURCE_UNAVAILABLE"},
+        )
+
+    verifier = (KeycloakTokenVerifier(config) if isinstance(config, KeycloakConfig)
+                else TokenVerifier(config) if isinstance(config, AuthConfig)
+                else None)
+    if browser_flow is not None:
+        if not isinstance(config, KeycloakConfig) or browser_flow.config.keycloak != config:
+            raise ValueError("browser flow must use the same pinned Keycloak realm")
+        app.include_router(build_browser_router(browser_flow))
+        # The review worklist can appear only in the existing opt-in admin
+        # shell and only when this is the same exact scoped grant ledger.
+        worklist_ledger = (
+            technical_review_ledger
+            if (isinstance(technical_review_ledger, SqliteSyntheticHumanReviewLedger)
+                and scoped_registry is technical_review_ledger)
+            else None
+        )
+        owner_ledger = (
+            scoped_registry
+            if isinstance(scoped_registry, SqliteSyntheticGrantLedger)
+            else None
+        )
+        input_ledger = (
+            scoped_registry
+            if isinstance(scoped_registry, SqliteSyntheticHouseholdInputLedger)
+            and technical_review_ledger is scoped_registry
+            else None
+        )
+        app.include_router(build_authenticated_ui_router(
+            browser_flow, technical_review_ledger=worklist_ledger,
+            owned_case_ledger=owner_ledger,
+            household_input_ledger=input_ledger,
+            household_profile_schema=household_profile_schema,
+            household_profile_access_authority=household_profile_access_authority,
+            household_stage_context_authority=household_stage_context_authority,
+            household_stage_artifact_store=household_stage_artifact_store,
+            gate_handoff_ledger=gate_handoff_ledger,
+            authority_enquiry_ledger=authority_enquiry_ledger,
+            agronomy_workspace=agronomy_workspace,
+            export_supplier_workspace=export_supplier_workspace,
+            domestic_partner_workspace=domestic_partner_workspace,
+        ))
+
+    @app.middleware("http")
+    async def security_response_headers(request, call_next):
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    def principal(authorization: str | None = Header(default=None),
+                  session_cookie: str | None = Cookie(default=None, alias="__Host-ronas_session")) -> Principal:
+        if verifier is None:
+            raise HTTPException(status_code=503, detail="IDENTITY_NOT_CONFIGURED")
+        if authorization is None and browser_flow is not None and session_cookie:
+            try:
+                record = browser_flow.session(session_cookie)
+                return Principal(record.subject, record.roles)
+            except InvalidToken:
+                raise HTTPException(status_code=401, detail="INVALID_SESSION") from None
+        if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="AUTHENTICATION_REQUIRED",
+                                headers={"WWW-Authenticate": "Bearer"})
+        token = authorization[7:]
+        if not token or " " in token:
+            raise HTTPException(status_code=401, detail="AUTHENTICATION_REQUIRED",
+                                headers={"WWW-Authenticate": "Bearer"})
+        try:
+            return verifier.verify(token)
+        except InvalidToken:
+            raise HTTPException(status_code=401, detail="INVALID_TOKEN",
+                                headers={"WWW-Authenticate": "Bearer"}) from None
+
+    if browser_flow is not None:
+        # Version-pinned gate evidence only; this is NOT a live gate
+        # status, approval command, or evidence ingestion path.
+        app.include_router(build_business_gate_evidence_router(principal))
+        # A signed role only provides navigation metadata. These flags
+        # reflect opt-in local test read models, not operational rights.
+        app.include_router(build_user_workspaces_router(
+            principal,
+            owned_cases=isinstance(scoped_registry, SqliteSyntheticGrantLedger),
+            technical_progress=(
+                isinstance(technical_review_ledger, SqliteSyntheticHumanReviewLedger)
+                and scoped_registry is technical_review_ledger
+            ),
+            agronomy_cases=(
+                isinstance(agronomy_workspace, SyntheticAgronomyWorkspace)
+                and agronomy_workspace.ledger is technical_review_ledger
+                and scoped_registry is technical_review_ledger
+            ),
+            export_supplier_preview=isinstance(
+                export_supplier_workspace, SyntheticSupplierWorkspace,
+            ),
+            domestic_partner_preview=isinstance(
+                domestic_partner_workspace, SyntheticDomesticPartnerWorkspace,
+            ),
+        ))
+
+    if gate_handoff_ledger is not None:
+        if (not isinstance(config, KeycloakConfig)
+                or browser_flow is None
+                or not isinstance(gate_handoff_ledger,
+                                  SqliteSyntheticGateEvidenceHandoff)):
+            raise ValueError(
+                "technical gate handoff requires explicit Keycloak browser and ledger"
+            )
+        app.include_router(build_gate_handoff_read_router(
+            gate_handoff_ledger, principal,
+        ))
+
+    if authority_enquiry_ledger is not None:
+        if (not isinstance(config, KeycloakConfig) or browser_flow is None
+                or not isinstance(authority_enquiry_ledger,
+                                  SqliteSyntheticAuthorityEnquiryLedger)
+                or gate_handoff_ledger is None
+                or authority_enquiry_ledger.handoff is not gate_handoff_ledger):
+            raise ValueError(
+                "authority enquiry read model requires identical explicit handoff ledger"
+            )
+        app.include_router(build_authority_enquiry_read_router(
+            authority_enquiry_ledger, principal,
+        ))
+
+    if export_supplier_workspace is not None:
+        if (not isinstance(config, KeycloakConfig)
+                or browser_flow is None
+                or not isinstance(export_supplier_workspace,
+                                  SyntheticSupplierWorkspace)):
+            raise ValueError(
+                "supplier preview requires explicit Keycloak browser and LOCAL/TEST workspace"
+            )
+        app.include_router(build_export_supplier_router(
+            export_supplier_workspace, principal,
+        ))
+
+    if domestic_partner_workspace is not None:
+        if (not isinstance(config, KeycloakConfig)
+                or browser_flow is None
+                or not isinstance(domestic_partner_workspace,
+                                  SyntheticDomesticPartnerWorkspace)):
+            raise ValueError(
+                "Domestic partner previews require explicit Keycloak browser and LOCAL/TEST workspace"
+            )
+        app.include_router(build_domestic_partner_router(
+            domestic_partner_workspace, principal,
+        ))
+
+    if agronomy_workspace is not None:
+        if (not isinstance(config, KeycloakConfig)
+                or browser_flow is None
+                or not isinstance(agronomy_workspace, SyntheticAgronomyWorkspace)
+                or technical_review_ledger is None
+                or scoped_registry is not technical_review_ledger
+                or agronomy_workspace.ledger is not technical_review_ledger):
+            raise ValueError(
+                "agronomy requires the identical explicitly injected review ledger and browser"
+            )
+        app.include_router(build_agronomy_workspace_router(
+            agronomy_workspace, principal,
+            stage_context_authority=household_stage_context_authority,
+            stage_artifact_store=household_stage_artifact_store,
+        ))
+
+    if scoped_registry is not None:
+        if not isinstance(config, KeycloakConfig):
+            raise ValueError("record-scoped technical fixtures require Keycloak")
+        app.include_router(build_scoped_draft_router(scoped_registry, principal))
+        # Extra owner list requires a local transactional audit ledger;
+        # never infer ownership from a signed role or a static display card.
+        if isinstance(scoped_registry, SqliteSyntheticGrantLedger):
+            app.include_router(build_owned_household_router(
+                scoped_registry, principal
+            ))
+
+    if (isinstance(scoped_registry, SqliteSyntheticHouseholdInputLedger)
+            and browser_flow is not None):
+        if (not isinstance(config, KeycloakConfig)
+                or technical_review_ledger is not scoped_registry):
+            raise ValueError("synthetic household input requires same Keycloak review ledger")
+        if household_profile_schema is not None:
+            if (not isinstance(scoped_registry, SqliteSyntheticHouseholdProfileLedger)
+                    or scoped_registry.profile_schema != household_profile_schema
+                    or not callable(household_profile_access_authority)):
+                raise ValueError("profile intake requires exact ledger schema and authority")
+        elif household_profile_access_authority is not None:
+            raise ValueError("profile authority requires explicit schema")
+        if household_stage_context_authority is not None and (
+                household_profile_schema is None
+                or not callable(household_stage_context_authority)):
+            raise ValueError("stage observation UI requires current stage authority")
+        app.include_router(build_household_input_router(
+            scoped_registry, principal,
+            profile_schema=household_profile_schema,
+            profile_access_authority=household_profile_access_authority,
+            stage_context_authority=household_stage_context_authority,
+            stage_artifact_store=household_stage_artifact_store,
+        ))
+        if household_stage_artifact_store is not None:
+            app.include_router(build_stage_artifact_router(
+                household_stage_artifact_store, principal,
+                household_profile_schema.schema_ref,
+                household_profile_access_authority,
+                household_stage_context_authority,
+            ))
+
+    if technical_review_ledger is not None:
+        # Opt-in LOCAL/TEST only: the review store and the case-grant store
+        # must be the *identical* object. Reject generic token verification,
+        # absent scopes, or a parallel catalogue that can diverge on revoke.
+        if (not isinstance(config, KeycloakConfig)
+                or not isinstance(technical_review_ledger, SqliteSyntheticHumanReviewLedger)
+                or scoped_registry is not technical_review_ledger):
+            raise ValueError("review API requires the same explicit Keycloak-scoped human review ledger")
+        app.include_router(build_technical_review_read_router(
+            technical_review_ledger, principal
+        ))
+
+    def grant(name: str):
+        def dependency(p: Principal = Depends(principal)) -> Principal:
+            require_role(p, name)
+            return p
+        return dependency
+
+    @app.get("/healthz")
+    def health() -> dict[str, str]:
+        # Liveness only, NEVER a declaration of authentication/production readiness.
+        return {"status": "alive"}
+
+    @app.get("/readyz")
+    def readiness(response: Response) -> dict[str, str]:
+        if verifier is None:
+            response.status_code = 503
+            return {"status": "blocked", "reason": "IDENTITY_NOT_CONFIGURED"}
+        return {"status": "auth_configuration_loaded", "scope": "READ_ONLY_SYNTHETIC"}
+
+    @app.get("/api/v1/me")
+    def me(p: Principal = Depends(principal)) -> dict:
+        return {"subject": p.subject, "roles": sorted(p.roles)}
+
+    @app.get("/api/v1/domestic/household-intake/example")
+    def household_example(p: Principal = Depends(grant("household"))) -> dict:
+        return dict(DOMESTIC_EXAMPLE)
+
+    @app.get("/api/v1/admin/domestic/household-intake/example")
+    def domestic_ops_example(p: Principal = Depends(grant("domestic_ops"))) -> dict:
+        return dict(DOMESTIC_EXAMPLE)
+
+    @app.get("/api/v1/admin/export/research/example")
+    def export_ops_example(p: Principal = Depends(grant("export_ops"))) -> dict:
+        return dict(EXPORT_EXAMPLE)
+
+    @app.get("/api/v1/admin/finance/status")
+    def finance_status(p: Principal = Depends(grant("finance"))) -> dict:
+        return {"engine": "SEPARATED", "status": "NOT_OPERATIONAL",
+                "payments_enabled": False, "settlements_enabled": False}
+
+    @app.get("/api/v1/admin/governance/status")
+    def governance_status(p: Principal = Depends(grant("governance"))) -> dict:
+        return {"status": "NOT_OPERATIONAL", "automatic_approvals_enabled": False}
+
+    return app
+
+
+# Default runtime admits ONLY the approved Keycloak profile, not legacy generic OIDC.
+# Missing real Keycloak issuer and operator-mounted PUBLIC JWKS deny every protected route.
+app = create_app(KeycloakConfig.from_environment())

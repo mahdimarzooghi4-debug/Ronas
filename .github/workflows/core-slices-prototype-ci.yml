@@ -1,0 +1,42 @@
+name: Core slices prototype checks
+on:
+  push:
+    branches:
+      - feat/core-d1a-e0a-offline-foundation
+  pull_request:
+    branches:
+      - business/ronas-foundation-v0-1
+
+permissions:
+  contents: read
+
+jobs:
+  prototype-contracts:
+    name: Python and Node synthetic workflow contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s prototype/tests -v
+      - run: python -m compileall -q prototype/ronas_core
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node --test prototype/tests/test_demo_model.mjs
+
+  secure-api-contracts:
+    name: Python 3.12 Keycloak JWKS and client-role isolation
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r backend/requirements-test.txt
+      - run: python -m pip check
+      - run: PYTHONPATH=backend python -m unittest discover -s backend/tests -v
+      - run: PYTHONPATH=backend python -m compileall -q backend/ronas_api

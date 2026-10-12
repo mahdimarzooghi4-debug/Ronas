@@ -1,0 +1,422 @@
+"""Opt-in synthetic household-owned manifest version history and correction.
+
+The only admitted write accepts a local synthetic SHA-shaped manifest key.
+It cannot receive cultivation information, personal details or legal consent.
+Keycloak Bearer access (not ambient session cookies) is required to mutate.
+"""
+from collections.abc import Callable
+import sqlite3
+
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
+
+from .auth import Principal
+from .domestic_stage_observation import (
+    CurrentStageContext, StageObservationCommand, StageObservationConflict,
+)
+from .grant_ledger_sqlite import LedgerIntegrityError
+from .household_input_ledger_sqlite import (
+    InputRevisionConflict, SqliteSyntheticHouseholdInputLedger,
+)
+from .expert_review_questions_sqlite import (
+    SqliteSyntheticExpertQuestionLedger, ReviewQuestionConflict,
+)
+from .household_input_profiles import (
+    HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
+)
+from .stage_observation_artifacts import StageArtifactStore, StageArtifactStoreError
+
+
+class SyntheticManifestCorrection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: StrictStr
+    expected_case_version: StrictInt
+    expected_input_revision: StrictInt
+    synthetic_manifest_digest: StrictStr
+
+
+class SyntheticProgressNote(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: StrictStr
+    expected_case_version: StrictInt
+    expected_revision: StrictInt
+    reported_at: StrictStr
+    note: StrictStr
+
+
+
+class HouseholdStageObservationCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: StrictStr = Field(min_length=1, max_length=96)
+    expected_observation_revision: StrictInt
+    expected_case_version: StrictInt
+    expected_input_revision: StrictInt
+    expected_input_snapshot_digest: StrictStr = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$",
+    )
+    expected_plan_digest: StrictStr = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$",
+    )
+    stage_ref: StrictStr = Field(min_length=1, max_length=64)
+    expected_observation_requirements_digest: StrictStr = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$",
+    )
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
+    observation_artifact_digest: StrictStr = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$",
+    )
+
+
+class HouseholdProfileCorrection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: StrictStr
+    expected_case_version: StrictInt
+    expected_revision: StrictInt
+    values: dict[StrictStr, StrictStr]
+
+
+class SyntheticHouseholdQuestionReply(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: StrictStr
+    track: StrictStr
+    expected_case_version: StrictInt
+    expected_input_revision: StrictInt
+    expected_question_revision: StrictInt
+    answer_ref: StrictStr
+    evidence_ref: StrictStr
+
+
+def build_household_input_router(
+    ledger: SqliteSyntheticHouseholdInputLedger,
+    verified_principal: Callable[..., Principal],
+    profile_schema: HouseholdInputSchema | None = None,
+    profile_access_authority: Callable[[Principal, str, str], bool] | None = None,
+    stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
+    stage_artifact_store: StageArtifactStore | None = None,
+) -> APIRouter:
+    if not isinstance(ledger, SqliteSyntheticHouseholdInputLedger):
+        raise ValueError("explicit local synthetic input ledger required")
+    if profile_schema is not None:
+        if (not isinstance(ledger, SqliteSyntheticHouseholdProfileLedger)
+                or ledger.profile_schema != profile_schema
+                or not callable(profile_access_authority)):
+            raise ValueError("profile intake needs same ledger, schema, and access authority")
+    elif profile_access_authority is not None:
+        raise ValueError("profile authority without profile schema")
+    if stage_context_authority is not None:
+        if (profile_schema is None
+                or not callable(stage_context_authority)):
+            raise ValueError("stage observations require current context authority")
+    if stage_artifact_store is not None and (
+            stage_context_authority is None or profile_schema is None):
+        raise ValueError("stage artifact store requires the current stage context")
+    router = APIRouter()
+
+    @router.get("/api/v1/domestic/household-intake/my-drafts/{ref}/input-revisions")
+    def own_input_revisions(
+        ref: str, p: Principal = Depends(verified_principal),
+    ) -> dict:
+        try:
+            result = ledger.read_owned_input_revisions(ref, p)
+        except (LedgerIntegrityError, sqlite3.Error) as exc:
+            raise HTTPException(
+                503, detail="SYNTHETIC_INPUT_HISTORY_UNAVAILABLE",
+            ) from exc
+        if result is None:
+            raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+        return result
+
+    @router.post("/api/v1/domestic/household-intake/my-drafts/{ref}/input-revisions",
+                 status_code=201)
+    def append_synthetic_manifest(
+        ref: str, data: SyntheticManifestCorrection,
+        authorization: str | None = Header(default=None),
+        p: Principal = Depends(verified_principal),
+    ) -> dict:
+        # Cookie-only browser session must never be a mutating credential.
+        # Verified principal dependency checks the actual Bearer signature.
+        if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
+            raise HTTPException(401, detail="BEARER_REQUIRED_FOR_MUTATION")
+        try:
+            result = ledger.append_owned_input_manifest(
+                ref, p, action_id=data.action_id,
+                expected_case_version=data.expected_case_version,
+                expected_input_revision=data.expected_input_revision,
+                synthetic_manifest_digest=data.synthetic_manifest_digest,
+            )
+        except InputRevisionConflict as exc:
+            raise HTTPException(409, detail="SYNTHETIC_INPUT_VERSION_CONFLICT") from exc
+        except (LedgerIntegrityError, sqlite3.Error) as exc:
+            raise HTTPException(
+                503, detail="SYNTHETIC_INPUT_HISTORY_UNAVAILABLE",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(422, detail="INVALID_SYNTHETIC_INPUT_REVISION") from exc
+        if result is None:
+            raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+        return result
+
+    @router.get("/api/v1/domestic/household-intake/my-drafts/{ref}/progress-notes")
+    def own_progress_notes(ref: str, p: Principal = Depends(verified_principal)) -> dict:
+        try:
+            result = ledger.read_owned_progress_notes(ref, p)
+        except (LedgerIntegrityError, sqlite3.Error) as exc:
+            raise HTTPException(503, detail="SYNTHETIC_PROGRESS_HISTORY_UNAVAILABLE") from exc
+        if result is None:
+            raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+        return result
+
+    @router.post("/api/v1/domestic/household-intake/my-drafts/{ref}/progress-notes",
+                 status_code=201)
+    def append_progress_note(
+        ref: str, data: SyntheticProgressNote,
+        authorization: str | None = Header(default=None),
+        p: Principal = Depends(verified_principal),
+    ) -> dict:
+        if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
+            raise HTTPException(401, detail="BEARER_REQUIRED_FOR_MUTATION")
+        try:
+            result = ledger.append_owned_progress_note(
+                ref, p, action_id=data.action_id,
+                expected_case_version=data.expected_case_version,
+                expected_revision=data.expected_revision,
+                reported_at=data.reported_at, note=data.note,
+            )
+        except InputRevisionConflict as exc:
+            raise HTTPException(409, detail="SYNTHETIC_PROGRESS_VERSION_CONFLICT") from exc
+        except (LedgerIntegrityError, sqlite3.Error) as exc:
+            raise HTTPException(503, detail="SYNTHETIC_PROGRESS_HISTORY_UNAVAILABLE") from exc
+        except ValueError as exc:
+            raise HTTPException(422, detail="INVALID_SYNTHETIC_PROGRESS_NOTE") from exc
+        if result is None:
+            raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+        return result
+
+    if isinstance(ledger, SqliteSyntheticExpertQuestionLedger):
+        @router.get(
+            "/api/v1/domestic/household-intake/my-drafts/{ref}/question-responses"
+        )
+        def own_household_question_responses(
+            ref: str, p: Principal = Depends(verified_principal),
+        ) -> dict:
+            try:
+                result = ledger.read_owned_question_responses(ref, p)
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_QUESTION_RESPONSE_UNAVAILABLE",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return result
+
+        @router.post(
+            "/api/v1/domestic/household-intake/my-drafts/{ref}/question-responses",
+            status_code=201,
+        )
+        def append_household_question_response(
+            ref: str, command: SyntheticHouseholdQuestionReply,
+            authorization: str | None = Header(default=None),
+            p: Principal = Depends(verified_principal),
+        ) -> dict:
+            if (not isinstance(authorization, str)
+                    or not authorization.startswith("Bearer ")):
+                raise HTTPException(401, detail="BEARER_REQUIRED_FOR_MUTATION")
+            try:
+                result = ledger.append_owned_question_response(
+                    ref, p, action_id=command.action_id,
+                    track=command.track,
+                    expected_question_revision=command.expected_question_revision,
+                    expected_case_version=command.expected_case_version,
+                    expected_input_revision=command.expected_input_revision,
+                    answer_ref=command.answer_ref,
+                    evidence_ref=command.evidence_ref,
+                )
+            except ReviewQuestionConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_RESPONSE_VERSION_CONFLICT",
+                ) from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_QUESTION_RESPONSE_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(
+                    422, detail="INVALID_SYNTHETIC_RESPONSE",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return result
+
+
+    if profile_schema is not None and profile_access_authority is not None:
+        profile_ledger = ledger
+
+        def profile_allowed(p: Principal, ref: str) -> bool:
+            try:
+                return profile_access_authority(
+                    p, ref, profile_schema.schema_ref,
+                ) is True
+            except Exception as exc:
+                raise HTTPException(
+                    503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                ) from exc
+
+        @router.get(
+            "/api/v1/domestic/household-intake/my-drafts/{ref}/cultivation-inputs",
+        )
+        def read_cultivation_inputs(
+            ref: str, p: Principal = Depends(verified_principal),
+        ) -> dict:
+            if not profile_allowed(p, ref):
+                raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+            try:
+                result = profile_ledger.read_owned_profile(ref, p)
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return {
+                **result,
+                "fields": [{
+                    "key": f.key, "label": f.label, "kind": f.kind,
+                    "required": f.required, "max_length": f.max_length,
+                    "choices": list(f.choices),
+                } for f in profile_schema.fields],
+            }
+
+        @router.get(
+            "/api/v1/domestic/household-intake/my-drafts/{ref}/cultivation-inputs/revisions/{revision}",
+        )
+        def read_cultivation_input_revision(
+            ref: str, revision: int,
+            p: Principal = Depends(verified_principal),
+        ) -> dict:
+            if not profile_allowed(p, ref):
+                raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+            try:
+                result = profile_ledger.read_owned_profile_revision(
+                    ref, p, revision,
+                )
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_HOUSEHOLD_PROFILE_REVISION") from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE") from exc
+            if result is None:
+                raise HTTPException(404, detail="PROFILE_REVISION_NOT_FOUND")
+            return result
+
+        if stage_context_authority is not None:
+            @router.get(
+                "/api/v1/domestic/household-intake/my-drafts/{ref}/stage-observations",
+            )
+            def read_stage_observations(
+                ref: str, p: Principal = Depends(verified_principal),
+            ) -> dict:
+                if not profile_allowed(p, ref):
+                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                try:
+                    result = profile_ledger.read_owned_stage_observations(
+                        ref, p, context_authority=stage_context_authority,
+                    )
+                except StageObservationConflict as exc:
+                    raise HTTPException(
+                        409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                    ) from exc
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(
+                        503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                    ) from exc
+                if result is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                return result
+
+            @router.post(
+                "/api/v1/domestic/household-intake/my-drafts/{ref}/stage-observations",
+                status_code=201,
+            )
+            def append_stage_observation(
+                ref: str, data: HouseholdStageObservationCommand,
+                authorization: str | None = Header(default=None),
+                p: Principal = Depends(verified_principal),
+            ) -> dict:
+                if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
+                    raise HTTPException(401, detail="BEARER_REQUIRED_FOR_MUTATION")
+                if not profile_allowed(p, ref):
+                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                try:
+                    command = StageObservationCommand(
+                        action_id=data.action_id,
+                        expected_case_version=data.expected_case_version,
+                        expected_input_revision=data.expected_input_revision,
+                        expected_input_snapshot_digest=data.expected_input_snapshot_digest,
+                        expected_plan_digest=data.expected_plan_digest,
+                        stage_ref=data.stage_ref,
+                        expected_observation_requirements_digest=
+                            data.expected_observation_requirements_digest,
+                        observed_at=data.observed_at,
+                        observation_artifact_digest=data.observation_artifact_digest,
+                    )
+                    if (stage_artifact_store is not None
+                            and not stage_artifact_store.contains(
+                                p.subject, ref + ":" + command.stage_ref,
+                                command.observation_artifact_digest)):
+                        raise HTTPException(422, detail="STAGE_ARTIFACT_NOT_UPLOADED")
+                    result = profile_ledger.append_owned_stage_observation(
+                        ref, p, command,
+                        expected_observation_revision=
+                            data.expected_observation_revision,
+                        context_authority=stage_context_authority,
+                    )
+                except StageObservationConflict as exc:
+                    raise HTTPException(
+                        409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                    ) from exc
+                except StageArtifactStoreError as exc:
+                    raise HTTPException(
+                        503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
+                    ) from exc
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(
+                        503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                    ) from exc
+                except ValueError as exc:
+                    raise HTTPException(
+                        422, detail="INVALID_STAGE_OBSERVATION",
+                    ) from exc
+                if result is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                return result
+
+        @router.post(
+            "/api/v1/domestic/household-intake/my-drafts/{ref}/cultivation-inputs",
+            status_code=201,
+        )
+        def write_cultivation_inputs(
+            ref: str, data: HouseholdProfileCorrection,
+            authorization: str | None = Header(default=None),
+            p: Principal = Depends(verified_principal),
+        ) -> dict:
+            if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
+                raise HTTPException(401, detail="BEARER_REQUIRED_FOR_MUTATION")
+            if not profile_allowed(p, ref):
+                raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+            try:
+                result = profile_ledger.append_owned_profile(
+                    ref, p, action_id=data.action_id,
+                    expected_case_version=data.expected_case_version,
+                    expected_revision=data.expected_revision,
+                    values=data.values,
+                )
+            except InputRevisionConflict as exc:
+                raise HTTPException(409, detail="HOUSEHOLD_PROFILE_VERSION_CONFLICT") from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE") from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_HOUSEHOLD_PROFILE") from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return result
+
+    return router

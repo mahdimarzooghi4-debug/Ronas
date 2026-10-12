@@ -1,4 +1,5 @@
 """Schema-driven owner profile intake is versioned, private, and guarded."""
+import hashlib
 import json
 from pathlib import Path
 import secrets
@@ -18,6 +19,7 @@ from ronas_api.household_input_profiles import (
     HouseholdInputField, HouseholdInputSchema,
     SqliteSyntheticHouseholdProfileLedger,
 )
+from ronas_api.stage_observation_artifacts import PrivateFilesystemStageArtifactStore
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
@@ -75,6 +77,12 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.path = Path(temp.name) / "profiles.db"
+        self.artifact_root = Path(temp.name) / "stage-artifacts"
+        self.artifact_root.mkdir(mode=0o700)
+        self.artifact_root.chmod(0o700)
+        self.artifact_store = PrivateFilesystemStageArtifactStore(
+            self.artifact_root, b"x" * 32,
+        )
         self.records = (
             ScopedDraft(REF, "DOMESTIC", OWNER, 2, (
                 ScopedGrant("synthetic-domestic-ops", "domestic_ops"),
@@ -121,7 +129,8 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             (StageRequirement("DEMO-STAGE-01", "a" * 64),),
         )
 
-    def make_app(self, *, schema=True, authority=True, stage_authority=True):
+    def make_app(self, *, schema=True, authority=True, stage_authority=True,
+                 artifact_store=None):
         return create_app(
             self.config, self.flow, scoped_registry=self.ledger,
             technical_review_ledger=self.ledger,
@@ -130,6 +139,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             household_stage_context_authority=(
                 self.stage_context if stage_authority and schema else None
             ),
+            household_stage_artifact_store=artifact_store,
         )
 
     def stage_command(self, *, action="DEMO-STAGE-OBS-1", revision=0):
@@ -319,6 +329,78 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         history = self.client.get(path)
         self.assertIn("رسید قدیمی", history.text)
         self.assertNotIn("· رسید جاری ·", history.text)
+
+    def test_browser_upload_stores_real_file_then_records_and_downloads_receipt(self):
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(), headers=self.bearer(),
+        ).status_code, 201)
+        self.client = TestClient(
+            self.make_app(artifact_store=self.artifact_store), base_url=ORIGIN,
+        )
+        session = self.browser_session()
+        page_path = PAGE.replace("/cultivation-inputs", "/stage-observations")
+        page = self.client.get(page_path)
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn('type="file"', page.text)
+        self.assertIn("ronas-stage-observation-upload.js", page.text)
+        self.assertNotIn('name="artifact_digest" type="text"', page.text)
+        upload_path = page_path + "/artifacts"
+        image = b"\x89PNG\r\n\x1a\n" + b"synthetic-stage-image"
+        upload_headers = {
+            "Origin": ORIGIN, "X-CSRF-Token": session.csrf,
+            "Content-Type": "image/png", "X-Ronas-Case-Version": "2",
+            "X-Ronas-Input-Revision": "1",
+            "X-Ronas-Plan-Digest": self.stage_plan_digest,
+            "X-Ronas-Stage-Ref": "DEMO-STAGE-01",
+            "X-Ronas-Requirements-Digest": "a" * 64,
+        }
+        denied_csrf = dict(upload_headers, **{"X-CSRF-Token": "invalid"})
+        self.assertEqual(self.client.put(
+            upload_path, content=image, headers=denied_csrf,
+        ).status_code, 403)
+        stale_context = dict(upload_headers, **{"X-Ronas-Plan-Digest": "f" * 64})
+        self.assertEqual(self.client.put(
+            upload_path, content=image, headers=stale_context,
+        ).status_code, 409)
+        uploaded = self.client.put(upload_path, content=image, headers=upload_headers)
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        digest = uploaded.json()["digest"]
+        self.assertEqual(digest, hashlib.sha256(image).hexdigest())
+        self.assertTrue(self.artifact_store.contains(
+            OWNER, REF + ":DEMO-STAGE-01", digest,
+        ))
+        form = {
+            "csrf": session.csrf, "case_version": "2", "input_revision": "1",
+            "input_snapshot_digest": self.ledger.internal_proposal_lineage(REF)[2],
+            "plan_digest": self.stage_plan_digest, "stage_ref": "DEMO-STAGE-01",
+            "requirements_digest": "a" * 64, "observation_revision": "0",
+            "artifact_digest": digest,
+        }
+        missing = dict(form, artifact_digest="d" * 64)
+        rejected = self.client.post(
+            page_path, content=urlencode(missing),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(rejected.status_code, 422)
+        saved = self.client.post(
+            page_path, content=urlencode(form),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(saved.status_code, 303, saved.text)
+        history = self.client.get(page_path)
+        self.assertIn("دریافت فایل", history.text)
+        download_path = (
+            "/api/v1/domestic/household-intake/my-drafts/" + REF
+            + "/stage-observations/artifacts/DEMO-STAGE-01/" + digest
+        )
+        downloaded = self.client.get(download_path)
+        self.assertEqual(downloaded.status_code, 200, downloaded.text)
+        self.assertEqual(downloaded.content, image)
+        self.assertTrue(self.ledger.verify_integrity())
 
     def test_stage_observation_is_not_offered_without_current_plan(self):
         self.assertEqual(self.client.post(

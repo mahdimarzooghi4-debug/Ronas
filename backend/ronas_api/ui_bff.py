@@ -14,7 +14,7 @@ import hmac
 import secrets
 
 from fastapi import APIRouter, Cookie, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, JSONResponse
 
 from .auth import InvalidToken, Principal
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES as TECHNICAL_STATES
@@ -54,6 +54,9 @@ from .domestic_partner_workspace import (
 from .domestic_stage_observation import (
     CurrentStageContext, StageObservationCommand, StageObservationConflict,
 )
+from .stage_observation_artifacts import (
+    MAX_ARTIFACT_BYTES, StageArtifactStore, StageArtifactStoreError,
+)
 from .domestic_preparation_preview import (
     REVIEW_STATES, domestic_preparation_preview,
 )
@@ -90,9 +93,54 @@ LOGOUT_SCRIPT = """document.addEventListener('DOMContentLoaded', () => {
   });
 });"""
 
+STAGE_UPLOAD_SCRIPT = r"""document.addEventListener('submit', async event => {
+  const form = event.target;
+  if (!(form instanceof HTMLFormElement) || !form.hasAttribute('data-stage-upload')) return;
+  event.preventDefault();
+  const fileInput = form.querySelector('input[type=file]');
+  const digestInput = form.querySelector('input[name=artifact_digest]');
+  const notice = form.querySelector('[data-upload-status]');
+  const button = form.querySelector('button[type=submit]');
+  const file = fileInput && fileInput.files && fileInput.files[0];
+  const say = text => { if (notice) notice.textContent = text; };
+  if (!file || !digestInput) { say('ابتدا یک فایل تصویر یا PDF انتخاب کنید.'); return; }
+  if (file.size < 1 || file.size > 8 * 1024 * 1024) { say('اندازه فایل باید حداکثر ۸ مگابایت باشد.'); return; }
+  if (button) button.disabled = true;
+  say('فایل در حال بارگذاری است…');
+  try {
+    const get = name => form.elements.namedItem(name).value;
+    const uploaded = await fetch(form.dataset.uploadUrl, {
+      method:'PUT', credentials:'same-origin', cache:'no-store', body:file,
+      headers:{'Content-Type':file.type, 'X-CSRF-Token':get('csrf'),
+        'X-Ronas-Case-Version':get('case_version'),
+        'X-Ronas-Input-Revision':get('input_revision'),
+        'X-Ronas-Plan-Digest':get('plan_digest'), 'X-Ronas-Stage-Ref':get('stage_ref'),
+        'X-Ronas-Requirements-Digest':get('requirements_digest')}
+    });
+    if (!uploaded.ok) throw Error('UPLOAD_REJECTED');
+    const artifact = await uploaded.json();
+    if (!/^[0-9a-f]{64}$/.test(artifact.digest) || artifact.byte_length !== file.size
+        || artifact.content_type !== file.type || artifact.stored !== true) throw Error('UPLOAD_INVALID');
+    digestInput.value = artifact.digest;
+    const fields = new URLSearchParams();
+    for (const [key, value] of new FormData(form).entries())
+      if (typeof value === 'string') fields.append(key, value);
+    const saved = await fetch(form.action, {
+      method:'POST', credentials:'same-origin', cache:'no-store',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:fields
+    });
+    if (!saved.ok) throw Error('RECEIPT_REJECTED');
+    window.location.assign(saved.url);
+  } catch {
+    say('ثبت فایل یا رسید انجام نشد؛ وضعیت را تازه کنید و دوباره تلاش کنید.');
+    if (button) button.disabled = false;
+  }
+});"""
+
 def page(title: str, body: str, *, logged_in: bool, code: int = 200,
          local_test_form: bool = False,
-         login_return_path: str = "/") -> HTMLResponse:
+         login_return_path: str = "/",
+         stage_upload_script: bool = False) -> HTMLResponse:
     logout = (
         '<button type="button" id="ronas-logout">خروج امن</button>'
         '<p id="logout-message" role="status" aria-live="polite"></p>'
@@ -112,7 +160,10 @@ def page(title: str, body: str, *, logged_in: bool, code: int = 200,
             'هیچ عملیات مالی، صادرات، ثبت‌نام یا تأیید علمی انجام نمی‌شود.</div>'
             '<main class="wrap" id="main"><h1>' + escape(title) + '</h1>'
             + body + '<section class="section">' + logout + '</section></main>'
-            '<script src="/assets/ronas-auth.js" defer></script></body></html>')
+            '<script src="/assets/ronas-auth.js" defer></script>'
+            + ('<script src="/assets/ronas-stage-observation-upload.js" defer></script>'
+               if stage_upload_script else '')
+            + '</body></html>')
     response = HTMLResponse(html, status_code=code)
     response.headers["Content-Security-Policy"] = (
         "default-src 'none'; style-src 'self'; script-src 'self'; "
@@ -205,6 +256,7 @@ def build_authenticated_ui_router(
     agronomy_workspace: SyntheticAgronomyWorkspace | None = None,
     export_supplier_workspace: SyntheticSupplierWorkspace | None = None,
     domestic_partner_workspace: SyntheticDomesticPartnerWorkspace | None = None,
+    household_stage_artifact_store: StageArtifactStore | None = None,
 ) -> APIRouter:
     # Only the opt-in same-instance ledger injected by create_app may
     # provide the synthetic worklist. Never trust a client-side role list.
@@ -231,6 +283,13 @@ def build_authenticated_ui_router(
         if (household_profile_schema is None
                 or not callable(household_stage_context_authority)):
             raise ValueError("stage observation UI needs current context authority")
+    if household_stage_artifact_store is not None and (
+            household_stage_context_authority is None
+            or household_profile_schema is None
+            or not callable(household_profile_access_authority)
+            or not all(callable(getattr(household_stage_artifact_store, name, None))
+                       for name in ("put", "get", "contains"))):
+        raise ValueError("stage upload UI requires exact store and profile authorities")
     if (gate_handoff_ledger is not None
             and not isinstance(gate_handoff_ledger,
                                SqliteSyntheticGateEvidenceHandoff)):
@@ -342,6 +401,10 @@ def build_authenticated_ui_router(
     @router.get("/assets/ronas-auth.js")
     def client_script() -> PlainTextResponse:
         return PlainTextResponse(LOGOUT_SCRIPT, media_type="text/javascript")
+
+    @router.get("/assets/ronas-stage-observation-upload.js")
+    def stage_upload_script() -> PlainTextResponse:
+        return PlainTextResponse(STAGE_UPLOAD_SCRIPT, media_type="text/javascript")
 
     def household_worklist(
         principal: Principal, after_ref: str | None, technical_state: str,
@@ -1598,6 +1661,95 @@ def build_authenticated_ui_router(
                             body, logged_in=True, local_test_form=True)
 
             if household_stage_context_authority is not None:
+                if household_stage_artifact_store is not None:
+                    @router.put("/my-drafts/{ref}/stage-observations/artifacts")
+                    async def household_stage_artifact_upload(
+                        ref: str, request: Request,
+                        sid: str | None = Cookie(default=None, alias=cookie_name),
+                    ) -> JSONResponse:
+                        if request.headers.get("origin") != flow.config.origin:
+                            raise HTTPException(403, detail="ORIGIN_REQUIRED")
+                        try:
+                            session = flow.session(sid)
+                        except InvalidToken:
+                            raise HTTPException(401, detail="INVALID_SESSION") from None
+                        csrf = request.headers.get("x-csrf-token", "")
+                        if not hmac.compare_digest(session.csrf, csrf):
+                            raise HTTPException(403, detail="CSRF_REQUIRED")
+                        principal = Principal(session.subject, session.roles)
+                        try:
+                            permitted = household_profile_access_authority(
+                                principal, ref, household_profile_schema.schema_ref,
+                            )
+                        except Exception as exc:
+                            raise HTTPException(
+                                503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                            ) from exc
+                        if permitted is not True:
+                            raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                        case_version = form_version(
+                            request.headers.get("x-ronas-case-version", ""),
+                            zero_allowed=False,
+                        )
+                        input_revision = form_version(
+                            request.headers.get("x-ronas-input-revision", ""),
+                            zero_allowed=False,
+                        )
+                        try:
+                            context = household_stage_context_authority(ref)
+                        except Exception as exc:
+                            raise HTTPException(503, detail="STAGE_CONTEXT_UNAVAILABLE") from exc
+                        stage_ref = request.headers.get("x-ronas-stage-ref", "")
+                        requirements = request.headers.get(
+                            "x-ronas-requirements-digest", "",
+                        )
+                        if (not isinstance(context, CurrentStageContext)
+                                or context.case_ref != ref
+                                or context.case_version != case_version
+                                or context.input_revision != input_revision
+                                or context.plan_digest != request.headers.get(
+                                    "x-ronas-plan-digest", "",
+                                )
+                                or not any(
+                                    item.stage_ref == stage_ref
+                                    and item.observation_requirements_digest == requirements
+                                    for item in context.requirements
+                                )):
+                            raise HTTPException(
+                                409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                            )
+                        declared = request.headers.get("content-length")
+                        if declared:
+                            try:
+                                if int(declared) > MAX_ARTIFACT_BYTES:
+                                    raise HTTPException(413, detail="STAGE_ARTIFACT_TOO_LARGE")
+                            except ValueError as exc:
+                                raise HTTPException(400, detail="INVALID_CONTENT_LENGTH") from exc
+                        chunks, size = [], 0
+                        async for chunk in request.stream():
+                            size += len(chunk)
+                            if size > MAX_ARTIFACT_BYTES:
+                                raise HTTPException(413, detail="STAGE_ARTIFACT_TOO_LARGE")
+                            chunks.append(chunk)
+                        try:
+                            artifact = household_stage_artifact_store.put(
+                                principal.subject, ref + ":" + stage_ref,
+                                request.headers.get("content-type", ""),
+                                b"".join(chunks),
+                            )
+                        except ValueError as exc:
+                            raise HTTPException(422, detail="INVALID_STAGE_ARTIFACT") from exc
+                        except StageArtifactStoreError as exc:
+                            raise HTTPException(
+                                503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
+                            ) from exc
+                        return JSONResponse(status_code=201, content={
+                            "digest": artifact.digest,
+                            "content_type": artifact.content_type,
+                            "byte_length": artifact.byte_length,
+                            "stored": True,
+                        })
+
                 @router.get(
                     "/my-drafts/{ref}/stage-observations",
                     response_class=HTMLResponse,
@@ -1644,10 +1796,34 @@ def build_authenticated_ui_router(
                             requirements = escape(
                                 stage["observation_requirements_digest"], quote=True,
                             )
+                            if household_stage_artifact_store is not None:
+                                form_attrs = (
+                                    ' data-stage-upload data-upload-url="/my-drafts/'
+                                    + quote(ref) + '/stage-observations/artifacts"'
+                                )
+                                artifact_control = (
+                                    '<label for="artifact-' + str(index)
+                                    + '">فایل مشاهده (تصویر یا PDF، حداکثر ۸ مگابایت)</label>'
+                                    '<input id="artifact-' + str(index)
+                                    + '" name="observation_file" type="file" '
+                                    'accept="image/jpeg,image/png,image/webp,application/pdf" required>'
+                                    '<input name="artifact_digest" type="hidden" value="">'
+                                    '<p data-upload-status role="status" aria-live="polite"></p>'
+                                )
+                            else:
+                                form_attrs = ''
+                                artifact_control = (
+                                    '<label for="artifact-' + str(index)
+                                    + '">اثر انگشت مرجع مشاهده (SHA-256)</label>'
+                                    '<input id="artifact-' + str(index)
+                                    + '" name="artifact_digest" type="text" '
+                                    'inputmode="latin" minlength="64" maxlength="64" '
+                                    'pattern="[0-9a-f]{64}" required>'
+                                )
                             form = (
                                 '<form method="post" action="/my-drafts/'
-                                + quote(ref) + '/stage-observations">'
-                                '<input type="hidden" name="csrf" value="'
+                                + quote(ref) + '/stage-observations"' + form_attrs + '>'
+                                + '<input type="hidden" name="csrf" value="'
                                 + escape(session.csrf, quote=True) + '">'
                                 '<input type="hidden" name="case_version" value="'
                                 + str(current["case_version"]) + '">'
@@ -1665,13 +1841,8 @@ def build_authenticated_ui_router(
                                 + str(result["current_revision"]) + '">'
                                 '<h3>مرحله ' + str(index) + '</h3>'
                                 '<p>شناسه مرحله: ' + stage_ref + '</p>'
-                                '<label for="artifact-' + str(index)
-                                + '">اثر انگشت مرجع مشاهده (SHA-256)</label>'
-                                '<input id="artifact-' + str(index)
-                                + '" name="artifact_digest" type="text" '
-                                'inputmode="latin" minlength="64" maxlength="64" '
-                                'pattern="[0-9a-f]{64}" required>'
-                                '<button type="submit">ثبت رسید مشاهده</button>'
+                                + artifact_control
+                                + '<button type="submit">ثبت رسید مشاهده</button>'
                                 '</form>'
                             )
                             forms.append(form)
@@ -1679,8 +1850,14 @@ def build_authenticated_ui_router(
                         '<li>مرحله ' + escape(item["stage_ref"])
                         + ' · ' + ('رسید جاری' if item["current"]
                                    else 'رسید قدیمی') + ' · نسخه '
-                        + str(item["revision"]) + ' · مرجع '
-                        + escape(item["observation_artifact_digest"])
+                        + str(item["revision"])
+                        + (' · <a href="/api/v1/domestic/household-intake/my-drafts/'
+                           + quote(ref) + '/stage-observations/artifacts/'
+                           + quote(item["stage_ref"]) + '/'
+                           + escape(item["observation_artifact_digest"], quote=True)
+                           + '">دریافت فایل</a>'
+                           if household_stage_artifact_store is not None else
+                           ' · مرجع ' + escape(item["observation_artifact_digest"]))
                         + '</li>'
                         for item in result["observations"]
                     )
@@ -1703,7 +1880,8 @@ def build_authenticated_ui_router(
                         '</article>'
                     )
                     return page("روناس — مشاهده مرحله‌ای پرونده",
-                                body, logged_in=True, local_test_form=True)
+                                body, logged_in=True, local_test_form=True,
+                                stage_upload_script=household_stage_artifact_store is not None)
 
                 @router.post("/my-drafts/{ref}/stage-observations")
                 async def household_stage_observation_submit(
@@ -1751,6 +1929,14 @@ def build_authenticated_ui_router(
                             ),
                             observation_artifact_digest=form["artifact_digest"],
                         )
+                        if (household_stage_artifact_store is not None
+                                and not household_stage_artifact_store.contains(
+                                    principal.subject, ref + ":" + command.stage_ref,
+                                    command.observation_artifact_digest,
+                                )):
+                            raise HTTPException(
+                                422, detail="STAGE_ARTIFACT_NOT_UPLOADED",
+                            )
                         saved = household_input_ledger.append_owned_stage_observation(
                             ref, principal, command,
                             expected_observation_revision=form_version(
@@ -1761,6 +1947,10 @@ def build_authenticated_ui_router(
                     except StageObservationConflict as exc:
                         raise HTTPException(
                             409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                        ) from exc
+                    except StageArtifactStoreError as exc:
+                        raise HTTPException(
+                            503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
                         ) from exc
                     except (LedgerIntegrityError, sqlite3.Error) as exc:
                         raise HTTPException(

@@ -27,6 +27,7 @@ from .domestic_stage_observation import CurrentStageContext
 
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_STAGE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _MIME_SIGNATURES = {
     "image/jpeg": lambda b: b.startswith(b"\xff\xd8\xff"),
     "image/png": lambda b: b.startswith(b"\x89PNG\r\n\x1a\n"),
@@ -256,7 +257,8 @@ def build_stage_artifact_router(
         content = b"".join(chunks)
         try:
             artifact = store.put(
-                p.subject, ref, request.headers.get("content-type", ""), content,
+                p.subject, ref + ":" + headers["stage_ref"],
+                request.headers.get("content-type", ""), content,
             )
         except ValueError as exc:
             raise HTTPException(422, detail="INVALID_STAGE_ARTIFACT") from exc
@@ -266,16 +268,17 @@ def build_stage_artifact_router(
                 "byte_length": artifact.byte_length, "stored": True}
 
     @router.get(
-        "/api/v1/domestic/household-intake/my-drafts/{ref}/stage-observations/artifacts/{digest}"
+        "/api/v1/domestic/household-intake/my-drafts/{ref}/stage-observations/artifacts/{stage_ref}/{digest}"
     )
     def read_stage_artifact(
-        ref: str, digest: str, p: Principal = Depends(verified_principal),
+        ref: str, stage_ref: str, digest: str,
+        p: Principal = Depends(verified_principal),
     ) -> Response:
         authorize(p, ref)
-        if not _DIGEST.fullmatch(digest):
+        if not _STAGE_REF.fullmatch(stage_ref) or not _DIGEST.fullmatch(digest):
             raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
         try:
-            item = store.get(p.subject, ref, digest)
+            item = store.get(p.subject, ref + ":" + stage_ref, digest)
         except (ValueError, StageArtifactStoreError) as exc:
             raise HTTPException(503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE") from exc
         if item is None:

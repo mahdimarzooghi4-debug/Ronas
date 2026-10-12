@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import stat
-from typing import Mapping
+from typing import Callable, Mapping
 from urllib.parse import urlsplit
 
 import httpx
@@ -24,6 +24,9 @@ from .oidc_browser import BrowserOIDC, BrowserOIDCConfig
 from .session_sqlite import SqliteBrowserSessionStore
 from .expert_review_questions_sqlite import SqliteSyntheticExpertQuestionLedger
 from .agronomy_workspace import SyntheticAgronomyWorkspace
+from .household_input_profiles import HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger
+from .domestic_stage_observation import CurrentStageContext
+from .stage_observation_artifacts import StageArtifactStore
 
 
 class LocalBFFConfigurationError(ValueError):
@@ -114,6 +117,10 @@ def create_local_test_bff(
     transport: httpx.AsyncBaseTransport | None = None,
     case_ledger: SqliteSyntheticExpertQuestionLedger | None = None,
     agronomy_workspace: SyntheticAgronomyWorkspace | None = None,
+    household_profile_schema: HouseholdInputSchema | None = None,
+    household_profile_access_authority=None,
+    household_stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
+    household_stage_artifact_store: StageArtifactStore | None = None,
 ) -> FastAPI:
     """Opt-in composed application. `transport` is injected only by tests.
 
@@ -128,6 +135,16 @@ def create_local_test_bff(
         case_ledger, SqliteSyntheticExpertQuestionLedger,
     ):
         raise LocalBFFConfigurationError("only existing synthetic case ledger allowed")
+    if household_stage_artifact_store is not None and (
+            not isinstance(case_ledger, SqliteSyntheticHouseholdProfileLedger)
+            or household_profile_schema != case_ledger.profile_schema
+            or not callable(household_profile_access_authority)
+            or not callable(household_stage_context_authority)
+            or not all(callable(getattr(household_stage_artifact_store, name, None))
+                       for name in ("put", "get", "contains"))):
+        raise LocalBFFConfigurationError(
+            "stage uploads require the same explicit household profile ledger and authorities"
+        )
     if agronomy_workspace is not None and (
         case_ledger is None
         or not isinstance(agronomy_workspace, SyntheticAgronomyWorkspace)
@@ -165,6 +182,10 @@ def create_local_test_bff(
         scoped_registry=case_ledger,
         technical_review_ledger=case_ledger,
         agronomy_workspace=agronomy_workspace,
+        household_profile_schema=household_profile_schema,
+        household_profile_access_authority=household_profile_access_authority,
+        household_stage_context_authority=household_stage_context_authority,
+        household_stage_artifact_store=household_stage_artifact_store,
     )
     app.state.ronas_local_test_only = True
     return app

@@ -104,7 +104,7 @@ class StageArtifactRouterTests(unittest.TestCase):
             "digest": digest, "content_type": "image/png",
             "byte_length": len(PNG), "stored": True,
         })
-        downloaded = self.client.get(self.url + "/" + digest,
+        downloaded = self.client.get(self.url + "/DEMO-STAGE-01/" + digest,
                                      headers={"Authorization": self.headers["Authorization"]})
         self.assertEqual(downloaded.status_code, 200, downloaded.text)
         self.assertEqual(downloaded.content, PNG)

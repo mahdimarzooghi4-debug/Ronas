@@ -360,7 +360,8 @@ def build_household_input_router(
                     )
                     if (stage_artifact_store is not None
                             and not stage_artifact_store.contains(
-                                p.subject, ref, command.observation_artifact_digest)):
+                                p.subject, ref + ":" + command.stage_ref,
+                                command.observation_artifact_digest)):
                         raise HTTPException(422, detail="STAGE_ARTIFACT_NOT_UPLOADED")
                     result = profile_ledger.append_owned_stage_observation(
                         ref, p, command,

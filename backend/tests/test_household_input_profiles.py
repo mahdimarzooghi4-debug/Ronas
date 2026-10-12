@@ -510,7 +510,12 @@ class HouseholdProfileFlowTests(unittest.TestCase):
                   "expected_stage_observation_receipt_digest": receipt["receipt_digest"]},
             headers=specialist_headers,
         )
-        self.assertEqual(linked_question.status_code, 201, linked_question.text)
+        self.assertEqual(
+            linked_question.status_code, 201,
+            linked_question.text + " " + linked_question.headers.get(
+                "X-Ronas-Conflict-Reason", "",
+            ),
+        )
         specialist_history = client.get(question_path, headers=specialist_headers)
         self.assertEqual(specialist_history.status_code, 200)
         linked_history = specialist_history.json()["questions"][0]

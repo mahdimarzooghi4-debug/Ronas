@@ -14,7 +14,7 @@ import hmac
 import secrets
 
 from fastapi import APIRouter, Cookie, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, JSONResponse, Response
 
 from .auth import InvalidToken, Principal
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES as TECHNICAL_STATES
@@ -676,8 +676,15 @@ def build_authenticated_ui_router(
                     '<p><a href="/agronomy/assigned-drafts/'
                     + quote(ref) + '/review-questions#expert-demo-actions">'
                     'مشاهده پرسش‌ها و اقدامات مجاز</a></p>'
-                    '<p>تخصیص پرونده مجوز تخصصی یا تأیید برنامه کشت نیست.</p>'
-                    '</nav>'
+                    + ('<p><a href="/agronomy/assigned-drafts/'
+                       + quote(ref) + '/stage-observations">'
+                       'مشاهده گزارش‌های مرحله‌ای خانوار</a></p>'
+                       if household_stage_context_authority is not None
+                       and isinstance(agronomy_workspace.ledger,
+                                      SqliteSyntheticHouseholdProfileLedger)
+                       else '')
+                    + '<p>تخصیص پرونده مجوز تخصصی یا تأیید برنامه کشت نیست.</p>'
+                    + '</nav>'
                 )
             body = (
                 '<article class="panel"><h2>پیش‌نمای پرونده خانوار (فقط DEMO): '
@@ -709,6 +716,113 @@ def build_authenticated_ui_router(
             )
             return page("روناس — فضای کار کارشناس کشاورزی (آزمایشی)",
                         body, logged_in=True)
+
+    if (agronomy_workspace is not None
+            and household_stage_context_authority is not None
+            and isinstance(agronomy_workspace.ledger,
+                           SqliteSyntheticHouseholdProfileLedger)):
+        @router.get(
+            "/agronomy/assigned-drafts/{ref}/stage-observations",
+        )
+        def agronomy_stage_observations_page(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            try:
+                data = agronomy_workspace.read_assigned_stage_observations(
+                    ref, Principal(session.subject, session.roles),
+                    context_authority=household_stage_context_authority,
+                )
+            except StageObservationConflict as exc:
+                raise HTTPException(
+                    409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                ) from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                ) from exc
+            if data is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            items = []
+            for item in data["observations"]:
+                state = "جاری با زمینه فعلی" if item["current"] else "تاریخی"
+                file_link = ""
+                if household_stage_artifact_store is not None:
+                    file_link = (
+                        '<p><a href="/agronomy/assigned-drafts/'
+                        + quote(ref) + '/stage-observations/artifacts/'
+                        + quote(item["stage_ref"]) + '/'
+                        + quote(item["observation_artifact_digest"])
+                        + '">دریافت فایل مشاهده</a></p>'
+                    )
+                items.append(
+                    '<section><h3>' + escape(item["stage_ref"]) + '</h3>'
+                    '<p>نسخه رسید: ' + str(item["revision"])
+                    + ' · ' + escape(state) + '</p>'
+                    '<p>زمان ثبت: ' + escape(item["observed_at"]) + '</p>'
+                    + file_link + '</section>'
+                )
+            body = (
+                '<article class="panel"><h2>مشاهده‌های مرحله‌ای ثبت‌شده'
+                ' (فقط رسید خانوار)</h2>'
+                '<p>پرونده ' + escape(data["ref"])
+                + ' · نسخه پرونده ' + str(data["case_version"]) + '</p>'
+                + (''.join(items) if items else '<p>رسیدی ثبت نشده است.</p>')
+                + '<p>این رسیدها گزارش خانوار هستند و تکمیل مرحله، '
+                'ارزیابی علمی، توصیه یا تأیید برنامه کشت را نشان نمی‌دهند.</p>'
+                '<p><a href="/agronomy/assigned-drafts/' + quote(ref)
+                + '">بازگشت به پرونده تخصیص‌یافته</a></p></article>'
+            )
+            return page(
+                "روناس — رسیدهای مرحله‌ای خانوار",
+                body, logged_in=True,
+            )
+
+    if (agronomy_workspace is not None
+            and household_stage_artifact_store is not None
+            and isinstance(agronomy_workspace.ledger,
+                           SqliteSyntheticHouseholdProfileLedger)):
+        @router.get(
+            "/agronomy/assigned-drafts/{ref}/stage-observations/"
+            "artifacts/{stage_ref}/{digest}",
+        )
+        def agronomy_stage_observation_artifact(
+            ref: str, stage_ref: str, digest: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> Response:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            try:
+                stored = agronomy_workspace.read_assigned_stage_artifact(
+                    ref, stage_ref, digest,
+                    Principal(session.subject, session.roles),
+                    store=household_stage_artifact_store,
+                )
+            except StageArtifactStoreError as exc:
+                raise HTTPException(
+                    503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
+                ) from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                ) from exc
+            if stored is None:
+                raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
+            artifact, content = stored
+            return Response(
+                content=content, media_type=artifact.content_type,
+                headers={
+                    "Content-Disposition": 'attachment; filename="stage-observation"',
+                    "Cache-Control": "no-store",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
 
     if agronomy_workspace is not None:
         @router.get("/agronomy/assigned-drafts/{ref}/internal-plan-proposal")

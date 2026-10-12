@@ -187,5 +187,106 @@ class RonasInternalCultivationProposalContractTests(unittest.TestCase):
         )
 
 
+
+from ronas_api.internal_ai_proposal_runtime import (
+    CandidateOutput, CandidateStage, ProposalRuntimeContext,
+    ProposalRuntimeUnavailable, run_synthetic_internal_proposal,
+)
+
+
+class _InternalModelFixture:
+    def __init__(self, output=None, error=None):
+        self.output = output or CandidateOutput(
+            model_artifact_digest=MODEL,
+            proposal_content_digest=PROPOSAL,
+            stages=(
+                CandidateStage("DEMO-STAGE-A", "5" * 64, "6" * 64),
+                CandidateStage("DEMO-STAGE-B", "7" * 64, "8" * 64),
+            ),
+        )
+        self.error = error
+        self.calls = []
+
+    def generate(self, context):
+        self.calls.append(context)
+        if self.error:
+            raise self.error
+        return self.output
+
+
+def runtime_context(**changes):
+    values = dict(
+        case_ref=CASE, case_version=2, input_revision=3,
+        input_snapshot_digest=INPUT,
+        scientific_basis_manifest_digest=SCIENCE,
+        model_artifact_digest=MODEL, run_ref="DEMO-RUNTIME-1",
+    )
+    values.update(changes)
+    return ProposalRuntimeContext(**values)
+
+
+class RonasInternalProposalRuntimeTests(unittest.TestCase):
+    def test_internal_adapter_output_is_pinned_and_never_accepted(self):
+        adapter = _InternalModelFixture()
+        result = run_synthetic_internal_proposal(runtime_context(), adapter)
+        self.assertEqual(adapter.calls, [runtime_context()])
+        self.assertEqual(result.proposal.household_case_ref, CASE)
+        self.assertEqual(result.structural_record["proposal_status"],
+                         "STRUCTURE_ONLY_UNREVIEWED")
+        self.assertEqual(result.structural_record["business_plan_state"], "NOT_ACCEPTED")
+        self.assertEqual(result.structural_record["proposed_stage_refs"],
+                         ["DEMO-STAGE-A", "DEMO-STAGE-B"])
+        self.assertEqual(len(result.runtime_receipt_digest), 64)
+        for key in ("scientific_basis_verified", "expert_plan_approved",
+                    "model_attestation_verified", "supervision_stages_activated",
+                    "new_cultivation_advice_enabled", "real_data"):
+            self.assertIs(result.structural_record[key], False)
+
+    def test_runtime_context_rejects_export_real_or_malformed_lineage(self):
+        for changes in (
+            {"engine": "EXPORT"}, {"case_ref": "DEMO-E-1"},
+            {"case_version": True}, {"input_revision": 0},
+            {"input_snapshot_digest": "bad"},
+            {"scientific_basis_manifest_digest": "z" * 64},
+            {"model_artifact_digest": "A" * 64}, {"run_ref": "AI-RUN-1"},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                runtime_context(**changes)
+
+    def test_adapter_failure_is_sanitized_and_does_not_fabricate_proposal(self):
+        adapter = _InternalModelFixture(error=RuntimeError("private adapter secret"))
+        with self.assertRaises(ProposalRuntimeUnavailable) as caught:
+            run_synthetic_internal_proposal(runtime_context(), adapter)
+        self.assertNotIn("private adapter secret", str(caught.exception))
+        self.assertEqual(len(adapter.calls), 1)
+
+    def test_mismatched_model_and_bad_or_duplicate_stage_outputs_fail_closed(self):
+        outputs = (
+            CandidateOutput("9" * 64, PROPOSAL,
+                            (CandidateStage("DEMO-STAGE-A", "5"*64, "6"*64),)),
+            CandidateOutput(MODEL, PROPOSAL, ()),
+            CandidateOutput(MODEL, PROPOSAL, [
+                CandidateStage("DEMO-STAGE-A", "5"*64, "6"*64)
+            ]),
+            CandidateOutput(MODEL, "bad",
+                            (CandidateStage("DEMO-STAGE-A", "5"*64, "6"*64),)),
+            CandidateOutput(MODEL, PROPOSAL, (
+                CandidateStage("DEMO-STAGE-A", "5"*64, "6"*64),
+                CandidateStage("DEMO-STAGE-A", "7"*64, "8"*64),
+            )),
+        )
+        for output in outputs:
+            with self.subTest(output=output), self.assertRaises(ProposalRuntimeUnavailable):
+                run_synthetic_internal_proposal(
+                    runtime_context(), _InternalModelFixture(output=output),
+                )
+
+    def test_runtime_requires_a_typed_adapter_and_never_accepts_missing_context(self):
+        for context, adapter in ((None, _InternalModelFixture()),
+                                 (runtime_context(), object())):
+            with self.subTest(context=context, adapter=adapter), self.assertRaises(ValueError):
+                run_synthetic_internal_proposal(context, adapter)
+
+
 if __name__ == "__main__":
     unittest.main()

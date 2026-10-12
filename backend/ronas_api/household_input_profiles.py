@@ -17,9 +17,8 @@ import sqlite3
 
 from .auth import Principal
 from .grant_ledger_sqlite import GENESIS, LedgerIntegrityError, _hash, _json
-from .household_input_ledger_sqlite import (
-    InputRevisionConflict, SqliteSyntheticHouseholdInputLedger,
-)
+from .household_input_ledger_sqlite import InputRevisionConflict
+from .expert_review_questions_sqlite import SqliteSyntheticExpertQuestionLedger
 from .internal_cultivation_plan_contract import _digest
 from .scoped_drafts import _synthetic_ref
 from .domestic_stage_observation import (
@@ -122,8 +121,8 @@ class HouseholdInputSchema:
         return result
 
 
-class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticHouseholdInputLedger):
-    """Profile revisions share the same owner, audit chain and case database."""
+class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger):
+    """Shared Domestic ledger for profile, specialist questions, and stage receipts."""
 
     def __init__(self, *args, profile_schema: HouseholdInputSchema, **kwargs):
         if not isinstance(profile_schema, HouseholdInputSchema):

@@ -605,16 +605,42 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
         ):
             event = json.loads(payload)
             mode = event.get("access_mode")
-            structural_mismatch = (
-                not _synthetic_ref(action) or not _synthetic_ref(ref)
-                or not _synthetic_ref(stage_ref)
-                or type(case_version) is not int or case_version < 1
-                or track != "HOUSEHOLD_INPUT_ADEQUACY"
-                or type(question_revision) is not int or question_revision < 1
-                or type(observation_revision) is not int or observation_revision < 1
-                or not _digest(observation_digest)
+            if (event.get("kind") == STAGE_QUESTION_LINK_EVENT
+                    or isinstance(mode, str)
+                    and mode.startswith(STAGE_QUESTION_LINK_MODE)):
+                linked[sequence] = event
+        used = set()
+        for row in db.execute(
+            "SELECT question_action_id,ref,case_version,track,question_revision,"
+            "stage_ref,observation_revision,observation_receipt_digest,"
+            "actor_digest,binding_receipt,audit_sequence "
+            "FROM expert_stage_question_binding ORDER BY audit_sequence"
+        ):
+            (action, ref, case_version, track, question_revision, stage_ref,
+             observation_revision, observation_digest, actor_digest, receipt,
+             sequence) = row
+            question = db.execute(
+                "SELECT ref,track,revision,case_version,actor_digest,audit_sequence "
+                "FROM expert_review_question WHERE action_id=?", (action,),
+            ).fetchone()
+            observation = db.execute(
+                "SELECT case_version,receipt_digest FROM household_stage_observation "
+                "WHERE ref=? AND stage_ref=? AND revision=?",
+                (ref, stage_ref, observation_revision),
+            ).fetchone()
+            event = linked.get(sequence)
+            binding = self._stage_question_binding(
+                action, ref, case_version, track, question_revision, stage_ref,
+                observation_revision, observation_digest, actor_digest,
             )
-            if structural_mismatch:
+            expected_receipt = _hash(_json(binding))
+            if (not _synthetic_ref(action) or not _synthetic_ref(ref)
+                    or not _synthetic_ref(stage_ref)
+                    or type(case_version) is not int or case_version < 1
+                    or track != "HOUSEHOLD_INPUT_ADEQUACY"
+                    or type(question_revision) is not int or question_revision < 1
+                    or type(observation_revision) is not int or observation_revision < 1
+                    or not _digest(observation_digest)):
                 raise LedgerIntegrityError(
                     "stage follow-up question structural binding mismatch"
                 )
@@ -650,7 +676,9 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 )
             used.add(sequence)
         if used != set(linked):
-            raise LedgerIntegrityError("orphaned stage follow-up question binding audit")
+            raise LedgerIntegrityError(
+                "orphaned stage follow-up question binding audit"
+            )
 
     def _append_verified_stage_question_binding(
         self, db: sqlite3.Connection, *, question_action_id: str,

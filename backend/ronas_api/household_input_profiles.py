@@ -34,6 +34,8 @@ PROFILE_EVENT = "SYNTHETIC_HOUSEHOLD_PROFILE_RECORDED"
 PROFILE_MODE = "HOUSEHOLD_PROFILE_SHA256:"
 STAGE_OBSERVATION_EVENT = "DOMESTIC_STAGE_OBSERVATION_REFERENCE_RECORDED"
 STAGE_OBSERVATION_MODE = "DOMESTIC_STAGE_OBSERVATION_RECEIPT:"
+STAGE_INSPECTION_EVENT = "DOMESTIC_STAGE_RECEIPT_INSPECTED"
+STAGE_INSPECTION_MODE = "DOMESTIC_STAGE_RECEIPT_INSPECTION:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,13 +171,32 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 CREATE TRIGGER IF NOT EXISTS stage_observation_no_delete
                 BEFORE DELETE ON household_stage_observation
                 BEGIN SELECT RAISE(ABORT, 'stage observation history immutable'); END;
+                CREATE TABLE IF NOT EXISTS expert_stage_receipt_inspection (
+                    action_id TEXT PRIMARY KEY, ref TEXT NOT NULL,
+                    case_version INTEGER NOT NULL, stage_ref TEXT NOT NULL,
+                    observation_revision INTEGER NOT NULL,
+                    observation_receipt_digest TEXT NOT NULL,
+                    actor_digest TEXT NOT NULL,
+                    inspection_receipt TEXT NOT NULL UNIQUE,
+                    audit_sequence INTEGER NOT NULL UNIQUE,
+                    UNIQUE(ref, stage_ref, observation_revision),
+                    FOREIGN KEY(audit_sequence) REFERENCES audit_event(sequence)
+                );
+                CREATE TRIGGER IF NOT EXISTS stage_receipt_inspection_no_update
+                BEFORE UPDATE ON expert_stage_receipt_inspection
+                BEGIN SELECT RAISE(ABORT, 'stage receipt inspections immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS stage_receipt_inspection_no_delete
+                BEFORE DELETE ON expert_stage_receipt_inspection
+                BEGIN SELECT RAISE(ABORT, 'stage receipt inspections immutable'); END;
             """)
         self._profile_ready = True
         with self._transaction() as db:
             self._verify(db)
 
     def _extended_audit_kinds(self):
-        return super()._extended_audit_kinds() | frozenset({PROFILE_EVENT, STAGE_OBSERVATION_EVENT})
+        return super()._extended_audit_kinds() | frozenset({
+            PROFILE_EVENT, STAGE_OBSERVATION_EVENT, STAGE_INSPECTION_EVENT,
+        })
 
     @staticmethod
     def _content_digest(schema_digest: str, values_json: str) -> str:
@@ -536,6 +557,164 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
             revision_by_ref[ref] = revision
         if used != set(linked):
             raise LedgerIntegrityError("orphaned Domestic stage observation audit")
+        self._verify_stage_receipt_inspections(db)
+
+    @staticmethod
+    def _stage_inspection_binding(
+        action: str, ref: str, case_version: int, stage_ref: str,
+        observation_revision: int, observation_receipt_digest: str,
+        actor_digest: str,
+    ) -> dict:
+        return {
+            "action_id": action, "engine": "DOMESTIC", "ref": ref,
+            "case_version": case_version, "stage_ref": stage_ref,
+            "observation_revision": observation_revision,
+            "observation_receipt_digest": observation_receipt_digest,
+            "actor_digest": actor_digest,
+        }
+
+    def _verify_stage_receipt_inspections(
+        self, db: sqlite3.Connection,
+    ) -> None:
+        linked = {}
+        for sequence, payload in db.execute(
+            "SELECT sequence,payload FROM audit_event ORDER BY sequence"
+        ):
+            event = json.loads(payload)
+            mode = event.get("access_mode")
+            if (event.get("kind") == STAGE_INSPECTION_EVENT
+                    or isinstance(mode, str)
+                       and mode.startswith(STAGE_INSPECTION_MODE)):
+                linked[sequence] = event
+        used = set()
+        rows = db.execute(
+            "SELECT action_id,ref,case_version,stage_ref,observation_revision,"
+            "observation_receipt_digest,actor_digest,inspection_receipt,audit_sequence "
+            "FROM expert_stage_receipt_inspection ORDER BY audit_sequence"
+        )
+        for row in rows:
+            (action, ref, case_version, stage_ref, observation_revision,
+             observation_digest, actor_digest, receipt, sequence) = row
+            record = self._catalogue.get(("DOMESTIC", ref))
+            observed = db.execute(
+                "SELECT case_version,receipt_digest FROM household_stage_observation "
+                "WHERE ref=? AND stage_ref=? AND revision=?",
+                (ref, stage_ref, observation_revision),
+            ).fetchone()
+            event = linked.get(sequence)
+            binding = self._stage_inspection_binding(
+                action, ref, case_version, stage_ref, observation_revision,
+                observation_digest, actor_digest,
+            )
+            expected_receipt = _hash(_json(binding))
+            if (record is None or case_version != record.version
+                    or not _synthetic_ref(action) or not _synthetic_ref(stage_ref)
+                    or type(observation_revision) is not int
+                    or observation_revision < 1 or observed is None
+                    or observed != (case_version, observation_digest)
+                    or not _digest(actor_digest) or actor_digest == _hash(record.owner_subject)
+                    or receipt != expected_receipt or event is None
+                    or event.get("kind") != STAGE_INSPECTION_EVENT
+                    or event.get("engine") != "DOMESTIC"
+                    or event.get("ref") != ref
+                    or event.get("case_version") != case_version
+                    or event.get("action_id") != action
+                    or event.get("actor_digest") != actor_digest
+                    or event.get("reason_ref") != stage_ref
+                    or event.get("target_digest") != _hash(receipt)
+                    or event.get("access_mode") != STAGE_INSPECTION_MODE + receipt
+                    or sequence in used):
+                raise LedgerIntegrityError(
+                    "stage receipt inspection/audit mismatch"
+                )
+            used.add(sequence)
+        if used != set(linked):
+            raise LedgerIntegrityError("orphaned stage receipt inspection audit")
+
+    def _append_verified_stage_receipt_inspection(
+        self, db: sqlite3.Connection, *, ref: str, case_version: int,
+        stage_ref: str, observation_revision: int,
+        observation_receipt_digest: str, actor: str, action_id: str,
+    ) -> dict:
+        if (not all(_synthetic_ref(value) for value in (ref, stage_ref, action_id))
+                or type(case_version) is not int or case_version < 1
+                or type(observation_revision) is not int
+                or observation_revision < 1
+                or not _digest(observation_receipt_digest)):
+            raise ValueError("invalid stage receipt inspection")
+        record = self._catalogue.get(("DOMESTIC", ref))
+        observed = db.execute(
+            "SELECT case_version,receipt_digest FROM household_stage_observation "
+            "WHERE ref=? AND stage_ref=? AND revision=?",
+            (ref, stage_ref, observation_revision),
+        ).fetchone()
+        actor_digest = _hash(actor)
+        if (record is None or record.version != case_version
+                or observed != (case_version, observation_receipt_digest)
+                or actor_digest == _hash(record.owner_subject)):
+            raise InputRevisionConflict("stage receipt or reviewer context changed")
+        binding = self._stage_inspection_binding(
+            action_id, ref, case_version, stage_ref, observation_revision,
+            observation_receipt_digest, actor_digest,
+        )
+        receipt = _hash(_json(binding))
+        prior_action = db.execute(
+            "SELECT ref,case_version,stage_ref,observation_revision,"
+            "observation_receipt_digest,actor_digest,inspection_receipt "
+            "FROM expert_stage_receipt_inspection WHERE action_id=?",
+            (action_id,),
+        ).fetchone()
+        expected = (
+            ref, case_version, stage_ref, observation_revision,
+            observation_receipt_digest, actor_digest, receipt,
+        )
+        if prior_action is not None:
+            if prior_action == expected:
+                return self._stage_inspection_ack(
+                    ref, stage_ref, observation_revision, True,
+                )
+            raise InputRevisionConflict("stage inspection action replay differs")
+        prior_receipt = db.execute(
+            "SELECT action_id,inspection_receipt "
+            "FROM expert_stage_receipt_inspection "
+            "WHERE ref=? AND stage_ref=? AND observation_revision=?",
+            (ref, stage_ref, observation_revision),
+        ).fetchone()
+        if prior_receipt is not None:
+            if prior_receipt == (action_id, receipt):
+                return self._stage_inspection_ack(
+                    ref, stage_ref, observation_revision, True,
+                )
+            raise InputRevisionConflict("stage receipt was already inspected")
+        audit = self._append(
+            db, kind=STAGE_INSPECTION_EVENT, engine="DOMESTIC", ref=ref,
+            actor=actor, target=receipt, action_id=action_id,
+            reason_ref=stage_ref, mode=STAGE_INSPECTION_MODE + receipt,
+        )
+        db.execute(
+            "INSERT INTO expert_stage_receipt_inspection "
+            "(action_id,ref,case_version,stage_ref,observation_revision,"
+            "observation_receipt_digest,actor_digest,inspection_receipt,audit_sequence) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (action_id, ref, case_version, stage_ref, observation_revision,
+             observation_receipt_digest, actor_digest, receipt, audit.sequence),
+        )
+        return self._stage_inspection_ack(
+            ref, stage_ref, observation_revision, False,
+        )
+
+    @staticmethod
+    def _stage_inspection_ack(
+        ref: str, stage_ref: str, observation_revision: int, replay: bool,
+    ) -> dict:
+        return {
+            "engine": "DOMESTIC", "case_ref": ref, "stage_ref": stage_ref,
+            "observation_revision": observation_revision,
+            "record_state": "SYNTHETIC_STAGE_RECEIPT_INSPECTED_NOT_REVIEWED",
+            "idempotent_replay": replay, "review_completed": False,
+            "stage_completed": False, "scientific_approval": False,
+            "real_data": False,
+        }
 
     @staticmethod
     def _read_stage_context(
@@ -580,6 +759,13 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
             "FROM household_stage_observation WHERE ref=? ORDER BY revision",
             (ref,),
         ).fetchall()
+        inspected = {
+            (stage_ref, revision)
+            for stage_ref, revision in db.execute(
+                "SELECT stage_ref,observation_revision "
+                "FROM expert_stage_receipt_inspection WHERE ref=?", (ref,),
+            )
+        }
         items = []
         for row in rows:
             (action, version, input_revision, input_digest, plan_digest,
@@ -601,6 +787,9 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 "revision": revision, "stage_ref": stage_ref,
                 "observed_at": observed_at,
                 "observation_artifact_digest": artifact_digest,
+                "receipt_digest": digest,
+                "receipt_inspected": (stage_ref, revision) in inspected,
+                "inspection_is_review": False,
                 "current": bool(context and receipt_is_current(receipt, context)),
                 "status": "OBSERVATION_REFERENCE_RECORDED",
                 "stage_completed": False,

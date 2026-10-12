@@ -447,7 +447,48 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             "observation_artifact_digest"
         ], artifact.digest)
         self.assertTrue(observed.json()["observations"][0]["current"])
+        receipt = observed.json()["observations"][0]
+        self.assertFalse(receipt["receipt_inspected"])
+        inspection_path = api_path + "/inspections"
+        inspection = {
+            "action_id": "DEMO-STAGE-INSPECT-1",
+            "expected_case_version": 2,
+            "stage_ref": "DEMO-STAGE-01",
+            "expected_observation_revision": receipt["revision"],
+            "expected_observation_receipt_digest": receipt["receipt_digest"],
+        }
+        self.assertEqual(client.post(
+            inspection_path, json=inspection,
+        ).status_code, 401)
+        inspected = client.post(
+            inspection_path, json=inspection, headers=specialist_headers,
+        )
+        self.assertEqual(inspected.status_code, 201, inspected.text)
+        self.assertEqual(
+            inspected.json()["record_state"],
+            "SYNTHETIC_STAGE_RECEIPT_INSPECTED_NOT_REVIEWED",
+        )
+        self.assertFalse(inspected.json()["review_completed"])
+        self.assertFalse(inspected.json()["stage_completed"])
+        self.assertTrue(client.post(
+            inspection_path, json=inspection, headers=specialist_headers,
+        ).json()["idempotent_replay"])
+        owner_history = client.get(
+            "/api/v1/domestic/household-intake/my-drafts/" + REF
+            + "/stage-observations",
+            headers=self.bearer(),
+        )
+        self.assertTrue(owner_history.json()["observations"][0][
+            "receipt_inspected"
+        ])
 
+        second_observation = self.stage_command(
+            action="DEMO-STAGE-OBS-2", revision=1,
+        )
+        second_observation["observation_artifact_digest"] = artifact.digest
+        self.assertEqual(client.post(
+            stage_api_path, json=second_observation, headers=self.bearer(),
+        ).status_code, 201)
         artifact_path = (
             api_path + "/artifacts/DEMO-STAGE-01/" + artifact.digest
         )
@@ -472,6 +513,24 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200, page.text)
         self.assertIn("DEMO-STAGE-01", page.text)
         self.assertIn("دریافت فایل مشاهده", page.text)
+        self.assertIn("ثبت مشاهده رسید (بدون بررسی)", page.text)
+        form = {
+            "csrf": csrf, "case_version": "2",
+            "stage_ref": "DEMO-STAGE-01",
+            "observation_revision": "2",
+            "receipt_digest": client.get(api_path, headers=specialist_headers)
+                .json()["observations"][1]["receipt_digest"],
+        }
+        browser_post = client.post(
+            page_path + "/inspect", content=urlencode(form),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(browser_post.status_code, 303, browser_post.text)
+        inspected_page = client.get(page_path)
+        self.assertIn("رسید مشاهده شد (بدون داوری تخصصی)", inspected_page.text)
+        self.assertNotIn("ثبت مشاهده رسید (بدون بررسی)", inspected_page.text)
         browser_download = client.get(
             page_path + "/artifacts/DEMO-STAGE-01/" + artifact.digest,
         )
@@ -479,6 +538,12 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(browser_download.content, image)
 
         active.clear()
+        self.assertEqual(client.post(
+            inspection_path, json={**inspection,
+                                   "action_id": "DEMO-STAGE-INSPECT-REVOKED",
+                                   "expected_observation_revision": 2},
+            headers=specialist_headers,
+        ).status_code, 404)
         self.assertEqual(
             client.get(api_path, headers=specialist_headers).status_code, 404,
         )

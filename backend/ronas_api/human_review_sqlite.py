@@ -17,6 +17,11 @@ from .export_research_question import (
     RECORDED as EXPORT_QUESTION_RECORDED, ExportResearchQuestionConflict,
     question_binding, question_digest, question_preview, valid_question_refs,
 )
+from .export_research_evidence import (
+    RECORDED as EXPORT_EVIDENCE_RECORDED, ExportEvidenceReferenceConflict,
+    evidence_binding, evidence_digest, evidence_preview, valid_evidence_refs,
+    valid_snapshot_digest,
+)
 from .domestic_preparation_preview import domestic_preparation_preview
 from .grant_ledger_sqlite import (
     LedgerIntegrityError, SqliteSyntheticGrantLedger, _hash, _json,
@@ -115,6 +120,23 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                 CREATE TRIGGER IF NOT EXISTS export_question_no_delete
                 BEFORE DELETE ON export_research_question_draft
                 BEGIN SELECT RAISE(ABORT, 'question history immutable'); END;
+                CREATE TABLE IF NOT EXISTS export_research_evidence_reference (
+                    action_id TEXT PRIMARY KEY,
+                    ref TEXT NOT NULL, case_version INTEGER NOT NULL,
+                    question_revision INTEGER NOT NULL, revision INTEGER NOT NULL,
+                    actor_digest TEXT NOT NULL, source_ref TEXT NOT NULL,
+                    evidence_ref TEXT NOT NULL, connector_ref TEXT NOT NULL,
+                    source_snapshot_digest TEXT NOT NULL,
+                    command_digest TEXT NOT NULL, audit_sequence INTEGER NOT NULL UNIQUE,
+                    UNIQUE(ref, question_revision, revision),
+                    FOREIGN KEY(audit_sequence) REFERENCES audit_event(sequence)
+                );
+                CREATE TRIGGER IF NOT EXISTS export_evidence_no_update
+                BEFORE UPDATE ON export_research_evidence_reference
+                BEGIN SELECT RAISE(ABORT, 'evidence reference history immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS export_evidence_no_delete
+                BEFORE DELETE ON export_research_evidence_reference
+                BEGIN SELECT RAISE(ABORT, 'evidence reference history immutable'); END;
             """)
         self._review_ready = True
         with self._transaction() as db:
@@ -122,7 +144,7 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
 
     def _extended_audit_kinds(self) -> frozenset[str]:
         return super()._extended_audit_kinds() | frozenset({
-            EXPORT_QUESTION_RECORDED,
+            EXPORT_QUESTION_RECORDED, EXPORT_EVIDENCE_RECORDED,
         })
 
     def _verify(self, db: sqlite3.Connection) -> None:
@@ -251,6 +273,70 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             paired_questions.add(sequence)
         if paired_questions != set(expected_questions):
             raise LedgerIntegrityError("orphan Export question audit event")
+
+        evidence_triggers = {r[0] for r in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' "
+            "AND tbl_name='export_research_evidence_reference'"
+        )}
+        if evidence_triggers != {
+            "export_evidence_no_update", "export_evidence_no_delete",
+        }:
+            raise LedgerIntegrityError("Export evidence immutable triggers missing")
+        expected_evidence = {
+            int(seq): json.loads(payload)
+            for seq, payload in db.execute(
+                "SELECT sequence,payload FROM audit_event"
+            )
+            if json.loads(payload).get("kind") == EXPORT_EVIDENCE_RECORDED
+        }
+        paired_evidence: set[int] = set()
+        evidence_revisions: dict[tuple[str, int], int] = {}
+        for row in db.execute(
+            "SELECT action_id,ref,case_version,question_revision,revision,"
+            "actor_digest,source_ref,evidence_ref,connector_ref,"
+            "source_snapshot_digest,command_digest,audit_sequence "
+            "FROM export_research_evidence_reference ORDER BY audit_sequence"
+        ):
+            (action, ref, case_version, question_revision, revision,
+             actor_digest, source_ref, evidence_ref, connector_ref,
+             snapshot_digest, digest, sequence) = row
+            record = self._catalogue.get(("EXPORT", ref))
+            question = db.execute(
+                "SELECT case_version,source_ref FROM export_research_question_draft "
+                "WHERE ref=? AND revision=?", (ref, question_revision),
+            ).fetchone()
+            event = expected_evidence.get(sequence)
+            prior = evidence_revisions.get((ref, question_revision), 0)
+            try:
+                binding = evidence_binding(
+                    action_id=action, ref=ref, case_version=case_version,
+                    question_revision=question_revision, revision=revision,
+                    actor_digest=actor_digest, source_ref=source_ref,
+                    evidence_ref=evidence_ref, connector_ref=connector_ref,
+                    snapshot_digest=snapshot_digest,
+                )
+            except (ValueError, TypeError) as exc:
+                raise LedgerIntegrityError("invalid Export evidence reference") from exc
+            if (record is None or case_version != record.version
+                    or question is None or question[0] != case_version
+                    or question[1] != source_ref or revision != prior + 1
+                    or event is None or sequence in paired_evidence
+                    or evidence_digest(binding) != digest
+                    or event.get("kind") != EXPORT_EVIDENCE_RECORDED
+                    or event.get("engine") != "EXPORT" or event.get("ref") != ref
+                    or event.get("case_version") != case_version
+                    or event.get("action_id") != action
+                    or event.get("actor_digest") != actor_digest
+                    or event.get("reason_ref") != evidence_ref
+                    or event.get("target_digest") != digest
+                    or event.get("access_mode") != "EXPORT_EVIDENCE_REFERENCE_DRAFT"):
+                raise LedgerIntegrityError(
+                    "Export evidence/question/audit binding mismatch"
+                )
+            evidence_revisions[(ref, question_revision)] = revision
+            paired_evidence.add(sequence)
+        if paired_evidence != set(expected_evidence):
+            raise LedgerIntegrityError("orphan Export evidence audit event")
 
     def _active_operator(self, db, engine: str, ref: str, principal: Principal) -> bool:
         if (not isinstance(principal, Principal)
@@ -567,6 +653,113 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             self._verify(db)
             return self._current_export_question(db, ref)
 
+    def _export_evidence_reference_history(
+        self, db: sqlite3.Connection, ref: str, current_question_revision: int,
+    ) -> list[dict]:
+        rows = db.execute(
+            "SELECT case_version,question_revision,revision,source_ref,"
+            "evidence_ref,connector_ref,source_snapshot_digest "
+            "FROM export_research_evidence_reference WHERE ref=? "
+            "ORDER BY question_revision,revision", (ref,),
+        )
+        return [
+            evidence_preview(
+                ref=ref, case_version=row[0], question_revision=row[1],
+                revision=row[2], source_ref=row[3], evidence_ref=row[4],
+                connector_ref=row[5], snapshot_digest=row[6],
+                current_question=row[1] == current_question_revision,
+            )
+            for row in rows
+        ]
+
+    def record_export_evidence_reference(
+        self, ref: str, principal: Principal, *,
+        expected_case_version: int, expected_question_revision: int,
+        expected_evidence_revision: int, action_id: str, evidence_ref: str,
+        connector_ref: str, source_snapshot_digest: str,
+    ) -> dict | None:
+        """Append an opaque connector fingerprint to the exact current DEMO question."""
+        if (not _synthetic_ref(ref)
+                or type(expected_case_version) is not int
+                or type(expected_question_revision) is not int
+                or expected_question_revision < 1
+                or type(expected_evidence_revision) is not int
+                or expected_evidence_revision < 0
+                or not _synthetic_ref(action_id)
+                or not valid_evidence_refs(evidence_ref, connector_ref)
+                or not valid_snapshot_digest(source_snapshot_digest)):
+            raise ValueError("invalid DEMO Export evidence-reference command")
+        with self._transaction() as db:
+            self._verify(db)
+            record = self._catalogue.get(("EXPORT", ref))
+            if (record is None
+                    or not self._active_operator(db, "EXPORT", ref, principal)):
+                return None
+            if record.version != expected_case_version:
+                raise ExportEvidenceReferenceConflict("stale Export case version")
+            question = self._current_export_question(db, ref)
+            if (question is None
+                    or question["question_revision"] != expected_question_revision):
+                raise ExportEvidenceReferenceConflict("stale Export question revision")
+            current = db.execute(
+                "SELECT COALESCE(MAX(revision),0) "
+                "FROM export_research_evidence_reference "
+                "WHERE ref=? AND question_revision=?",
+                (ref, expected_question_revision),
+            ).fetchone()[0]
+            actor_digest = _hash(principal.subject)
+            replay = db.execute(
+                "SELECT ref,case_version,question_revision,revision,actor_digest,"
+                "source_ref,evidence_ref,connector_ref,source_snapshot_digest "
+                "FROM export_research_evidence_reference WHERE action_id=?",
+                (action_id,),
+            ).fetchone()
+            if replay is not None:
+                if (replay != (
+                        ref, record.version, expected_question_revision,
+                        expected_evidence_revision + 1, actor_digest,
+                        record.source_ref, evidence_ref, connector_ref,
+                        source_snapshot_digest,
+                    ) or current != replay[3]):
+                    raise ExportEvidenceReferenceConflict(
+                        "stale or conflicting evidence-reference action"
+                    )
+                history = self._export_evidence_reference_history(
+                    db, ref, expected_question_revision,
+                )
+                return history[-1]
+            if expected_evidence_revision != current:
+                raise ExportEvidenceReferenceConflict("stale evidence revision")
+            revision = current + 1
+            binding = evidence_binding(
+                action_id=action_id, ref=ref, case_version=record.version,
+                question_revision=expected_question_revision, revision=revision,
+                actor_digest=actor_digest, source_ref=record.source_ref,
+                evidence_ref=evidence_ref, connector_ref=connector_ref,
+                snapshot_digest=source_snapshot_digest,
+            )
+            digest = evidence_digest(binding)
+            event = self._append(
+                db, kind=EXPORT_EVIDENCE_RECORDED, engine="EXPORT",
+                ref=ref, actor=principal.subject, action_id=action_id,
+                reason_ref=evidence_ref, target=_json(binding),
+                mode="EXPORT_EVIDENCE_REFERENCE_DRAFT",
+            )
+            db.execute(
+                "INSERT INTO export_research_evidence_reference "
+                "(action_id,ref,case_version,question_revision,revision,"
+                "actor_digest,source_ref,evidence_ref,connector_ref,"
+                "source_snapshot_digest,command_digest,audit_sequence) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (action_id, ref, record.version, expected_question_revision,
+                 revision, actor_digest, record.source_ref, evidence_ref,
+                 connector_ref, source_snapshot_digest, digest, event.sequence),
+            )
+            self._verify(db)
+            return self._export_evidence_reference_history(
+                db, ref, expected_question_revision,
+            )[-1]
+
     def read_export_research_workspace(
         self, ref: str, principal: Principal,
     ) -> dict | None:
@@ -616,6 +809,13 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                     ),
                     "local_test_question_history": (
                         self._export_question_history(db, ref)
+                    ),
+                    "local_test_evidence_references": (
+                        self._export_evidence_reference_history(
+                            db, ref,
+                            (self._current_export_question(db, ref) or {})
+                            .get("question_revision", 0),
+                        )
                     ),
                     "review_revision": len(steps),
                     "technical_review_state": STATES[len(steps)],

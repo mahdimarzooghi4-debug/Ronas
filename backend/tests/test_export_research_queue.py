@@ -656,6 +656,112 @@ class ExportResearchQueueTests(unittest.TestCase):
             headers=headers if headers is not None else self.headers(),
         )
 
+    def evidence_payload(self, *, action="DEMO-EVIDENCE-ACTION", question_rev=1,
+                         evidence_rev=0, evidence="DEMO-EVIDENCE-ALPHA",
+                         connector="DEMO-CONNECTOR-ALPHA", case_version=3,
+                         digest="a" * 64):
+        return {
+            "action_id": action, "expected_case_version": case_version,
+            "expected_question_revision": question_rev,
+            "expected_evidence_revision": evidence_rev,
+            "evidence_ref": evidence, "connector_ref": connector,
+            "source_snapshot_digest": digest,
+        }
+
+    def post_evidence(self, *, ref="DEMO-E-001", payload=None, headers=None,
+                      client=None):
+        return (client or self.client).post(
+            f"/api/v1/admin/export/research/drafts/{ref}/evidence-references",
+            json=payload if payload is not None else self.evidence_payload(),
+            headers=headers if headers is not None else self.headers(),
+        )
+
+    def test_export_evidence_references_bind_to_question_and_render_in_workspace(self):
+        self.assertEqual(self.post_question().status_code, 201)
+        payload = self.evidence_payload()
+        first = self.post_evidence(payload=payload)
+        self.assertEqual(first.status_code, 201, first.text)
+        self.assertEqual(first.json()["evidence_revision"], 1)
+        self.assertEqual(first.json()["question_binding"], "CURRENT")
+        self.assertFalse(first.json()["source_rights_verified"])
+        self.assertFalse(first.json()["source_data_ingested"])
+        self.assertIsNone(first.json()["research_findings"])
+        self.assertEqual(self.post_evidence(payload=payload).status_code, 201)
+        second = self.post_evidence(payload=self.evidence_payload(
+            action="DEMO-EVIDENCE-ACTION-2", evidence_rev=1,
+            evidence="DEMO-EVIDENCE-BETA",
+        ))
+        self.assertEqual(second.status_code, 201, second.text)
+        updated_question = self.post_question(payload=self.question_payload(
+            action="DEMO-Q-TWO", rev=1,
+        ))
+        self.assertEqual(updated_question.status_code, 201)
+        stale = self.post_evidence(payload=self.evidence_payload(
+            action="DEMO-EVIDENCE-STALE", question_rev=1, evidence_rev=2,
+        ))
+        self.assertEqual(stale.status_code, 409)
+        current = self.post_evidence(payload=self.evidence_payload(
+            action="DEMO-EVIDENCE-ACTION-3", question_rev=2,
+            evidence="DEMO-EVIDENCE-BETA", digest="b" * 64,
+        ))
+        self.assertEqual(current.status_code, 201, current.text)
+        workspace = self.client.get(
+            "/api/v1/admin/export/research/drafts/DEMO-E-001/workspace",
+            headers=self.headers(),
+        ).json()
+        refs = workspace["local_test_evidence_references"]
+        self.assertEqual([item["question_binding"] for item in refs],
+                         ["HISTORICAL", "HISTORICAL", "CURRENT"])
+        self.assertIsNone(workspace["study_findings"])
+        self.login()
+        page = self.client.get("/admin/export/research/drafts/DEMO-E-001")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("DEMO-EVIDENCE-ALPHA", page.text)
+        self.assertIn("DEMO-CONNECTOR-ALPHA", page.text)
+        self.assertIn("ثبت fingerprint اتصال منبع", page.text)
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_export_evidence_references_validate_auth_replay_and_immutability(self):
+        self.assertEqual(self.post_question().status_code, 201)
+        self.assertEqual(self.post_evidence(headers={}).status_code, 401)
+        self.assertEqual(self.post_evidence(headers=self.headers(
+            "synthetic-household-1", ("household",))).status_code, 404)
+        for change in (
+            {"evidence_ref": "https://example.test/source"},
+            {"connector_ref": "real-provider"},
+            {"source_snapshot_digest": "not-a-digest"},
+            {"expected_question_revision": True},
+            {"unexpected": "raw-source-content"},
+        ):
+            with self.subTest(change=change):
+                payload = self.evidence_payload()
+                payload.update(change)
+                self.assertEqual(
+                    self.post_evidence(
+                        payload=payload, action="DEMO-EVIDENCE-BAD",
+                    ).status_code, 422,
+                )
+        good = self.evidence_payload()
+        self.assertEqual(self.post_evidence(payload=good).status_code, 201)
+        self.assertEqual(self.post_evidence(payload=good).status_code, 201)
+        self.assertEqual(self.post_evidence(payload=self.evidence_payload(
+            action="DEMO-EVIDENCE-ACTION",
+            evidence="DEMO-EVIDENCE-BETA",
+        )).status_code, 409)
+        with self.assertRaises(sqlite3.IntegrityError):
+            with sqlite3.connect(self.path) as db:
+                db.execute(
+                    "UPDATE export_research_evidence_reference "
+                    "SET evidence_ref='DEMO-EVIDENCE-TAMPER' "
+                    "WHERE action_id='DEMO-EVIDENCE-ACTION'"
+                )
+        with sqlite3.connect(self.path) as db:
+            count = db.execute(
+                "SELECT COUNT(*) FROM export_research_evidence_reference"
+            ).fetchone()[0]
+        self.assertEqual(count, 1)
+        self.assertTrue(self.reopen().verify_integrity())
+
     def test_export_question_authoring_versions_and_case_page(self):
         first = self.post_question()
         self.assertEqual(first.status_code, 201, first.text)

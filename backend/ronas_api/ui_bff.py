@@ -19,7 +19,9 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 
 from .auth import InvalidToken, Principal
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES as TECHNICAL_STATES
+from .export_research_evidence import ExportEvidenceReferenceConflict
 from .scoped_drafts import _synthetic_ref
+from .export_research_evidence import valid_evidence_refs, valid_snapshot_digest
 from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
 from .household_input_ledger_sqlite import (
     InputRevisionConflict, SqliteSyntheticHouseholdInputLedger,
@@ -2900,6 +2902,49 @@ def build_authenticated_ui_router(
                 + demo_question
                 + history_section
                 + demo_form
+                + '<section aria-label="ارجاع‌های منبع نسخه‌دار"><h3>ارجاع‌های فنی منبع</h3>'
+                '<p>فقط شناسه و fingerprint دریافتی از اتصال نمونه ثبت می‌شود؛ '
+                'محتوای منبع ذخیره یا مجوز آن تأیید نمی‌شود.</p>'
+                '<ol>' + ''.join(
+                    '<li>پرسش نسخه ' + str(item["question_revision"])
+                    + '، ارجاع نسخه ' + str(item["evidence_revision"])
+                    + ' (' + ("پرسش جاری" if item["question_binding"] == "CURRENT"
+                              else "تاریخی") + ') · '
+                    + escape(item["connector_ref"]) + ' · '
+                    + escape(item["evidence_ref"]) + ' · SHA-256 '
+                    + escape(item["source_snapshot_digest"])
+                    + ' · حقوق و یافته‌ها تأییدنشده</li>'
+                    for item in data["local_test_evidence_references"]
+                ) + '</ol></section>'
+                + (
+                    '<section id="export-evidence-reference-form">'
+                    '<h3>ثبت fingerprint اتصال منبع (DEMO)</h3>'
+                    '<p>ابتدا پرسش محصول–مقصد نسخه‌دار ثبت کنید. مقادیر فقط '
+                    'شناسه‌های نمونه‌اند و این فرم گزارش پژوهش نمی‌سازد.</p>'
+                    '<form method="post" action="/admin/export/research/drafts/'
+                    + quote(ref) + '/evidence-reference">'
+                    '<input type="hidden" name="csrf" value="'
+                    + escape(session.csrf, quote=True) + '">'
+                    '<input type="hidden" name="case_version" value="'
+                    + str(data["case_version"]) + '">'
+                    '<input type="hidden" name="question_revision" value="'
+                    + str(question["question_revision"] if question else 0) + '">'
+                    '<input type="hidden" name="evidence_revision" value="'
+                    + str(sum(1 for item in data["local_test_evidence_references"]
+                              if question and item["question_revision"] == question["question_revision"])) + '">'
+                    '<label for="export-evidence-ref">شناسه شواهد DEMO</label>'
+                    '<select id="export-evidence-ref" name="evidence_ref">'
+                    + sample_choice_options(prefix="DEMO-EVIDENCE-")
+                    + '</select><label for="export-connector-ref">شناسه اتصال DEMO</label>'
+                    '<select id="export-connector-ref" name="connector_ref">'
+                    + sample_choice_options(prefix="DEMO-CONNECTOR-")
+                    + '</select><label for="export-snapshot-digest">SHA-256 snapshot</label>'
+                    '<input id="export-snapshot-digest" name="source_snapshot_digest" '
+                    'pattern="[0-9a-f]{64}" minlength="64" maxlength="64" required>'
+                    '<button type="submit">ثبت ارجاع آزمایشی</button></form></section>'
+                    if question is not None else
+                    '<p>ثبت ارجاع منبع باز است تا پرسش نسخه‌دار تعریف شود.</p>'
+                )
                 + '<p>مرجع منبع صرفاً آزمایشی: '
                 + escape(data["source_ref"]) + '</p>'
                 '<p>حقوق استفاده و بازنشر این منبع احراز نشده است.</p>'
@@ -2951,6 +2996,63 @@ def build_authenticated_ui_router(
             except ExportResearchQuestionConflict as exc:
                 raise HTTPException(
                     409, detail="EXPORT_LOCAL_QUESTION_CHANGED",
+                ) from exc
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(
+                    422, detail="INVALID_LOCAL_TEST_FORM",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return RedirectResponse(
+                "/admin/export/research/drafts/" + quote(ref),
+                status_code=303,
+            )
+
+        @router.post("/admin/export/research/drafts/{ref}/evidence-reference")
+        async def export_demo_evidence_reference_browser(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            principal, form = await checked_browser_form(
+                request, sid,
+                fields=frozenset({
+                    "csrf", "case_version", "question_revision",
+                    "evidence_revision", "evidence_ref", "connector_ref",
+                    "source_snapshot_digest",
+                }),
+            )
+            if (not valid_evidence_refs(
+                    form["evidence_ref"], form["connector_ref"],
+                ) or form["evidence_ref"] not in (
+                    "DEMO-EVIDENCE-ALPHA", "DEMO-EVIDENCE-BETA",
+                ) or form["connector_ref"] not in (
+                    "DEMO-CONNECTOR-ALPHA", "DEMO-CONNECTOR-BETA",
+                ) or not valid_snapshot_digest(form["source_snapshot_digest"])):
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+            try:
+                result = technical_review_ledger.record_export_evidence_reference(
+                    ref, principal,
+                    expected_case_version=form_version(
+                        form["case_version"], zero_allowed=False,
+                    ),
+                    expected_question_revision=form_version(
+                        form["question_revision"], zero_allowed=False,
+                    ),
+                    expected_evidence_revision=form_version(
+                        form["evidence_revision"],
+                    ),
+                    action_id="DEMO-UI-ER-" + secrets.token_hex(10).upper(),
+                    evidence_ref=form["evidence_ref"],
+                    connector_ref=form["connector_ref"],
+                    source_snapshot_digest=form["source_snapshot_digest"],
+                )
+            except ExportEvidenceReferenceConflict as exc:
+                raise HTTPException(
+                    409, detail="EXPORT_EVIDENCE_REFERENCE_CHANGED",
                 ) from exc
             except LedgerIntegrityError as exc:
                 raise HTTPException(

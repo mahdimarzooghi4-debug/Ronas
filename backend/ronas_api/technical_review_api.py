@@ -14,6 +14,7 @@ from .auth import Principal
 from .grant_ledger_sqlite import LedgerIntegrityError
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
 from .export_research_question import ExportResearchQuestionConflict
+from .export_research_evidence import ExportEvidenceReferenceConflict
 
 
 class SyntheticExportQuestionCommand(BaseModel):
@@ -23,6 +24,17 @@ class SyntheticExportQuestionCommand(BaseModel):
     expected_question_revision: StrictInt
     product_ref: StrictStr
     destination_ref: StrictStr
+
+
+class SyntheticExportEvidenceReferenceCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: StrictStr
+    expected_case_version: StrictInt
+    expected_question_revision: StrictInt
+    expected_evidence_revision: StrictInt
+    evidence_ref: StrictStr
+    connector_ref: StrictStr
+    source_snapshot_digest: StrictStr
 
 
 def build_technical_review_read_router(
@@ -173,6 +185,45 @@ def build_technical_review_read_router(
         except ValueError as exc:
             raise HTTPException(
                 422, detail="INVALID_EXPORT_LOCAL_QUESTION",
+            ) from exc
+        if result is None:
+            raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+        return result
+
+    @router.post(
+        "/api/v1/admin/export/research/drafts/{ref}/evidence-references",
+        status_code=201,
+    )
+    def record_export_evidence_reference(
+        ref: str, command: SyntheticExportEvidenceReferenceCommand,
+        authorization: str | None = Header(default=None),
+        p: Principal = Depends(verified_principal),
+    ) -> dict:
+        if (not isinstance(authorization, str)
+                or not authorization.startswith("Bearer ")):
+            raise HTTPException(401, detail="BEARER_REQUIRED")
+        try:
+            result = ledger.record_export_evidence_reference(
+                ref, p,
+                expected_case_version=command.expected_case_version,
+                expected_question_revision=command.expected_question_revision,
+                expected_evidence_revision=command.expected_evidence_revision,
+                action_id=command.action_id,
+                evidence_ref=command.evidence_ref,
+                connector_ref=command.connector_ref,
+                source_snapshot_digest=command.source_snapshot_digest,
+            )
+        except ExportEvidenceReferenceConflict as exc:
+            raise HTTPException(
+                409, detail="EXPORT_EVIDENCE_REFERENCE_CHANGED",
+            ) from exc
+        except (LedgerIntegrityError, sqlite3.Error) as exc:
+            raise HTTPException(
+                503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                422, detail="INVALID_EXPORT_EVIDENCE_REFERENCE",
             ) from exc
         if result is None:
             raise HTTPException(404, detail="DRAFT_NOT_FOUND")

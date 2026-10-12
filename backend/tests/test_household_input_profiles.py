@@ -401,6 +401,27 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         artifact = self.artifact_store.put(
             OWNER, REF + ":DEMO-STAGE-01", "image/png", image,
         )
+        self.ledger.append_owned_profile(
+            REF, Principal(OWNER, frozenset({"household"})),
+            action_id="DEMO-PROFILE-1", expected_case_version=2,
+            expected_revision=0,
+            values={"field_alpha": "sample value", "field_choice": "sample-a"},
+        )
+        case_version, input_revision, input_digest = (
+            self.ledger.internal_proposal_lineage(REF)
+        )
+        proposal = InternalCultivationProposal(
+            household_case_ref=REF, household_case_version=case_version,
+            household_input_revision=input_revision,
+            household_input_snapshot_digest=input_digest,
+            scientific_basis_manifest_digest="2" * 64,
+            internal_model_artifact_digest="3" * 64,
+            internal_run_ref="DEMO-RUN-STAGE-QUESTION",
+            proposal_content_digest="4" * 64,
+            proposed_stages=(ProposedCultivationStage(
+                "DEMO-STAGE-01", "5" * 64, "6" * 64,
+            ),),
+        )
         specialist = "synthetic-agronomy-stage-reviewer"
         active = {"assigned"}
         workspace = SyntheticAgronomyWorkspace(
@@ -423,25 +444,6 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             agronomy_workspace=workspace,
         )
         client = TestClient(app, base_url=ORIGIN)
-        profile = client.post(
-            ROOT, json=self.command(), headers=self.bearer(),
-        )
-        self.assertEqual(profile.status_code, 201, profile.text)
-        case_version, input_revision, input_digest = (
-            self.ledger.internal_proposal_lineage(REF)
-        )
-        proposal = InternalCultivationProposal(
-            household_case_ref=REF, household_case_version=case_version,
-            household_input_revision=input_revision,
-            household_input_snapshot_digest=input_digest,
-            scientific_basis_manifest_digest="2" * 64,
-            internal_model_artifact_digest="3" * 64,
-            internal_run_ref="DEMO-RUN-STAGE-QUESTION",
-            proposal_content_digest="4" * 64,
-            proposed_stages=(ProposedCultivationStage(
-                "DEMO-STAGE-01", "5" * 64, "6" * 64,
-            ),),
-        )
         command = self.stage_command()
         command["observation_artifact_digest"] = artifact.digest
         stage_api_path = (

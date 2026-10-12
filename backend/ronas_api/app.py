@@ -259,8 +259,17 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         if (not isinstance(config, KeycloakConfig)
                 or technical_review_ledger is not scoped_registry):
             raise ValueError("synthetic household input requires same Keycloak review ledger")
+        if household_profile_schema is not None:
+            if (not isinstance(scoped_registry, SqliteSyntheticHouseholdProfileLedger)
+                    or scoped_registry.profile_schema != household_profile_schema
+                    or not callable(household_profile_access_authority)):
+                raise ValueError("profile intake requires exact ledger schema and authority")
+        elif household_profile_access_authority is not None:
+            raise ValueError("profile authority requires explicit schema")
         app.include_router(build_household_input_router(
             scoped_registry, principal,
+            profile_schema=household_profile_schema,
+            profile_access_authority=household_profile_access_authority,
         ))
 
     if technical_review_ledger is not None:

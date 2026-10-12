@@ -1934,8 +1934,9 @@ def build_authenticated_ui_router(
                                     principal.subject, ref + ":" + command.stage_ref,
                                     command.observation_artifact_digest,
                                 )):
-                            raise HTTPException(
-                                422, detail="STAGE_ARTIFACT_NOT_UPLOADED",
+                            return JSONResponse(
+                                status_code=422,
+                                content={"detail": "STAGE_ARTIFACT_NOT_UPLOADED"},
                             )
                         saved = household_input_ledger.append_owned_stage_observation(
                             ref, principal, command,

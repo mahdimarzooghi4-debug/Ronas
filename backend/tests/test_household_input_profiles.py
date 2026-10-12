@@ -524,6 +524,29 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             owner_questions["questions"][0]["stage_observation_receipt_digest"],
             receipt["receipt_digest"],
         )
+        owner_reply = self.ledger.append_owned_question_response(
+            REF, Principal(OWNER, frozenset({"household"})),
+            action_id="DEMO-STAGE-QUESTION-REPLY",
+            track="HOUSEHOLD_INPUT_ADEQUACY",
+            expected_question_revision=2, expected_case_version=2,
+            expected_input_revision=1, answer_ref="DEMO-ANSWER-REF",
+            evidence_ref="DEMO-ANSWER-EVIDENCE",
+        )
+        self.assertEqual(owner_reply["record_state"], "SYNTHETIC_RESPONSE_ONLY_NOT_REVIEWED")
+        owner_questions = self.ledger.read_owned_question_responses(
+            REF, Principal(OWNER, frozenset({"household"})),
+        )
+        self.assertEqual(
+            owner_questions["questions"][1]["response_state"],
+            "HISTORICAL_RESPONSE_ONLY_NOT_REVIEWED",
+        )
+        specialist_history = workspace.read_assigned_synthetic_review_questions(
+            REF, Principal(specialist, frozenset({"agronomy_expert"})),
+        )
+        self.assertTrue(
+            specialist_history["questions"][1]["synthetic_household_response_received"]
+        )
+        self.assertNotIn("DEMO-ANSWER-REF", repr(specialist_history))
         inspection_path = api_path + "/inspections"
         inspection = {
             "action_id": "DEMO-STAGE-INSPECT-1",

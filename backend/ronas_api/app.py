@@ -149,6 +149,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             agronomy_workspace=agronomy_workspace,
             export_supplier_workspace=export_supplier_workspace,
             domestic_partner_workspace=domestic_partner_workspace,
+            export_source_connectors=export_source_connectors,
         ))
 
     @app.middleware("http")

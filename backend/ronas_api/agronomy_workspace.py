@@ -632,6 +632,10 @@ class SyntheticAgronomyWorkspace:
         self, ref: str, principal: Principal, *, action_id: str,
         track: str, expected_case_version: int, expected_input_revision: int,
         expected_question_revision: int, reason_ref: str, evidence_ref: str,
+        stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
+        stage_ref: str | None = None,
+        expected_stage_observation_revision: int | None = None,
+        expected_stage_observation_receipt_digest: str | None = None,
     ) -> dict | None:
         """Record a missing-evidence QUESTION, never a review finding.
 
@@ -642,8 +646,35 @@ class SyntheticAgronomyWorkspace:
         """
         if not isinstance(self.ledger, SqliteSyntheticExpertQuestionLedger):
             raise ValueError("synthetic question journal not installed")
+        stage_binding_requested = any(value is not None for value in (
+            stage_ref, expected_stage_observation_revision,
+            expected_stage_observation_receipt_digest,
+        ))
+        if stage_binding_requested and not all(value is not None for value in (
+            stage_ref, expected_stage_observation_revision,
+            expected_stage_observation_receipt_digest,
+        )):
+            raise ValueError("stage question binding must be complete")
+        if stage_binding_requested and (
+            not isinstance(self.ledger, SqliteSyntheticHouseholdProfileLedger)
+            or track != "HOUSEHOLD_INPUT_ADEQUACY"
+            or not callable(stage_context_authority)
+            or not _synthetic_ref(stage_ref)
+            or type(expected_stage_observation_revision) is not int
+            or expected_stage_observation_revision < 1
+            or not _digest(expected_stage_observation_receipt_digest)
+        ):
+            raise ValueError("invalid stage question binding")
         if not _synthetic_ref(ref):
             return None
+        provided_stage_context = None
+        if stage_binding_requested:
+            try:
+                provided_stage_context = self.ledger._read_stage_context(
+                    ref, stage_context_authority,
+                )
+            except Exception as exc:
+                raise ReviewQuestionConflict("current stage context unavailable") from exc
         with self.ledger._transaction() as db:
             self.ledger._verify(db)
             record = self.ledger._catalogue.get(("DOMESTIC", ref))
@@ -694,7 +725,31 @@ class SyntheticAgronomyWorkspace:
                     raise ReviewQuestionConflict(
                         "stale/unavailable scientific reference"
                     ) from exc
-            return self.ledger._append_verified_question(
+            if stage_binding_requested:
+                ledger = self.ledger
+                try:
+                    stage_context = ledger._resolve_stage_context(
+                        db, ref, provided_stage_context,
+                    )
+                    stage_view = ledger._stage_observation_read_view(
+                        db, ref, record, stage_context,
+                    )
+                except Exception as exc:
+                    raise ReviewQuestionConflict(
+                        "current stage context changed",
+                    ) from exc
+                receipt = next((
+                    item for item in stage_view["observations"]
+                    if item["stage_ref"] == stage_ref
+                    and item["revision"] == expected_stage_observation_revision
+                ), None)
+                if (receipt is None or not receipt["current"]
+                        or receipt["receipt_digest"]
+                           != expected_stage_observation_receipt_digest):
+                    raise ReviewQuestionConflict(
+                        "stage receipt is historical or changed",
+                    )
+            created = self.ledger._append_verified_question(
                 db, ref=ref, case_version=record.version, actor=actor,
                 track=track, action_id=action_id,
                 expected_revision=expected_question_revision,
@@ -703,6 +758,24 @@ class SyntheticAgronomyWorkspace:
                 proposal_digest=proposal.proposal_content_digest,
                 reason_ref=reason_ref, evidence_ref=evidence_ref,
             )
+            if stage_binding_requested:
+                try:
+                    self.ledger._append_verified_stage_question_binding(
+                        db, question_action_id=action_id, ref=ref,
+                        case_version=record.version, track=track,
+                        question_revision=expected_question_revision + 1,
+                        stage_ref=stage_ref,
+                        observation_revision=expected_stage_observation_revision,
+                        observation_receipt_digest=(
+                            expected_stage_observation_receipt_digest
+                        ),
+                        actor=actor,
+                    )
+                except Exception as exc:
+                    raise ReviewQuestionConflict(
+                        "stage question link could not be recorded",
+                    ) from exc
+            return created
 
     def inspect_assigned_synthetic_response_receipt(
         self, ref: str, principal: Principal, *, action_id: str,

@@ -376,6 +376,93 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertIn("رسید قدیمی", history.text)
         self.assertNotIn("· رسید جاری ·", history.text)
 
+    def test_assigned_specialist_reads_receipt_and_private_artifact(self):
+        image = b"\x89PNG\r\n\x1a\n" + b"synthetic-stage-image"
+        artifact = self.artifact_store.put(
+            OWNER, REF + ":DEMO-STAGE-01", "image/png", image,
+        )
+        specialist = "synthetic-agronomy-stage-reviewer"
+        active = {"assigned"}
+        workspace = SyntheticAgronomyWorkspace(
+            self.ledger,
+            (SyntheticAgronomyAssignment(REF, specialist, 2),),
+            trusted_assignment_active=lambda actor, ref, version: (
+                actor == specialist and ref == REF and version == 2
+                and bool(active)
+            ),
+        )
+        app = create_app(
+            self.config, self.flow,
+            scoped_registry=self.ledger,
+            technical_review_ledger=self.ledger,
+            household_profile_schema=self.schema,
+            household_profile_access_authority=self.allowed,
+            household_stage_context_authority=self.stage_context,
+            household_stage_artifact_store=self.artifact_store,
+            agronomy_workspace=workspace,
+        )
+        client = TestClient(app, base_url=ORIGIN)
+        command = self.stage_command()
+        command["observation_artifact_digest"] = artifact.digest
+        submitted = client.post(
+            ROOT + "/stage-observations", json=command,
+            headers=self.bearer(),
+        )
+        self.assertEqual(submitted.status_code, 201, submitted.text)
+
+        specialist_headers = self.bearer(
+            subject=specialist, roles=("agronomy_expert",),
+        )
+        api_path = (
+            "/api/v1/agronomy/assigned-drafts/" + REF
+            + "/stage-observations"
+        )
+        observed = client.get(api_path, headers=specialist_headers)
+        self.assertEqual(observed.status_code, 200, observed.text)
+        self.assertEqual(observed.json()["observations"][0][
+            "observation_artifact_digest"
+        ], artifact.digest)
+        self.assertTrue(observed.json()["observations"][0]["current"])
+
+        artifact_path = (
+            api_path + "/artifacts/DEMO-STAGE-01/" + artifact.digest
+        )
+        downloaded = client.get(artifact_path, headers=specialist_headers)
+        self.assertEqual(downloaded.status_code, 200, downloaded.text)
+        self.assertEqual(downloaded.content, image)
+        self.assertEqual(
+            downloaded.headers["content-disposition"],
+            'attachment; filename="stage-observation"',
+        )
+
+        sid = secrets.token_urlsafe(40)
+        csrf = secrets.token_urlsafe(32)
+        self.sessions.sessions[sid] = BrowserSession(
+            specialist, frozenset({"agronomy_expert"}),
+            self.token(specialist, ("agronomy_expert",)),
+            csrf, int(time.time()) + 300,
+        )
+        client.cookies.set("__Host-ronas_session", sid)
+        page_path = "/agronomy/assigned-drafts/" + REF + "/stage-observations"
+        page = client.get(page_path)
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("DEMO-STAGE-01", page.text)
+        self.assertIn("دریافت فایل مشاهده", page.text)
+        browser_download = client.get(
+            page_path + "/artifacts/DEMO-STAGE-01/" + artifact.digest,
+        )
+        self.assertEqual(browser_download.status_code, 200, browser_download.text)
+        self.assertEqual(browser_download.content, image)
+
+        active.clear()
+        self.assertEqual(
+            client.get(api_path, headers=specialist_headers).status_code, 404,
+        )
+        self.assertEqual(
+            client.get(artifact_path, headers=specialist_headers).status_code, 404,
+        )
+        self.assertTrue(self.ledger.verify_integrity())
+
     def test_browser_upload_stores_real_file_then_records_and_downloads_receipt(self):
         self.assertEqual(self.client.post(
             ROOT, json=self.command(), headers=self.bearer(),

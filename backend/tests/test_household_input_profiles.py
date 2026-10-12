@@ -410,6 +410,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
                 actor == specialist and ref == REF and version == 2
                 and bool(active)
             ),
+            proposal_fixtures=(proposal,),
         )
         app = create_app(
             self.config, self.flow,
@@ -426,6 +427,21 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             ROOT, json=self.command(), headers=self.bearer(),
         )
         self.assertEqual(profile.status_code, 201, profile.text)
+        case_version, input_revision, input_digest = (
+            self.ledger.internal_proposal_lineage(REF)
+        )
+        proposal = InternalCultivationProposal(
+            household_case_ref=REF, household_case_version=case_version,
+            household_input_revision=input_revision,
+            household_input_snapshot_digest=input_digest,
+            scientific_basis_manifest_digest="2" * 64,
+            internal_model_artifact_digest="3" * 64,
+            internal_run_ref="DEMO-RUN-STAGE-QUESTION",
+            proposal_content_digest="4" * 64,
+            proposed_stages=(ProposedCultivationStage(
+                "DEMO-STAGE-01", "5" * 64, "6" * 64,
+            ),),
+        )
         command = self.stage_command()
         command["observation_artifact_digest"] = artifact.digest
         stage_api_path = (
@@ -452,6 +468,46 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertTrue(observed.json()["observations"][0]["current"])
         receipt = observed.json()["observations"][0]
         self.assertFalse(receipt["receipt_inspected"])
+        question_path = (
+            "/api/v1/agronomy/assigned-drafts/" + REF + "/review-questions"
+        )
+        stale_question = {
+            "action_id": "DEMO-STAGE-QUESTION-STALE",
+            "track": "HOUSEHOLD_INPUT_ADEQUACY",
+            "expected_case_version": 2,
+            "expected_input_revision": 1,
+            "expected_question_revision": 0,
+            "reason_ref": "DEMO-MISSING-REF",
+            "evidence_ref": "DEMO-PENDING-REF",
+            "stage_ref": "DEMO-STAGE-01",
+            "expected_stage_observation_revision": receipt["revision"],
+            "expected_stage_observation_receipt_digest": "0" * 64,
+        }
+        rejected_question = client.post(
+            question_path, json=stale_question, headers=specialist_headers,
+        )
+        self.assertEqual(rejected_question.status_code, 409, rejected_question.text)
+        linked_question = client.post(
+            question_path,
+            json={**stale_question,
+                  "action_id": "DEMO-STAGE-QUESTION-1",
+                  "expected_stage_observation_receipt_digest": receipt["receipt_digest"]},
+            headers=specialist_headers,
+        )
+        self.assertEqual(linked_question.status_code, 201, linked_question.text)
+        specialist_history = client.get(question_path, headers=specialist_headers)
+        self.assertEqual(specialist_history.status_code, 200)
+        linked_history = specialist_history.json()["questions"][0]
+        self.assertEqual(linked_history["stage_ref"], "DEMO-STAGE-01")
+        self.assertEqual(linked_history["stage_observation_revision"], 1)
+        owner_questions = self.ledger.read_owned_question_responses(
+            REF, Principal(OWNER, frozenset({"household"})),
+        )
+        self.assertEqual(owner_questions["questions"][0]["stage_ref"], "DEMO-STAGE-01")
+        self.assertEqual(
+            owner_questions["questions"][0]["stage_observation_receipt_digest"],
+            receipt["receipt_digest"],
+        )
         inspection_path = api_path + "/inspections"
         inspection = {
             "action_id": "DEMO-STAGE-INSPECT-1",
@@ -514,6 +570,11 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             csrf, int(time.time()) + 300,
         )
         client.cookies.set("__Host-ronas_session", sid)
+        question_page = client.get(
+            "/agronomy/assigned-drafts/" + REF + "/review-questions",
+        )
+        self.assertEqual(question_page.status_code, 200, question_page.text)
+        self.assertIn("پرسش درباره رسید جاری DEMO-STAGE-01", question_page.text)
         page_path = "/agronomy/assigned-drafts/" + REF + "/stage-observations"
         page = client.get(page_path)
         self.assertEqual(page.status_code, 200, page.text)

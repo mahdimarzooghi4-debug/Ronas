@@ -298,15 +298,15 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         ).status_code, 201)
         path = ROOT.replace("/cultivation-inputs", "/stage-observations")
         command = self.stage_command()
-        saved = self.client.post(path, json=command, headers=self.bearer())
-        self.assertEqual(saved.status_code, 201, saved.text)
-        self.assertEqual(saved.json()["revision"], 1)
-        self.assertFalse(saved.json()["stage_completed"])
         before_receipt = self.client.get(path, headers=self.bearer())
         self.assertEqual(before_receipt.json()["stage_progress"], [{
             "stage_ref": "DEMO-STAGE-01", "state": "NOT_REPORTED",
             "observation_revision": None,
         }])
+        saved = self.client.post(path, json=command, headers=self.bearer())
+        self.assertEqual(saved.status_code, 201, saved.text)
+        self.assertEqual(saved.json()["revision"], 1)
+        self.assertFalse(saved.json()["stage_completed"])
         replay = self.client.post(path, json=command, headers=self.bearer())
         self.assertTrue(replay.json()["idempotent_replay"])
         current = self.client.get(path, headers=self.bearer())

@@ -273,6 +273,42 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticHouseholdInputLedger)
                 return None
             return record.version, snapshot[0], snapshot[1]
 
+    def read_owned_profile_revision(
+        self, ref: str, principal: Principal, revision: int,
+    ) -> dict | None:
+        """Owner-only historical values; schema drift hides incompatible content."""
+        if type(revision) is not int or revision < 1:
+            raise ValueError("invalid household profile revision")
+        with self._transaction() as db:
+            self._verify(db)
+            if not self._owner(ref, principal):
+                return None
+            record = self._catalogue[("DOMESTIC", ref)]
+            row = db.execute(
+                "SELECT schema_ref,schema_version,schema_digest,values_json "
+                "FROM household_profile_revision WHERE ref=? AND revision=?",
+                (ref, revision),
+            ).fetchone()
+            if row is None:
+                return None
+            matches_schema = row[:3] == (
+                self.profile_schema.schema_ref, self.profile_schema.version,
+                self.profile_schema.digest,
+            )
+            self._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=principal.subject,
+                mode="HOUSEHOLD_PROFILE_REVISION:" + str(revision),
+            )
+            return {
+                "engine": "DOMESTIC", "ref": ref,
+                "case_version": record.version, "revision": revision,
+                "values": json.loads(row[3]) if matches_schema else {},
+                "schema_changed": not matches_schema,
+                "purpose_consent_verified": False,
+                "science_validated": False, "plan_accepted": False,
+            }
+
     def read_owned_profile(self, ref: str, principal: Principal) -> dict | None:
         with self._transaction() as db:
             self._verify(db)

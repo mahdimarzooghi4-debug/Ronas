@@ -251,6 +251,27 @@ def build_household_input_router(
                 } for f in profile_schema.fields],
             }
 
+        @router.get(
+            "/api/v1/domestic/household-intake/my-drafts/{ref}/cultivation-inputs/revisions/{revision}",
+        )
+        def read_cultivation_input_revision(
+            ref: str, revision: int,
+            p: Principal = Depends(verified_principal),
+        ) -> dict:
+            if not profile_allowed(p, ref):
+                raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+            try:
+                result = profile_ledger.read_owned_profile_revision(
+                    ref, p, revision,
+                )
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_HOUSEHOLD_PROFILE_REVISION") from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE") from exc
+            if result is None:
+                raise HTTPException(404, detail="PROFILE_REVISION_NOT_FOUND")
+            return result
+
         @router.post(
             "/api/v1/domestic/household-intake/my-drafts/{ref}/cultivation-inputs",
             status_code=201,

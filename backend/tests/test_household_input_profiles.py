@@ -173,6 +173,36 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             )["current_revision"], 2,
         )
 
+    def test_owner_can_read_exact_profile_history_revision_through_api(self):
+        first = self.client.post(ROOT, json=self.command(), headers=self.bearer())
+        self.assertEqual(first.status_code, 201)
+        second = self.client.post(
+            ROOT, json=self.command(
+                revision=1, action="DEMO-PROFILE-HISTORY-2",
+                values={"field_alpha": "corrected historical sample",
+                        "field_choice": "sample-b"},
+            ), headers=self.bearer(),
+        )
+        self.assertEqual(second.status_code, 201)
+        historical = self.client.get(
+            ROOT + "/revisions/1", headers=self.bearer(),
+        )
+        self.assertEqual(historical.status_code, 200, historical.text)
+        self.assertEqual(historical.json()["revision"], 1)
+        self.assertEqual(historical.json()["values"], {
+            "field_alpha": "sample value", "field_choice": "sample-a",
+        })
+        self.assertNotIn("corrected historical sample", historical.text)
+        denied = self.client.get(
+            ROOT + "/revisions/1",
+            headers=self.bearer("synthetic-other", ("household",)),
+        )
+        self.assertEqual(denied.status_code, 404)
+        missing = self.client.get(
+            ROOT + "/revisions/9", headers=self.bearer(),
+        )
+        self.assertEqual(missing.status_code, 404)
+
     def test_idempotent_replay_stale_revision_and_invalid_schema_values(self):
         command = self.command()
         one = self.client.post(ROOT, json=command, headers=self.bearer())
@@ -250,6 +280,19 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(saved.status_code, 303, saved.text)
         shown = self.client.get(PAGE)
         self.assertIn("sample ui value", shown.text)
+        history_path = PAGE + "/revisions/1"
+        self.assertIn(history_path, shown.text)
+        self.client.post(
+            ROOT, json=self.command(
+                revision=1, action="DEMO-PROFILE-UI-HISTORY-2",
+                values={"field_alpha": "newer synthetic value",
+                        "field_choice": "sample-b"},
+            ), headers=self.bearer(),
+        )
+        history = self.client.get(history_path)
+        self.assertEqual(history.status_code, 200, history.text)
+        self.assertIn("sample ui value", history.text)
+        self.assertNotIn("newer synthetic value", history.text)
         bad = dict(form, csrf="wrong")
         rejected = self.client.post(
             PAGE, content=urlencode(bad),
@@ -274,8 +317,14 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         view = changed_ledger.read_owned_profile(
             REF, Principal(OWNER, frozenset({"household"})),
         )
+
         self.assertTrue(view["schema_changed"])
         self.assertEqual(view["current_values"], {})
+        old_revision = changed_ledger.read_owned_profile_revision(
+            REF, Principal(OWNER, frozenset({"household"})), 1,
+        )
+        self.assertTrue(old_revision["schema_changed"])
+        self.assertEqual(old_revision["values"], {})
 
     def test_tampered_profile_history_fails_closed(self):
         self.client.post(ROOT, json=self.command(), headers=self.bearer())

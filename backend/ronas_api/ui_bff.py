@@ -1485,7 +1485,10 @@ def build_authenticated_ui_router(
                         control = '<input id="' + key + '" name="' + key + '" type="' + field.kind + '" maxlength="' + str(field.max_length) + '" value="' + safe_value + '"' + required + '>'
                     controls.append('<label for="' + key + '">' + label + '</label>' + control)
                 history = ''.join(
-                    '<li>نسخه ' + str(item["revision"]) + '</li>'
+                    '<li><a href="/my-drafts/' + quote(ref)
+                    + '/cultivation-inputs/revisions/'
+                    + str(item["revision"]) + '">مشاهده نسخه '
+                    + str(item["revision"]) + '</a></li>'
                     for item in result["revisions"]
                 )
                 fields = frozenset(
@@ -1519,6 +1522,65 @@ def build_authenticated_ui_router(
                     '</article>'
                 )
                 return page("روناس — اطلاعات پرونده کشت",
+                            body, logged_in=True, local_test_form=True)
+
+            @router.get(
+                "/my-drafts/{ref}/cultivation-inputs/revisions/{revision}",
+                response_class=HTMLResponse,
+            )
+            def household_cultivation_inputs_revision_page(
+                ref: str, revision: int,
+                sid: str | None = Cookie(default=None, alias=cookie_name),
+            ) -> HTMLResponse:
+                try:
+                    session = flow.session(sid)
+                except InvalidToken:
+                    raise HTTPException(401, detail="INVALID_SESSION") from None
+                principal = Principal(session.subject, session.roles)
+                try:
+                    permitted = household_profile_access_authority(
+                        principal, ref, household_profile_schema.schema_ref,
+                    )
+                except Exception as exc:
+                    raise HTTPException(
+                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                    ) from exc
+                if permitted is not True:
+                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                try:
+                    result = household_input_ledger.read_owned_profile_revision(
+                        ref, principal, revision,
+                    )
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE") from exc
+                except ValueError as exc:
+                    raise HTTPException(422, detail="INVALID_HOUSEHOLD_PROFILE_REVISION") from exc
+                if result is None:
+                    raise HTTPException(404, detail="PROFILE_REVISION_NOT_FOUND")
+                if result["schema_changed"]:
+                    values_html = (
+                        '<p role="status">ساختار فرم پس از ثبت این نسخه تغییر کرده است؛ '
+                        'برای جلوگیری از نمایش نادرست، مقادیر قدیمی پنهان شده‌اند.</p>'
+                    )
+                else:
+                    rows = ''.join(
+                        '<dt>' + escape(field.label) + '</dt><dd>'
+                        + escape(result["values"].get(field.key, '')) + '</dd>'
+                        for field in household_profile_schema.fields
+                    )
+                    values_html = '<dl>' + rows + '</dl>'
+                body = (
+                    '<article class="panel"><h2>نسخه تاریخی اطلاعات پرونده</h2>'
+                    '<p>پرونده ' + escape(ref) + ' · نسخه '
+                    + str(result["revision"]) + '</p>'
+                    + values_html
+                    + '<p>این سابقه فقط برای صاحب پرونده است و به معنی تأیید علمی، '
+                    'پذیرش طرح یا رضایت برای مصرف دیگری نیست.</p>'
+                    '<p><a href="/my-drafts/' + quote(ref)
+                    + '/cultivation-inputs">بازگشت به اطلاعات پرونده</a></p>'
+                    '</article>'
+                )
+                return page("روناس — نسخه تاریخی اطلاعات",
                             body, logged_in=True, local_test_form=True)
 
             @router.post("/my-drafts/{ref}/cultivation-inputs")

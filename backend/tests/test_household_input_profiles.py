@@ -26,6 +26,7 @@ from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
 from ronas_api.agronomy_workspace import (
     SyntheticAgronomyAssignment, SyntheticAgronomyWorkspace,
 )
+from ronas_api.expert_review_questions_sqlite import SqliteSyntheticExpertQuestionLedger
 from ronas_api.internal_cultivation_plan_contract import (
     InternalCultivationProposal, ProposedCultivationStage,
 )
@@ -105,6 +106,51 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         )
         self.app = self.make_app()
         self.client = TestClient(self.app, base_url=ORIGIN)
+
+    def test_profile_and_assigned_specialist_share_one_case_ledger(self):
+        self.assertIsInstance(self.ledger, SqliteSyntheticExpertQuestionLedger)
+        specialist = "synthetic-agronomy-profile-reviewer"
+        workspace = SyntheticAgronomyWorkspace(
+            self.ledger,
+            (SyntheticAgronomyAssignment(REF, specialist, 2),),
+            trusted_assignment_active=lambda actor, ref, version: (
+                actor == specialist and ref == REF and version == 2
+            ),
+        )
+        app = create_app(
+            self.config, self.flow,
+            scoped_registry=self.ledger,
+            technical_review_ledger=self.ledger,
+            household_profile_schema=self.schema,
+            household_profile_access_authority=self.allowed,
+            household_stage_context_authority=self.stage_context,
+            agronomy_workspace=workspace,
+        )
+        client = TestClient(app, base_url=ORIGIN)
+
+        owner_write = client.post(
+            ROOT, json=self.command(), headers=self.bearer(),
+        )
+        self.assertEqual(owner_write.status_code, 201, owner_write.text)
+
+        assigned = client.get(
+            "/api/v1/agronomy/assigned-drafts/" + REF,
+            headers=self.bearer(
+                subject=specialist, roles=("agronomy_expert",),
+            ),
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+        self.assertEqual(assigned.json()["ref"], REF)
+
+        unassigned = client.get(
+            "/api/v1/agronomy/assigned-drafts/" + REF,
+            headers=self.bearer(
+                subject="synthetic-agronomy-unassigned",
+                roles=("agronomy_expert",),
+            ),
+        )
+        self.assertEqual(unassigned.status_code, 404, unassigned.text)
+        self.assertTrue(self.ledger.verify_integrity())
 
     def reopen(self):
         return SqliteSyntheticHouseholdProfileLedger(

@@ -50,6 +50,16 @@ class StageArtifactStoreTests(unittest.TestCase):
             self.store.put("owner", "DEMO-D-001", "image/png",
                            PNG + b"x" * MAX_ARTIFACT_BYTES)
 
+    def test_symlink_replacement_is_rejected_without_reading_target(self):
+        artifact = self.store.put("owner", "DEMO-D-001", "image/png", PNG)
+        path = next(p for p in self.root.rglob("*") if p.is_file())
+        victim = Path(self.temp.name) / "victim"
+        victim.write_bytes(b"private unrelated bytes")
+        path.unlink()
+        path.symlink_to(victim)
+        with self.assertRaises(Exception):
+            self.store.get("owner", "DEMO-D-001", artifact.digest)
+
     def test_private_directory_and_ciphertext_tampering_fail_closed(self):
         public = Path(self.temp.name) / "public"
         public.mkdir(mode=0o755)

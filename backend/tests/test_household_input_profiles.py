@@ -1116,6 +1116,82 @@ class HouseholdProfileFlowTests(unittest.TestCase):
                 (REF, "DEMO-OFFER-TAMPER-1"),
             ).fetchone()[0], 1)
 
+    def test_surplus_draft_schema_change_hides_old_values_and_accepts_new_revision(self):
+        old_schema = HouseholdInputSchema(
+            "RONAS-DOMESTIC-SURPLUS", 1,
+            (HouseholdInputField(
+                "legacy_field", "فیلد قدیمی", "text",
+                required=True, max_length=80,
+            ),),
+        )
+        new_schema = HouseholdInputSchema(
+            "RONAS-DOMESTIC-SURPLUS", 2,
+            (HouseholdInputField(
+                "current_field", "فیلد جاری", "text",
+                required=True, max_length=80,
+            ),),
+        )
+        db_path = str(self.path.parent / "surplus-schema-change.sqlite3")
+        offer_ref = "DEMO-OFFER-SCHEMA-CHANGE"
+        owner = Principal(OWNER, frozenset({"household"}))
+        old_ledger = SqliteSyntheticSurplusDraftLedger(
+            db_path, old_schema, self.allowed,
+        )
+        first = old_ledger.save(
+            owner, REF, offer_ref, action_id="DEMO-SCHEMA-OLD-1",
+            expected_revision=0, values={"legacy_field": "private old meaning"},
+        )
+        current_ledger = SqliteSyntheticSurplusDraftLedger(
+            db_path, new_schema, self.allowed,
+        )
+        client = TestClient(
+            self.make_app(surplus_draft_ledger=current_ledger), base_url=ORIGIN,
+        )
+        api_path = (
+            f"/api/v1/domestic/household-intake/my-drafts/{REF}"
+            f"/surplus-offers/{offer_ref}"
+        )
+        api_view = client.get(api_path, headers=self.bearer())
+        self.assertEqual(api_view.status_code, 200, api_view.text)
+        self.assertTrue(api_view.json()["schema_changed"])
+        self.assertEqual(api_view.json()["schema_version"], 1)
+        self.assertEqual(api_view.json()["active_schema_version"], 2)
+        self.assertEqual(api_view.json()["values"], {})
+        self.assertNotIn("private old meaning", api_view.text)
+
+        session = self.browser_session()
+        sid = next(key for key, value in self.sessions.sessions.items()
+                   if value is session)
+        client.cookies.set("__Host-ronas_session", sid)
+        page = client.get(
+            f"/my-drafts/{REF}/surplus-offers", params={"offer_ref": offer_ref},
+        )
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("طرح‌واره تغییر کرده", page.text)
+        self.assertNotIn("private old meaning", page.text)
+        self.assertNotIn("legacy_field", page.text)
+        self.assertIn('name="current_field"', page.text)
+
+        form = {
+            "csrf": session.csrf,
+            "offer_ref": offer_ref,
+            "action_id": "DEMO-SCHEMA-NEW-2",
+            "expected_revision": "1",
+            "current_field": "value under active schema",
+        }
+        saved = client.post(
+            f"/my-drafts/{REF}/surplus-offers", content=urlencode(form),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(saved.status_code, 303, saved.text)
+        latest = current_ledger.read_owned(owner, REF, offer_ref)
+        self.assertEqual(latest.revision, 2)
+        self.assertEqual(latest.schema_version, 2)
+        self.assertEqual(latest.values, {"current_field": "value under active schema"})
+        self.assertEqual(latest.previous_receipt_digest, first.receipt_digest)
+
     def test_surplus_draft_household_ui_uses_csrf_utf8_and_version_conflicts(self):
         ledger = SqliteSyntheticSurplusDraftLedger(
             str(self.path.parent / "surplus-drafts-ui.sqlite3"),

@@ -1063,7 +1063,12 @@ class HouseholdProfileFlowTests(unittest.TestCase):
 
         def wrong_owner(principal, household_ref, offer_ref):
             calls.append((principal.subject, household_ref, offer_ref))
-            raise RuntimeError("private authority secret")
+            if principal.subject == OWNER:
+                raise RuntimeError("private authority secret")
+            offer = OfferRevision(
+                offer_ref, household_ref, OWNER, 1, "d" * 64,
+            )
+            return offer, PublicationAuthorities(current_offer=offer)
 
         app = self.make_app(surplus_authority=wrong_owner)
         client = TestClient(app, base_url=ORIGIN)

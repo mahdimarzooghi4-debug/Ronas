@@ -1059,6 +1059,9 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             client.put(path, json=stale, headers=self.bearer()).status_code, 409,
         )
         session = self.browser_session()
+        sid = next(key for key, value in self.sessions.sessions.items()
+                   if value is session)
+        client.cookies.set("__Host-ronas_session", sid)
         cookie_only = client.put(path, json=stale)
         self.assertEqual(cookie_only.status_code, 401)
 

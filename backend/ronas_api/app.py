@@ -39,6 +39,7 @@ from .gate_evidence_handoff_sqlite import (SqliteSyntheticGateEvidenceHandoff,
 from .gate_evidence_handoff_api import build_gate_handoff_read_router
 from .gate_evidence_authority_enquiry_sqlite import SqliteSyntheticAuthorityEnquiryLedger
 from .gate_evidence_authority_enquiry_api import build_authority_enquiry_read_router
+from .domestic_surplus_publication_api import build_domestic_surplus_publication_router
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -65,6 +66,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                household_profile_access_authority=None,
                household_stage_context_authority=None,
                household_stage_artifact_store: StageArtifactStore | None = None,
+               household_surplus_publication_authority=None,
                export_source_connectors: ExportSourceConnectorRegistry | None = None) -> FastAPI:
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
@@ -84,6 +86,17 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             or not callable(household_profile_access_authority)
             or not callable(household_stage_context_authority)):
         raise ValueError("stage artifact storage requires the shared household ledger, browser, profile, and current-context authorities")
+    if household_surplus_publication_authority is not None and (
+            not callable(household_surplus_publication_authority)
+            or not isinstance(config, KeycloakConfig)
+            or browser_flow is None
+            or not isinstance(scoped_registry, SqliteSyntheticHouseholdProfileLedger)
+            or technical_review_ledger is not scoped_registry
+            or household_profile_schema != scoped_registry.profile_schema
+            or not callable(household_profile_access_authority)):
+        raise ValueError(
+            "surplus publication readiness requires the shared owner-scoped household ledger"
+        )
     app = FastAPI(
         title="Ronas bounded read-only API foundation",
         docs_url=None, redoc_url=None, openapi_url=None,
@@ -307,6 +320,10 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             stage_context_authority=household_stage_context_authority,
             stage_artifact_store=household_stage_artifact_store,
         ))
+        if household_surplus_publication_authority is not None:
+            app.include_router(build_domestic_surplus_publication_router(
+                household_surplus_publication_authority, principal,
+            ))
         if household_stage_artifact_store is not None:
             app.include_router(build_stage_artifact_router(
                 household_stage_artifact_store, principal,

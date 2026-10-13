@@ -33,7 +33,22 @@ jobs:
   secure-api-contracts:
     name: Python 3.12 Keycloak JWKS and client-role isolation
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ronas_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ronas_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      RONAS_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/ronas_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

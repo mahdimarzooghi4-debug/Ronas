@@ -285,11 +285,20 @@ def build_browser_router(flow: BrowserOIDC) -> APIRouter:
         if not csrf and request.headers.get("content-type", "").split(";", 1)[0].strip() == (
             "application/x-www-form-urlencoded"
         ):
-            body = await request.body()
-            if len(body) > 2048:
-                raise HTTPException(status_code=413, detail="LOGOUT_REQUEST_TOO_LARGE")
+            declared = request.headers.get("content-length")
+            if declared:
+                try:
+                    if int(declared) > 2048:
+                        raise HTTPException(status_code=413, detail="LOGOUT_REQUEST_TOO_LARGE")
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail="INVALID_LOGOUT_REQUEST") from exc
+            chunks = bytearray()
+            async for chunk in request.stream():
+                chunks.extend(chunk)
+                if len(chunks) > 2048:
+                    raise HTTPException(status_code=413, detail="LOGOUT_REQUEST_TOO_LARGE")
             try:
-                fields = parse_qs(body.decode("ascii"), strict_parsing=True)
+                fields = parse_qs(bytes(chunks).decode("ascii"), strict_parsing=True)
                 csrf_values = fields.get("csrf", [])
                 csrf = csrf_values[0] if len(csrf_values) == 1 else None
             except (UnicodeDecodeError, ValueError):
@@ -330,7 +339,7 @@ def build_browser_router(flow: BrowserOIDC) -> APIRouter:
         state: str = "",
         logout_state: str | None = Cookie(default=None, alias="__Host-ronas_logout"),
     ):
-        if (not state or not logout_state
+        if (not _safe_string(state, 180) or not _safe_string(logout_state, 180)
                 or not hmac.compare_digest(state, logout_state)):
             raise HTTPException(status_code=400, detail="LOGOUT_CALLBACK_REJECTED")
         response = RedirectResponse("/", status_code=303)

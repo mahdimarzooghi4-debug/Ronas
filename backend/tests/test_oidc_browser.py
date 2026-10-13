@@ -281,7 +281,7 @@ class BrowserLoginTests(unittest.TestCase):
         self.assertEqual(location.netloc, "keycloak.example.test")
         self.assertEqual(location.path, "/realms/ronas/protocol/openid-connect/logout")
         query = parse_qs(location.query)
-        self.assertEqual(query["client_id"], [WEB])
+        self.assertEqual(query["client_id"], [BROWSER])
         self.assertEqual(
             query["post_logout_redirect_uri"],
             [ORIGIN + "/api/auth/logout/callback"],

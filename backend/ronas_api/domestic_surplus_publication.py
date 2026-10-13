@@ -20,7 +20,7 @@ Blocker = Literal[
     "CURRENT_OFFER_UNAVAILABLE", "OFFER_VERSION_CHANGED",
     "PRODUCER_APPROVAL_REQUIRED", "PRODUCER_APPROVAL_STALE",
     "QUALITY_SAFETY_VERIFICATION_REQUIRED",
-    "QUALITY_SAFETY_VERIFICATION_STALE",
+    "QUALITY_SAFETY_VERIFICATION_STALE", "OFFER_SCHEMA_CHANGED",
     "SELLER_ELIGIBILITY_UNVERIFIED", "HOUSEHOLD_PERMISSION_INACTIVE",
     "MARKETPLACE_GATE_CLOSED",
 ]
@@ -120,7 +120,7 @@ class PublicationReadiness:
 
     def as_dict(self) -> dict:
         return {
-            "contract_version": "ronas.domestic.surplus-publication-gate.v1",
+            "contract_version": "ronas.domestic.surplus-publication-gate.v2",
             "offer_ref": self.offer_ref,
             "household_ref": self.household_ref,
             "revision": self.revision,
@@ -148,15 +148,17 @@ def _same_revision(
 
 def evaluate_surplus_publication(
     proposed: OfferRevision, authorities: PublicationAuthorities,
+    *, offer_schema_current: bool = True,
 ) -> PublicationReadiness:
     """Evaluate separate publication gates for one exact current version.
 
     A green result only means the supplied authorities permit a later publish
     command. This function never publishes or creates a public listing.
     """
-    if not isinstance(proposed, OfferRevision) or not isinstance(
-            authorities, PublicationAuthorities):
-        raise ValueError("versioned offer and trusted authorities required")
+    if (not isinstance(proposed, OfferRevision)
+            or not isinstance(authorities, PublicationAuthorities)
+            or type(offer_schema_current) is not bool):
+        raise ValueError("versioned offer, schema state, and trusted authorities required")
     blockers: list[Blocker] = []
     current = authorities.current_offer
     if current is None:
@@ -191,6 +193,9 @@ def evaluate_surplus_publication(
     if not authorities.marketplace_gate_open:
         blockers.append("MARKETPLACE_GATE_CLOSED")
 
+    if not offer_schema_current:
+        blockers.append("OFFER_SCHEMA_CHANGED")
+
     can_publish = not blockers
     readiness_digest = hashlib.sha256(json.dumps(
         {
@@ -215,6 +220,7 @@ def evaluate_surplus_publication(
             "seller_eligibility_verified": authorities.seller_eligibility_verified,
             "household_permission_active": authorities.household_permission_active,
             "marketplace_gate_open": authorities.marketplace_gate_open,
+            "offer_schema_current": offer_schema_current,
             "blockers": blockers,
         },
         sort_keys=True, separators=(",", ":"), ensure_ascii=False,

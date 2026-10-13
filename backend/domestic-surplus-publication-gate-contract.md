@@ -22,3 +22,11 @@ Validation covers version and digest drift, missing/rejected attestations,
 wrong producer, same-actor quality verification, independent default-closed
 admission gates, owner scoping, authority failures, and a projection that never
 exposes private evidence or claims publication.
+
+
+When the private surplus draft ledger is composed into readiness, the evaluated
+candidate is the owner's exact latest persisted revision and payload digest. The
+resolver must independently return the same version and current attestations; older
+approvals produce version/staleness blockers. A draft whose schema digest is no
+longer active receives OFFER_SCHEMA_CHANGED and cannot pass the technical gate.
+No field values are returned by the readiness projection.

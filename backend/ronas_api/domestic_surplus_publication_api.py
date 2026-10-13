@@ -1,5 +1,7 @@
 """Owner-scoped read endpoint for Domestic surplus publication readiness."""
+import sqlite3
 from collections.abc import Callable
+from dataclasses import replace
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -8,6 +10,7 @@ from .scoped_drafts import _synthetic_ref
 from .domestic_surplus_publication import (
     OfferRevision, PublicationAuthorities, evaluate_surplus_publication,
 )
+from .domestic_surplus_drafts import SqliteSyntheticSurplusDraftLedger
 
 PublicationAuthority = Callable[
     [Principal, str, str],
@@ -20,6 +23,7 @@ def publication_readiness_snapshot(
     principal: Principal,
     household_ref: str,
     offer_ref: str,
+    draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
 ) -> dict:
     """One owner and version check shared by API and authenticated UI."""
     if (not isinstance(principal, Principal)
@@ -27,6 +31,22 @@ def publication_readiness_snapshot(
             or not _synthetic_ref(household_ref)
             or not _synthetic_ref(offer_ref)):
         raise HTTPException(404, detail="OFFER_NOT_FOUND")
+    persisted_offer = None
+    schema_current = True
+    if draft_ledger is not None:
+        try:
+            draft = draft_ledger.read_owned(principal, household_ref, offer_ref)
+        except LookupError as exc:
+            raise HTTPException(404, detail="OFFER_NOT_FOUND") from exc
+        except (RuntimeError, sqlite3.Error) as exc:
+            raise HTTPException(
+                503, detail="PUBLICATION_AUTHORITY_UNAVAILABLE",
+            ) from exc
+        persisted_offer = OfferRevision(
+            draft.offer_ref, draft.household_ref, draft.producer_subject,
+            draft.revision, draft.payload_digest,
+        )
+        schema_current = draft.schema_digest == draft_ledger.schema.digest
     try:
         snapshot = authority(principal, household_ref, offer_ref)
     except Exception as exc:
@@ -42,8 +62,14 @@ def publication_readiness_snapshot(
             or offer.producer_subject != principal.subject
             or not isinstance(authorities, PublicationAuthorities)):
         raise HTTPException(404, detail="OFFER_NOT_FOUND")
+    proposed = offer if persisted_offer is None else persisted_offer
+    if persisted_offer is not None and offer != persisted_offer:
+        # Conflicting resolver and durable draft snapshots fail closed as stale.
+        authorities = replace(authorities, current_offer=offer)
     try:
-        return evaluate_surplus_publication(offer, authorities).as_dict()
+        return evaluate_surplus_publication(
+            proposed, authorities, offer_schema_current=schema_current,
+        ).as_dict()
     except ValueError as exc:
         raise HTTPException(
             503, detail="PUBLICATION_AUTHORITY_UNAVAILABLE",
@@ -53,9 +79,12 @@ def publication_readiness_snapshot(
 def build_domestic_surplus_publication_router(
     authority: PublicationAuthority,
     verified_principal: Callable[..., Principal],
+    draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
 ) -> APIRouter:
     """Mount only with a live, owner-scoped authority resolver."""
-    if not callable(authority) or not callable(verified_principal):
+    if (not callable(authority) or not callable(verified_principal)
+            or (draft_ledger is not None
+                and not isinstance(draft_ledger, SqliteSyntheticSurplusDraftLedger))):
         raise ValueError("trusted publication and identity authorities required")
     router = APIRouter()
 
@@ -68,7 +97,7 @@ def build_domestic_surplus_publication_router(
         principal: Principal = Depends(verified_principal),
     ) -> dict:
         return publication_readiness_snapshot(
-            authority, principal, household_ref, offer_ref,
+            authority, principal, household_ref, offer_ref, draft_ledger,
         )
 
     return router

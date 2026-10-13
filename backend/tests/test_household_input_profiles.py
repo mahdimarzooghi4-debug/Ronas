@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import secrets
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -1208,14 +1209,25 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             f"/my-drafts/{REF}/surplus-offers/new", follow_redirects=False,
         )
         self.assertEqual(started.status_code, 303, started.text)
-        generated_ref = parse_qs(urlsplit(started.headers["location"]).query)["offer_ref"][0]
-        self.assertRegex(generated_ref, r"^DEMO-OFFER-[0-9A-F]{32}$")
-        editor = client.get(started.headers["location"])
-        self.assertEqual(editor.status_code, 200, editor.text)
-        self.assertIn("پیش‌نویس جدید و خصوصی", editor.text)
+        abandoned_ref = parse_qs(urlsplit(started.headers["location"]).query)["offer_ref"][0]
+        self.assertRegex(abandoned_ref, r"^DEMO-OFFER-[0-9A-F]{32}$")
+        abandoned_editor = client.get(started.headers["location"])
+        self.assertEqual(abandoned_editor.status_code, 200, abandoned_editor.text)
+        self.assertIn("پیش‌نویس جدید و خصوصی", abandoned_editor.text)
+        self.assertIn("انصراف و دور انداختن فرم ذخیره‌نشده", abandoned_editor.text)
+        cancelled = client.get(f"/my-drafts/{REF}/surplus-offers")
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
         self.assertEqual(
             ledger.list_owned(Principal(OWNER, frozenset({"household"})), REF), (),
         )
+
+        started = client.get(
+            f"/my-drafts/{REF}/surplus-offers/new", follow_redirects=False,
+        )
+        generated_ref = parse_qs(urlsplit(started.headers["location"]).query)["offer_ref"][0]
+        self.assertNotEqual(generated_ref, abandoned_ref)
+        editor = client.get(started.headers["location"])
+        self.assertEqual(editor.status_code, 200, editor.text)
 
         form = {
             "csrf": session.csrf, "offer_ref": generated_ref,
@@ -1310,6 +1322,55 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(latest.schema_version, 2)
         self.assertEqual(latest.values, {"current_field": "value under active schema"})
         self.assertEqual(latest.previous_receipt_digest, first.receipt_digest)
+
+        history_api = client.get(
+            api_path + "/revisions", headers=self.bearer(),
+        )
+        self.assertEqual(history_api.status_code, 200, history_api.text)
+        revisions = history_api.json()["revisions"]
+        self.assertEqual([row["revision"] for row in revisions], [1, 2])
+        self.assertEqual(revisions[0]["values"], {})
+        self.assertTrue(revisions[0]["schema_changed"])
+        self.assertEqual(revisions[1]["values"],
+                         {"current_field": "value under active schema"})
+        self.assertNotIn("private old meaning", history_api.text)
+        original_chain_reader = current_ledger._chain_rows
+
+        def storage_failure(*_args):
+            raise sqlite3.OperationalError("private database location")
+
+        current_ledger._chain_rows = storage_failure
+        try:
+            unavailable = client.get(
+                api_path + "/revisions", headers=self.bearer(),
+            )
+        finally:
+            current_ledger._chain_rows = original_chain_reader
+        self.assertEqual(unavailable.status_code, 503, unavailable.text)
+        self.assertEqual(unavailable.json()["detail"], "DRAFT_STORAGE_UNAVAILABLE")
+        self.assertNotIn("private database location", unavailable.text)
+        hidden_history = client.get(
+            api_path + "/revisions",
+            headers=self.bearer("synthetic-other-owner", ("household",)),
+        )
+        self.assertEqual(hidden_history.status_code, 404)
+        disabled = TestClient(create_app(self.config), base_url=ORIGIN)
+        self.assertEqual(
+            disabled.get(api_path + "/revisions", headers=self.bearer()).status_code,
+            404,
+        )
+
+        history_page = client.get(
+            f"/my-drafts/{REF}/surplus-offers/{offer_ref}/revisions",
+        )
+        self.assertEqual(history_page.status_code, 200, history_page.text)
+        self.assertEqual(history_page.headers["cache-control"], "no-store")
+        self.assertIn("نسخه 1", history_page.text)
+        self.assertIn("نسخه 2", history_page.text)
+        self.assertIn("value under active schema", history_page.text)
+        self.assertNotIn("private old meaning", history_page.text)
+        self.assertNotIn("legacy_field", history_page.text)
+
 
     def test_surplus_draft_household_ui_uses_csrf_utf8_and_version_conflicts(self):
         ledger = SqliteSyntheticSurplusDraftLedger(

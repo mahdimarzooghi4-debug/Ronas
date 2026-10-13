@@ -86,12 +86,17 @@ LOGOUT_SCRIPT = """document.addEventListener('DOMContentLoaded', () => {
       const status = await fetch('/api/auth/session', {credentials:'same-origin', cache:'no-store'});
       if (!status.ok) throw Error('NO_ACTIVE_SESSION');
       const data = await status.json();
-      const result = await fetch('/api/auth/logout', {
-        method:'POST', credentials:'same-origin', cache:'no-store',
-        headers:{'X-CSRF-Token':data.csrf}
-      });
-      if (!result.ok) throw Error('LOGOUT_REJECTED');
-      window.location.replace('/');
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = '/api/auth/logout/keycloak';
+      form.hidden = true;
+      const csrf = document.createElement('input');
+      csrf.type = 'hidden';
+      csrf.name = 'csrf';
+      csrf.value = data.csrf;
+      form.appendChild(csrf);
+      document.body.appendChild(form);
+      form.requestSubmit();
     } catch {
       button.disabled = false;
       const notice = document.getElementById('logout-message');

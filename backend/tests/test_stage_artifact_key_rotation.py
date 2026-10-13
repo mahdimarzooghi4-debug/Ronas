@@ -106,23 +106,30 @@ class StageArtifactKeyRotationTests(unittest.TestCase):
         class Broken:
             def rotate_batch(self, *, limit):
                 raise RuntimeError("secret DSN should not escape")
-        env = {
-            "RONAS_STAGE_ARTIFACT_ROTATION_ENABLE": "LOCAL_TEST_ONLY",
-            "RONAS_STAGE_ARTIFACT_POSTGRES_DSN": "postgresql://opaque",
-            "RONAS_STAGE_ARTIFACT_ACTIVE_KEY_ID": "key-b",
-            "RONAS_STAGE_ARTIFACT_KEYRING_DIRECTORY": "/tmp/keys",
-            "RONAS_STAGE_ARTIFACT_SCOPE_KEY_FILE": "/tmp/scope.key",
-        }
-        def factory(*args, **kwargs):
-            return Broken()
-        output = io.StringIO()
-        import contextlib
-        errors = io.StringIO()
-        with contextlib.redirect_stderr(errors):
-            code = main([], environ=env, store_factory=factory, output=output)
-        self.assertEqual(code, 2)
-        self.assertNotIn("secret DSN", errors.getvalue())
-        self.assertEqual(output.getvalue(), "")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            keys = root / "keys"
+            keys.mkdir(mode=0o700)
+            self.private_key(keys / "key-b.key", b"b")
+            scope = root / "scope.key"
+            self.private_key(scope, b"s")
+            env = {
+                "RONAS_STAGE_ARTIFACT_ROTATION_ENABLE": "LOCAL_TEST_ONLY",
+                "RONAS_STAGE_ARTIFACT_POSTGRES_DSN": "postgresql://opaque",
+                "RONAS_STAGE_ARTIFACT_ACTIVE_KEY_ID": "key-b",
+                "RONAS_STAGE_ARTIFACT_KEYRING_DIRECTORY": str(keys),
+                "RONAS_STAGE_ARTIFACT_SCOPE_KEY_FILE": str(scope),
+            }
+            def factory(*args, **kwargs):
+                return Broken()
+            output = io.StringIO()
+            import contextlib
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                code = main([], environ=env, store_factory=factory, output=output)
+            self.assertEqual(code, 2)
+            self.assertNotIn("secret DSN", errors.getvalue())
+            self.assertEqual(output.getvalue(), "")
 
 
 if __name__ == "__main__":

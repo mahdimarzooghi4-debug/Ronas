@@ -309,7 +309,6 @@ def build_authenticated_ui_router(
             not callable(household_surplus_publication_authority)
             or not isinstance(household_input_ledger,
                               SqliteSyntheticHouseholdProfileLedger)
-            or household_input_ledger is not owned_case_ledger
             or household_input_ledger is not technical_review_ledger
             or household_profile_schema != household_input_ledger.profile_schema
             or not callable(household_profile_access_authority)):
@@ -1914,7 +1913,14 @@ def build_authenticated_ui_router(
                     + str(result["current_revision"]) + '">'
                     + ''.join(controls)
                     + '<button type="submit">ذخیره نسخه جدید</button></form>'
-                    + '<h3>تاریخچه اصلاح</h3>'
+                    + ('<form method="get" action="/my-drafts/' + quote(ref)
+                        + '/surplus-publication-readiness">'
+                        '<label for="surplus-offer-ref">شناسه پیشنهاد مازاد (DEMO)</label>'
+                        '<input id="surplus-offer-ref" name="offer_ref" required '
+                        'pattern="DEMO-[A-Za-z0-9._:-]{1,96}" maxlength="101">'
+                        '<button type="submit">بررسی آمادگی فنی</button></form>'
+                        if household_surplus_publication_authority is not None else '')
+                     + '<h3>تاریخچه اصلاح</h3>'
                     + ('<ol>' + history + '</ol>' if history else
                        '<p>هنوز نسخه‌ای ثبت نشده است.</p>')
                     + '<p>مقادیر فقط برای صاحب پرونده قابل مشاهده‌اند. '
@@ -2414,6 +2420,80 @@ def build_authenticated_ui_router(
                 "/my-drafts/" + quote(ref) + "/input-revisions",
                 status_code=303,
             )
+
+
+    if household_surplus_publication_authority is not None:
+        @router.get("/my-drafts/{ref}/surplus-publication-readiness")
+        def household_surplus_readiness_page(
+            ref: str,
+            offer_ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            identity = Principal(session.subject, session.roles)
+            try:
+                result = publication_readiness_snapshot(
+                    household_surplus_publication_authority,
+                    identity, ref, offer_ref,
+                )
+            except HTTPException as exc:
+                if exc.status_code == 404:
+                    return page(
+                        "روناس — آمادگی پیشنهاد مازاد",
+                        '<p>پیشنهاد در دسترس نیست.</p>'
+                        '<p><a href="/my-drafts/' + quote(ref) + '/cultivation-inputs">بازگشت به پرونده</a></p>',
+                        logged_in=True, code=404,
+                    )
+                return page(
+                    "روناس — آمادگی پیشنهاد مازاد",
+                    '<p role="status">وضعیت آمادگی اکنون قابل دریافت نیست؛ بعداً دوباره تلاش کنید.</p>'
+                    '<p><a href="/my-drafts/' + quote(ref) + '/cultivation-inputs">بازگشت به پرونده</a></p>',
+                    logged_in=True, code=503,
+                )
+            blocker_labels = {
+                "CURRENT_OFFER_UNAVAILABLE": "نسخه جاری پیشنهاد در دسترس نیست",
+                "OFFER_VERSION_CHANGED": "نسخه پیشنهاد تغییر کرده است",
+                "PRODUCER_APPROVAL_REQUIRED": "تأیید تولیدکننده ثبت نشده است",
+                "PRODUCER_APPROVAL_STALE": "تأیید تولیدکننده با نسخه جاری هم‌خوان نیست",
+                "QUALITY_SAFETY_VERIFICATION_REQUIRED": "بررسی مستقل کیفیت و ایمنی ثبت نشده است",
+                "QUALITY_SAFETY_VERIFICATION_STALE": "بررسی کیفیت و ایمنی با نسخه جاری هم‌خوان نیست",
+                "SELLER_ELIGIBILITY_UNVERIFIED": "وضعیت صلاحیت فروشنده احراز نشده است",
+                "HOUSEHOLD_PERMISSION_INACTIVE": "مجوز خانوار فعال نیست",
+                "MARKETPLACE_GATE_CLOSED": "درگاه فنی بازارگاه باز نیست",
+            }
+            blockers = result.get("blockers")
+            if (not isinstance(blockers, list)
+                    or any(code not in blocker_labels for code in blockers)
+                    or result.get("published") is not False
+                    or result.get("real_data") is not False):
+                return page(
+                    "روناس — آمادگی پیشنهاد مازاد",
+                    '<p role="status">وضعیت آمادگی قابل نمایش نیست.</p>',
+                    logged_in=True, code=503,
+                )
+            state = (
+                "الزامات فنیِ تعریف‌شده برای این نسخه برقرار است"
+                if result.get("can_publish") is True
+                and result.get("state") == "PUBLICATION_AUTHORIZED"
+                else "پیشنهاد هنوز در وضعیت پیش‌نویس غیرعمومی است"
+            )
+            items = ''.join(
+                '<li>' + blocker_labels[code] + '</li>' for code in blockers
+            ) or '<li>مانعی در کنترل‌های فنی ثبت نشده است</li>'
+            body = (
+                '<article class="panel"><h2>آمادگی فنی پیشنهاد مازاد</h2>'
+                '<p>' + state + '</p>'
+                '<p>این نتیجه فقط بررسی فنیِ نسخه جاری است؛ به‌معنای انتشار، '
+                'نمایش به خریدار، مجوز فروش، تأیید علمی کیفیت یا اقدام مالی نیست.</p>'
+                '<p>وضعیت انتشار: منتشر نشده</p>'
+                '<h3>موارد نیازمند توجه</h3><ul>' + items + '</ul>'
+                '<p><a href="/my-drafts/' + quote(ref)
+                + '/cultivation-inputs">بازگشت به پرونده</a></p></article>'
+            )
+            return page("روناس — آمادگی پیشنهاد مازاد", body, logged_in=True)
 
     if isinstance(household_input_ledger, SqliteSyntheticExpertQuestionLedger):
         @router.get("/my-drafts/{ref}/question-responses")

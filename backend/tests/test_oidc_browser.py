@@ -265,6 +265,61 @@ class BrowserLoginTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/auth/session").status_code, 401)
         self.assertEqual(self.client.get(DOMESTIC_OPS).status_code, 401)
 
+    def test_keycloak_rp_initiated_logout_revokes_locally_and_validates_callback_state(self):
+        _, params = self.start()
+        self.assertEqual(self.complete(params).status_code, 303)
+        session = self.client.get("/api/auth/session").json()
+        self.assertNotIn("id_token", session)
+        response = self.client.post(
+            "/api/auth/logout/keycloak",
+            data={"csrf": session["csrf"]},
+            headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(response.status_code, 303, response.text)
+        location = urlsplit(response.headers["location"])
+        self.assertEqual(location.scheme, "https")
+        self.assertEqual(location.netloc, "identity.example.test")
+        self.assertEqual(location.path, "/realms/ronas/protocol/openid-connect/logout")
+        query = parse_qs(location.query)
+        self.assertEqual(query["client_id"], [WEB])
+        self.assertEqual(
+            query["post_logout_redirect_uri"],
+            [ORIGIN + "/api/auth/logout/callback"],
+        )
+        self.assertEqual(len(query["id_token_hint"][0]), 3 * 3 + 1)
+        state = query["state"][0]
+        self.assertIn("Secure", response.headers["set-cookie"])
+        self.assertIn("HttpOnly", response.headers["set-cookie"])
+        self.assertEqual(self.client.get("/api/auth/session").status_code, 401)
+        rejected = self.client.get(
+            "/api/auth/logout/callback", params={"state": state + "wrong"},
+        )
+        self.assertEqual(rejected.status_code, 400)
+        returned = self.client.get(
+            "/api/auth/logout/callback", params={"state": state},
+        )
+        self.assertEqual(returned.status_code, 303)
+        self.assertEqual(returned.headers["location"], "/")
+        replay = self.client.get(
+            "/api/auth/logout/callback", params={"state": state},
+        )
+        self.assertEqual(replay.status_code, 400)
+
+    def test_keycloak_logout_requires_current_origin_and_csrf(self):
+        _, params = self.start()
+        self.assertEqual(self.complete(params).status_code, 303)
+        session = self.client.get("/api/auth/session").json()
+        self.assertEqual(self.client.post(
+            "/api/auth/logout/keycloak",
+            headers={"Origin": ORIGIN, "X-CSRF-Token": "wrong"},
+        ).status_code, 403)
+        self.assertEqual(self.client.post(
+            "/api/auth/logout/keycloak",
+            headers={"Origin": "https://attacker.example",
+                     "X-CSRF-Token": session["csrf"]},
+        ).status_code, 403)
+        self.assertEqual(self.client.get("/api/auth/session").status_code, 200)
+
     def test_bearer_header_has_no_cookie_fallback(self):
         _, params = self.start()
         self.complete(params)

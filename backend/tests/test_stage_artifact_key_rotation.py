@@ -79,6 +79,17 @@ class StageArtifactKeyRotationTests(unittest.TestCase):
             with self.assertRaises(RotationConfigurationError):
                 load_key_material(self.settings(root, keys, scope))
 
+    def test_stable_scope_key_must_be_outside_encryption_keyring(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            keys = root / "keys"
+            keys.mkdir(mode=0o700)
+            self.private_key(keys / "key-b.key", b"b")
+            scope = keys / "scope.key"
+            self.private_key(scope, b"s")
+            with self.assertRaises(RotationConfigurationError):
+                load_key_material(self.settings(root, keys, scope))
+
     def test_environment_requires_explicit_local_test_opt_in_and_inputs(self):
         with self.assertRaises(RotationConfigurationError):
             RotationSettings.from_environment({})

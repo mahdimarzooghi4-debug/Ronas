@@ -112,6 +112,16 @@ def load_key_material(settings: RotationSettings) -> tuple[dict[str, bytes], byt
                 or stat.S_IMODE(info.st_mode) & 0o077
                 or (hasattr(os, "getuid") and info.st_uid != os.getuid())):
             raise RotationConfigurationError("keyring directory is not private")
+        resolved_directory = directory.resolve(strict=True)
+        resolved_scope_key = settings.scope_key_file.resolve(strict=False)
+        try:
+            resolved_scope_key.relative_to(resolved_directory)
+        except ValueError:
+            pass
+        else:
+            raise RotationConfigurationError(
+                "stable scope key must be stored outside the encryption keyring"
+            )
         keyring: dict[str, bytes] = {}
         for path in sorted(directory.iterdir()):
             if path.suffix != ".key":

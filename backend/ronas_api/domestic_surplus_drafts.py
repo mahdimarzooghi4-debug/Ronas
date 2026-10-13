@@ -98,15 +98,21 @@ class SqliteSyntheticSurplusDraftLedger:
         return hashlib.sha256(canonical).hexdigest()
 
     @staticmethod
-    def _owner(principal: Any, household_ref: str, offer_ref: str) -> str:
+    def _household_owner(principal: Any, household_ref: str) -> str:
         from .auth import Principal
         if (not isinstance(principal, Principal)
                 or "household" not in principal.roles
                 or not _synthetic_ref(household_ref)
-                or not _synthetic_ref(offer_ref)
                 or not principal.subject or len(principal.subject) > 256):
             raise LookupError("draft unavailable")
         return principal.subject
+
+    @classmethod
+    def _owner(cls, principal: Any, household_ref: str, offer_ref: str) -> str:
+        owner = cls._household_owner(principal, household_ref)
+        if not _synthetic_ref(offer_ref):
+            raise LookupError("draft unavailable")
+        return owner
 
     def _authorized_owner(self, principal: Any, household_ref: str,
                           offer_ref: str) -> str:
@@ -259,7 +265,7 @@ class SqliteSyntheticSurplusDraftLedger:
         self, principal: Any, household_ref: str,
     ) -> tuple[SurplusDraftRevision, ...]:
         """Return current private drafts for one authorized synthetic household."""
-        owner = self._owner(principal, household_ref, "DEMO-LIST")
+        owner = self._household_owner(principal, household_ref)
         try:
             permitted = self._owner_access_authority(
                 principal, household_ref, self.schema.schema_ref,

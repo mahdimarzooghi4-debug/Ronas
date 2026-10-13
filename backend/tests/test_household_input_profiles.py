@@ -1338,11 +1338,17 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             headers=self.bearer("synthetic-other-owner", ("household",)),
         )
         self.assertEqual(hidden_history.status_code, 404)
+        disabled = TestClient(create_app(self.config), base_url=ORIGIN)
+        self.assertEqual(
+            disabled.get(api_path + "/revisions", headers=self.bearer()).status_code,
+            404,
+        )
 
         history_page = client.get(
             f"/my-drafts/{REF}/surplus-offers/{offer_ref}/revisions",
         )
         self.assertEqual(history_page.status_code, 200, history_page.text)
+        self.assertEqual(history_page.headers["cache-control"], "no-store")
         self.assertIn("نسخه 1", history_page.text)
         self.assertIn("نسخه 2", history_page.text)
         self.assertIn("value under active schema", history_page.text)

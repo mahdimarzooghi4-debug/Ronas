@@ -40,6 +40,8 @@ from .gate_evidence_handoff_api import build_gate_handoff_read_router
 from .gate_evidence_authority_enquiry_sqlite import SqliteSyntheticAuthorityEnquiryLedger
 from .gate_evidence_authority_enquiry_api import build_authority_enquiry_read_router
 from .domestic_surplus_publication_api import build_domestic_surplus_publication_router
+from .domestic_surplus_drafts import SqliteSyntheticSurplusDraftLedger
+from .domestic_surplus_drafts_api import build_domestic_surplus_drafts_router
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -67,6 +69,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                household_stage_context_authority=None,
                household_stage_artifact_store: StageArtifactStore | None = None,
                household_surplus_publication_authority=None,
+               household_surplus_draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
                export_source_connectors: ExportSourceConnectorRegistry | None = None) -> FastAPI:
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
@@ -96,6 +99,20 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             or not callable(household_profile_access_authority)):
         raise ValueError(
             "surplus publication readiness requires the shared owner-scoped household ledger"
+        )
+    if household_surplus_draft_ledger is not None and (
+            not isinstance(household_surplus_draft_ledger,
+                            SqliteSyntheticSurplusDraftLedger)
+            or not isinstance(config, KeycloakConfig)
+            or browser_flow is None
+            or not isinstance(scoped_registry, SqliteSyntheticHouseholdProfileLedger)
+            or technical_review_ledger is not scoped_registry
+            or household_profile_schema is None
+            or not callable(household_profile_access_authority)
+            or household_surplus_draft_ledger._owner_access_authority
+                != household_profile_access_authority):
+        raise ValueError(
+            "surplus drafts require the shared household owner authority and Keycloak BFF"
         )
     app = FastAPI(
         title="Ronas bounded read-only API foundation",
@@ -164,6 +181,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             domestic_partner_workspace=domestic_partner_workspace,
             export_source_connectors=export_source_connectors,
             household_surplus_publication_authority=household_surplus_publication_authority,
+            household_surplus_draft_ledger=household_surplus_draft_ledger,
         ))
 
     @app.middleware("http")
@@ -324,6 +342,10 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         if household_surplus_publication_authority is not None:
             app.include_router(build_domestic_surplus_publication_router(
                 household_surplus_publication_authority, principal,
+            ))
+        if household_surplus_draft_ledger is not None:
+            app.include_router(build_domestic_surplus_drafts_router(
+                household_surplus_draft_ledger, principal,
             ))
         if household_stage_artifact_store is not None:
             app.include_router(build_stage_artifact_router(

@@ -28,6 +28,7 @@ from ronas_api.agronomy_workspace import (
 )
 from ronas_api.expert_review_questions_sqlite import SqliteSyntheticExpertQuestionLedger
 from ronas_api.domestic_surplus_publication import OfferRevision, PublicationAuthorities
+from ronas_api.domestic_surplus_drafts import SqliteSyntheticSurplusDraftLedger
 from ronas_api.internal_cultivation_plan_contract import (
     InternalCultivationProposal, ProposedCultivationStage,
 )
@@ -177,7 +178,8 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         )
 
     def make_app(self, *, schema=True, authority=True, stage_authority=True,
-                 artifact_store=None, surplus_authority=None):
+                 artifact_store=None, surplus_authority=None,
+                 surplus_draft_ledger=None):
         return create_app(
             self.config, self.flow, scoped_registry=self.ledger,
             technical_review_ledger=self.ledger,
@@ -188,6 +190,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             ),
             household_stage_artifact_store=artifact_store,
             household_surplus_publication_authority=surplus_authority,
+            household_surplus_draft_ledger=surplus_draft_ledger,
         )
 
     def stage_command(self, *, action="DEMO-STAGE-OBS-1", revision=0):
@@ -1020,6 +1023,161 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(adapter.contexts[0].input_revision, 1)
         self.assertEqual(self.ledger.internal_proposal_lineage(REF)[:2], (2, 2))
 
+
+    def test_surplus_draft_api_enforces_bearer_owner_and_revision(self):
+        ledger = SqliteSyntheticSurplusDraftLedger(
+            str(self.path.parent / "surplus-drafts.sqlite3"),
+            self.schema, self.allowed,
+        )
+        client = TestClient(
+            self.make_app(surplus_draft_ledger=ledger), base_url=ORIGIN,
+        )
+        path = (
+            f"/api/v1/domestic/household-intake/my-drafts/{REF}"
+            "/surplus-offers/DEMO-OFFER-API-1"
+        )
+        disabled = TestClient(create_app(self.config), base_url=ORIGIN)
+        self.assertEqual(disabled.get(path).status_code, 404)
+        self.assertEqual(disabled.put(path, json={}).status_code, 404)
+        command = {
+            "action_id": "DEMO-OFFER-API-A1",
+            "expected_revision": 0,
+            "values": {"field_alpha": "synthetic product", "field_choice": "sample-a"},
+        }
+        created = client.put(path, json=command, headers=self.bearer())
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertFalse(created.json()["published"])
+        self.assertFalse(created.json()["real_data"])
+        self.assertNotIn("producer_subject", created.json())
+        self.assertEqual(created.json()["revision"], 1)
+        read = client.get(path, headers=self.bearer())
+        self.assertEqual(read.status_code, 200, read.text)
+        self.assertEqual(read.json()["values"], command["values"])
+        other = client.get(
+            path, headers=self.bearer("synthetic-other", ("household",)),
+        )
+        self.assertEqual(other.status_code, 404)
+        stale = dict(command, action_id="DEMO-OFFER-API-A2")
+        self.assertEqual(
+            client.put(path, json=stale, headers=self.bearer()).status_code, 409,
+        )
+        session = self.browser_session()
+        sid = next(key for key, value in self.sessions.sessions.items()
+                   if value is session)
+        client.cookies.set("__Host-ronas_session", sid)
+        cookie_only = client.put(path, json=stale)
+        self.assertEqual(cookie_only.status_code, 401)
+
+    def test_surplus_draft_api_fails_closed_on_tampered_receipt_chain(self):
+        ledger = SqliteSyntheticSurplusDraftLedger(
+            str(self.path.parent / "surplus-drafts-tampered.sqlite3"),
+            self.schema, self.allowed,
+        )
+        client = TestClient(
+            self.make_app(surplus_draft_ledger=ledger), base_url=ORIGIN,
+        )
+        path = (
+            f"/api/v1/domestic/household-intake/my-drafts/{REF}"
+            "/surplus-offers/DEMO-OFFER-TAMPER-1"
+        )
+        command = {
+            "action_id": "DEMO-OFFER-TAMPER-A1",
+            "expected_revision": 0,
+            "values": {"field_alpha": "synthetic product",
+                       "field_choice": "sample-a"},
+        }
+        created = client.put(path, json=command, headers=self.bearer())
+        self.assertEqual(created.status_code, 201, created.text)
+        with ledger._connect() as db:
+            db.execute("DROP TRIGGER surplus_draft_revision_no_update")
+            db.execute(
+                "UPDATE domestic_surplus_draft_revision SET values_json=? "
+                "WHERE action_id=?",
+                ('{"field_alpha":"tampered private value",'
+                 '"field_choice":"sample-a"}', command["action_id"]),
+            )
+
+        read = client.get(path, headers=self.bearer())
+        self.assertEqual(read.status_code, 503, read.text)
+        self.assertEqual(read.json()["detail"], "DRAFT_INTEGRITY_FAILURE")
+        self.assertNotIn("tampered private value", read.text)
+        update = dict(
+            command, action_id="DEMO-OFFER-TAMPER-A2", expected_revision=1,
+            values={"field_alpha": "another synthetic value",
+                    "field_choice": "sample-b"},
+        )
+        saved = client.put(path, json=update, headers=self.bearer())
+        self.assertEqual(saved.status_code, 503, saved.text)
+        self.assertEqual(saved.json()["detail"], "DRAFT_INTEGRITY_FAILURE")
+        with ledger._connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM domestic_surplus_draft_revision "
+                "WHERE household_ref=? AND offer_ref=?",
+                (REF, "DEMO-OFFER-TAMPER-1"),
+            ).fetchone()[0], 1)
+
+    def test_surplus_draft_household_ui_uses_csrf_utf8_and_version_conflicts(self):
+        ledger = SqliteSyntheticSurplusDraftLedger(
+            str(self.path.parent / "surplus-drafts-ui.sqlite3"),
+            self.schema, self.allowed,
+        )
+        client = TestClient(
+            self.make_app(surplus_draft_ledger=ledger), base_url=ORIGIN,
+        )
+        session = self.browser_session()
+        sid = next(key for key, value in self.sessions.sessions.items()
+                   if value is session)
+        client.cookies.set("__Host-ronas_session", sid)
+        profile = client.get(PAGE)
+        self.assertEqual(profile.status_code, 200, profile.text)
+        self.assertIn("ثبت یا اصلاح پیش‌نویس مازاد", profile.text)
+        draft_path = f"/my-drafts/{REF}/surplus-offers"
+        page = client.get(draft_path, params={"offer_ref": "DEMO-OFFER-UI-1"})
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("پیش‌نویس جدید و خصوصی", page.text)
+        form = {
+            "csrf": session.csrf,
+            "offer_ref": "DEMO-OFFER-UI-1",
+            "action_id": "DEMO-OFFER-UI-TEST-1",
+            "expected_revision": "0",
+            "field_alpha": "گوجه <b>آزمایشی</b>",
+            "field_choice": "sample-a",
+        }
+        saved = client.post(
+            f"/my-drafts/{REF}/surplus-offers", content=urlencode(form),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(saved.status_code, 303, saved.text)
+        shown = client.get(draft_path, params={"offer_ref": "DEMO-OFFER-UI-1"})
+        self.assertIn("گوجه &lt;b&gt;آزمایشی&lt;/b&gt;", shown.text)
+        self.assertNotIn("گوجه <b>آزمایشی</b>", shown.text)
+        self.assertIn("نسخه 1", shown.text)
+        bad_csrf = dict(form, action_id="DEMO-OFFER-UI-BAD-CSRF", csrf="wrong")
+        denied = client.post(
+            f"/my-drafts/{REF}/surplus-offers", content=urlencode(bad_csrf),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        self.assertEqual(denied.status_code, 403)
+        bad_origin = dict(form, action_id="DEMO-OFFER-UI-BAD-ORIGIN")
+        denied_origin = client.post(
+            f"/my-drafts/{REF}/surplus-offers", content=urlencode(bad_origin),
+            headers={"Origin": "https://attacker.example",
+                     "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        self.assertEqual(denied_origin.status_code, 403)
+        stale = dict(form, action_id="DEMO-OFFER-UI-STALE")
+        conflict = client.post(
+            f"/my-drafts/{REF}/surplus-offers", content=urlencode(stale),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        self.assertEqual(conflict.status_code, 409)
+        self.assertFalse(ledger.read_owned(
+            Principal(OWNER, frozenset({"household"})), REF, "DEMO-OFFER-UI-1",
+        ).published)
 
     def test_surplus_readiness_ui_shows_safe_owner_projection(self):
         producer = OWNER

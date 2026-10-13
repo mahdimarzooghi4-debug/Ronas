@@ -1116,6 +1116,62 @@ class HouseholdProfileFlowTests(unittest.TestCase):
                 (REF, "DEMO-OFFER-TAMPER-1"),
             ).fetchone()[0], 1)
 
+    def test_surplus_draft_list_is_owner_scoped_and_redacts_private_values(self):
+        ledger = SqliteSyntheticSurplusDraftLedger(
+            str(self.path.parent / "surplus-draft-list.sqlite3"),
+            self.schema, self.allowed,
+        )
+        app = self.make_app(surplus_draft_ledger=ledger)
+        client = TestClient(app, base_url=ORIGIN)
+        owner = Principal(OWNER, frozenset({"household"}))
+        ledger.save(
+            owner, REF, "DEMO-OFFER-LIST-1", action_id="DEMO-LIST-A1",
+            expected_revision=0,
+            values={"field_alpha": "SECRET PRIVATE TOMATO", "field_choice": "sample-a"},
+        )
+        ledger.save(
+            owner, REF, "DEMO-OFFER-LIST-2", action_id="DEMO-LIST-B1",
+            expected_revision=0,
+            values={"field_alpha": "SECOND SECRET VALUE", "field_choice": "sample-b"},
+        )
+        api_path = (
+            f"/api/v1/domestic/household-intake/my-drafts/{REF}/surplus-offers"
+        )
+        response = client.get(api_path, headers=self.bearer())
+        self.assertEqual(response.status_code, 200, response.text)
+        listed = response.json()["offers"]
+        self.assertEqual([item["offer_ref"] for item in listed],
+                         ["DEMO-OFFER-LIST-1", "DEMO-OFFER-LIST-2"])
+        self.assertEqual([item["revision"] for item in listed], [1, 1])
+        self.assertTrue(all(item["published"] is False for item in listed))
+        self.assertNotIn("values", response.json())
+        self.assertNotIn("producer_subject", response.text)
+        self.assertNotIn("SECRET PRIVATE TOMATO", response.text)
+        self.assertNotIn("SECOND SECRET VALUE", response.text)
+        denied = client.get(
+            api_path, headers=self.bearer("synthetic-other-owner", ("household",)),
+        )
+        self.assertEqual(denied.status_code, 404)
+        disabled = TestClient(create_app(self.config), base_url=ORIGIN)
+        self.assertEqual(disabled.get(api_path, headers=self.bearer()).status_code, 404)
+
+        session = self.browser_session()
+        sid = next(key for key, value in self.sessions.sessions.items()
+                   if value is session)
+        client.cookies.set("__Host-ronas_session", sid)
+        ui = client.get(f"/my-drafts/{REF}/surplus-offers")
+        self.assertEqual(ui.status_code, 200, ui.text)
+        self.assertIn("DEMO-OFFER-LIST-1", ui.text)
+        self.assertIn("DEMO-OFFER-LIST-2", ui.text)
+        self.assertIn("نسخه 1", ui.text)
+        self.assertNotIn("SECRET PRIVATE TOMATO", ui.text)
+        self.assertNotIn("SECOND SECRET VALUE", ui.text)
+        self.assertEqual(ui.headers["cache-control"], "no-store")
+
+        escaped_ref = 'DEMO-OFFER-\"<script>'
+        raw_list = ledger.list_owned(owner, REF)
+        self.assertEqual(len(raw_list), 2)
+
     def test_surplus_draft_schema_change_hides_old_values_and_accepts_new_revision(self):
         old_schema = HouseholdInputSchema(
             "RONAS-DOMESTIC-INPUT", 1,

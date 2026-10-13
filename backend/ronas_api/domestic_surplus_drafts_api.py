@@ -12,6 +12,25 @@ from .domestic_surplus_drafts import (
 )
 
 
+def _revision_diff(current: Any, previous: Any | None, active_schema_digest: str) -> dict[str, Any]:
+    """Return only same-schema value changes; never interpret legacy fields."""
+    if current.schema_digest != active_schema_digest:
+        return {"diff_available": False, "changes": []}
+    if previous is not None and previous.schema_digest != active_schema_digest:
+        return {"diff_available": False, "changes": []}
+    before = {} if previous is None else previous.values
+    changes = [
+        {
+            "field": field,
+            "before": before.get(field),
+            "after": current.values.get(field),
+        }
+        for field in sorted(set(before) | set(current.values))
+        if before.get(field) != current.values.get(field)
+    ]
+    return {"diff_available": True, "changes": changes}
+
+
 def build_domestic_surplus_drafts_router(
     ledger: SqliteSyntheticSurplusDraftLedger,
     verified_principal: Callable[..., Principal],
@@ -104,7 +123,7 @@ def build_domestic_surplus_drafts_router(
         except sqlite3.Error as exc:
             raise HTTPException(503, detail="DRAFT_STORAGE_UNAVAILABLE") from exc
         return {
-            "contract_version": "ronas.domestic.surplus-draft-history.v1",
+            "contract_version": "ronas.domestic.surplus-draft-history.v2",
             "household_ref": household_ref,
             "offer_ref": offer_ref,
             "revisions": [
@@ -116,12 +135,16 @@ def build_domestic_surplus_drafts_router(
                     "revision": record.revision,
                     "values": (record.values
                                if record.schema_digest == ledger.schema.digest else {}),
+                    **_revision_diff(
+                        record, records[index - 1] if index else None,
+                        ledger.schema.digest,
+                    ),
                     "payload_digest": record.payload_digest,
                     "receipt_digest": record.receipt_digest,
                     "published": False,
                     "real_data": False,
                 }
-                for record in records
+                for index, record in enumerate(records)
             ],
         }
 

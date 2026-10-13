@@ -63,9 +63,30 @@ def publication_readiness_snapshot(
             or not isinstance(authorities, PublicationAuthorities)):
         raise HTTPException(404, detail="OFFER_NOT_FOUND")
     proposed = offer if persisted_offer is None else persisted_offer
-    if persisted_offer is not None and offer != persisted_offer:
-        # Conflicting resolver and durable draft snapshots fail closed as stale.
-        authorities = replace(authorities, current_offer=offer)
+    if persisted_offer is not None:
+        if offer != persisted_offer:
+            # Conflicting resolver and durable draft snapshots fail closed as stale.
+            authorities = replace(authorities, current_offer=offer)
+        try:
+            latest_draft = draft_ledger.read_owned(
+                principal, household_ref, offer_ref,
+            )
+        except LookupError as exc:
+            raise HTTPException(404, detail="OFFER_NOT_FOUND") from exc
+        except (RuntimeError, sqlite3.Error) as exc:
+            raise HTTPException(
+                503, detail="PUBLICATION_AUTHORITY_UNAVAILABLE",
+            ) from exc
+        latest_offer = OfferRevision(
+            latest_draft.offer_ref, latest_draft.household_ref,
+            latest_draft.producer_subject, latest_draft.revision,
+            latest_draft.payload_digest,
+        )
+        schema_current = latest_draft.schema_digest == draft_ledger.schema.digest
+        if latest_offer != persisted_offer:
+            # The draft changed while external authorities were being resolved.
+            # Keep the original candidate, but force evaluation against the new version.
+            authorities = replace(authorities, current_offer=latest_offer)
     try:
         return evaluate_surplus_publication(
             proposed, authorities, offer_schema_current=schema_current,

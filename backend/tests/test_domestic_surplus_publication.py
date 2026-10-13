@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -10,7 +12,10 @@ from ronas_api.domestic_surplus_publication import (
 )
 from ronas_api.domestic_surplus_publication_api import (
     build_domestic_surplus_publication_router,
+    publication_readiness_snapshot,
 )
+from ronas_api.domestic_surplus_drafts import SqliteSyntheticSurplusDraftLedger
+from ronas_api.household_input_profiles import HouseholdInputField, HouseholdInputSchema
 
 D = "a" * 64
 E = "b" * 64
@@ -213,6 +218,55 @@ class DomesticSurplusPublicationTests(unittest.TestCase):
         principal[0] = Principal("other-producer", frozenset({"household"}))
         self.assertEqual(client.get(path).status_code, 404)
         self.assertEqual(len(calls), 2)
+
+    def test_concurrent_draft_revision_change_fails_closed(self):
+        principal = Principal("producer-01", frozenset({"household"}))
+        schema = HouseholdInputSchema(
+            "surplus-schema", 1,
+            (HouseholdInputField("product_ref", "Product", required=True),),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = SqliteSyntheticSurplusDraftLedger(
+                str(Path(directory) / "drafts.sqlite3"), schema,
+                lambda identity, household_ref, schema_ref: (
+                    identity.subject == "producer-01"
+                    and household_ref == "DEMO-H-01"
+                    and schema_ref == "surplus-schema"
+                ),
+            )
+            first = ledger.save(
+                principal, "DEMO-H-01", "DEMO-OFFER-01",
+                action_id="draft-action-1", expected_revision=0,
+                values={"product_ref": "DEMO-PRODUCT-01"},
+            )
+            first_offer = OfferRevision(
+                first.offer_ref, first.household_ref, first.producer_subject,
+                first.revision, first.payload_digest,
+            )
+            producer, quality = approvals(first_offer)
+            authorities = PublicationAuthorities(
+                current_offer=first_offer, producer_approval=producer,
+                quality_safety_verification=quality,
+                seller_eligibility_verified=True,
+                household_permission_active=True, marketplace_gate_open=True,
+            )
+
+            def resolve_after_concurrent_edit(identity, household_ref, offer_ref):
+                ledger.save(
+                    principal, household_ref, offer_ref,
+                    action_id="draft-action-2", expected_revision=1,
+                    values={"product_ref": "DEMO-PRODUCT-02"},
+                )
+                return first_offer, authorities
+
+            result = publication_readiness_snapshot(
+                resolve_after_concurrent_edit, principal,
+                "DEMO-H-01", "DEMO-OFFER-01", ledger,
+            )
+            self.assertFalse(result["can_publish"])
+            self.assertIn("OFFER_VERSION_CHANGED", result["blockers"])
+            self.assertEqual(result["revision"], 1)
+            self.assertFalse(result["published"])
 
     def test_readiness_digest_changes_when_authority_evidence_changes(self):
         current = offer()

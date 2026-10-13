@@ -118,6 +118,7 @@ def _validate_synthetic_composition(
     household_profile_access_authority,
     household_stage_context_authority,
     household_stage_artifact_store,
+    household_surplus_publication_authority,
 ) -> None:
     if case_ledger is not None and not isinstance(
         case_ledger, SqliteSyntheticExpertQuestionLedger,
@@ -132,6 +133,14 @@ def _validate_synthetic_composition(
                        for name in ("put", "get", "contains"))):
         raise LocalBFFConfigurationError(
             "stage uploads require the same explicit household profile ledger and authorities"
+        )
+    if household_surplus_publication_authority is not None and (
+            not callable(household_surplus_publication_authority)
+            or not isinstance(case_ledger, SqliteSyntheticHouseholdProfileLedger)
+            or household_profile_schema != case_ledger.profile_schema
+            or not callable(household_profile_access_authority)):
+        raise LocalBFFConfigurationError(
+            "surplus readiness requires the shared household profile authority"
         )
     if agronomy_workspace is not None and (
         case_ledger is None
@@ -152,11 +161,12 @@ def _compose_local_test_bff(
     household_profile_access_authority=None,
     household_stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
     household_stage_artifact_store: StageArtifactStore | None = None,
+    household_surplus_publication_authority=None,
 ) -> FastAPI:
     _validate_synthetic_composition(
         case_ledger, agronomy_workspace, household_profile_schema,
         household_profile_access_authority, household_stage_context_authority,
-        household_stage_artifact_store,
+        household_stage_artifact_store, household_surplus_publication_authority,
     )
     cfg = BrowserOIDCConfig(keycloak, callback_url)
 
@@ -182,6 +192,7 @@ def _compose_local_test_bff(
         household_profile_access_authority=household_profile_access_authority,
         household_stage_context_authority=household_stage_context_authority,
         household_stage_artifact_store=household_stage_artifact_store,
+        household_surplus_publication_authority=household_surplus_publication_authority,
     )
     app.state.ronas_local_test_only = True
     return app
@@ -197,6 +208,7 @@ def create_local_test_bff(
     household_profile_access_authority=None,
     household_stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
     household_stage_artifact_store: StageArtifactStore | None = None,
+    household_surplus_publication_authority=None,
 ) -> FastAPI:
     """Explicit local SQLite BFF composition; default app remains disabled."""
     if not isinstance(settings, LocalBFFSettings):
@@ -204,7 +216,7 @@ def create_local_test_bff(
     _validate_synthetic_composition(
         case_ledger, agronomy_workspace, household_profile_schema,
         household_profile_access_authority, household_stage_context_authority,
-        household_stage_artifact_store,
+        household_stage_artifact_store, household_surplus_publication_authority,
     )
     try:
         directory = settings.session_database.parent.lstat()
@@ -223,6 +235,7 @@ def create_local_test_bff(
         household_profile_access_authority=household_profile_access_authority,
         household_stage_context_authority=household_stage_context_authority,
         household_stage_artifact_store=household_stage_artifact_store,
+        household_surplus_publication_authority=household_surplus_publication_authority,
     )
     app.state.ronas_local_bff_session_backend = "sqlite"
     return app
@@ -288,6 +301,7 @@ def create_postgres_local_test_bff(
     household_profile_access_authority=None,
     household_stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
     household_stage_artifact_store: StageArtifactStore | None = None,
+    household_surplus_publication_authority=None,
 ) -> FastAPI:
     """Opt-in LOCAL/TEST composition using the shared PostgreSQL session adapter."""
     if not isinstance(settings, PostgresLocalBFFSettings):
@@ -295,7 +309,7 @@ def create_postgres_local_test_bff(
     _validate_synthetic_composition(
         case_ledger, agronomy_workspace, household_profile_schema,
         household_profile_access_authority, household_stage_context_authority,
-        household_stage_artifact_store,
+        household_stage_artifact_store, household_surplus_publication_authority,
     )
     from .postgres_session import PostgresBrowserSessionStore
     try:
@@ -311,6 +325,7 @@ def create_postgres_local_test_bff(
         household_profile_access_authority=household_profile_access_authority,
         household_stage_context_authority=household_stage_context_authority,
         household_stage_artifact_store=household_stage_artifact_store,
+        household_surplus_publication_authority=household_surplus_publication_authority,
     )
     app.state.ronas_local_bff_session_backend = "postgresql"
     return app

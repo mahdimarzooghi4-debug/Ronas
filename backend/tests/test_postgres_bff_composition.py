@@ -143,6 +143,11 @@ class PostgresBFFCompositionTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertEqual(app_a.state.ronas_local_bff_session_backend, "postgresql")
             self.assertEqual(app_b.state.ronas_local_bff_session_backend, "postgresql")
+            logout = browser_b.post("/api/auth/logout", headers={
+                "Origin": ORIGIN, "X-CSRF-Token": session.json()["csrf"],
+            })
+            self.assertEqual(logout.status_code, 200, logout.text)
+            self.assertEqual(browser_b.get("/api/auth/session").status_code, 401)
 
 
 if __name__ == "__main__":

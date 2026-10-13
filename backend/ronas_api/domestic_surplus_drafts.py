@@ -255,6 +255,42 @@ class SqliteSyntheticSurplusDraftLedger:
             db.commit()
             return self._decode(row)
 
+    def list_owned(
+        self, principal: Any, household_ref: str,
+    ) -> tuple[SurplusDraftRevision, ...]:
+        """Return current private drafts for one authorized synthetic household."""
+        owner = self._owner(principal, household_ref, "DEMO-LIST")
+        try:
+            permitted = self._owner_access_authority(
+                principal, household_ref, self.schema.schema_ref,
+            )
+        except Exception as exc:
+            raise RuntimeError("household owner authority unavailable") from exc
+        if permitted is not True:
+            raise LookupError("draft unavailable")
+        with self._connect() as db:
+            db.execute("BEGIN")
+            rows = db.execute(
+                """SELECT * FROM domestic_surplus_draft_revision
+                   WHERE household_ref=? ORDER BY offer_ref,revision""",
+                (household_ref,),
+            ).fetchall()
+            db.commit()
+        grouped: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            grouped.setdefault(row["offer_ref"], []).append(row)
+        current = []
+        for offer_ref in sorted(grouped):
+            chain = grouped[offer_ref]
+            self._verify_chain(chain)
+            row = chain[-1]
+            if row["producer_subject"] != owner:
+                raise SurplusDraftIntegrityError(
+                    "household draft owner does not match its authorized owner"
+                )
+            current.append(self._decode(row))
+        return tuple(current)
+
     def read_owned(
         self, principal: Any, household_ref: str, offer_ref: str,
     ) -> SurplusDraftRevision:

@@ -1936,6 +1936,9 @@ def build_authenticated_ui_router(
                         'pattern="DEMO-[A-Za-z0-9._:-]{1,96}" maxlength="101">'
                         '<button type="submit">ثبت یا اصلاح پیش‌نویس مازاد</button></form>'
                         if household_surplus_draft_ledger is not None else '')
+                    + ('<p><a href="/my-drafts/' + quote(ref)
+                        + '/surplus-offers">فهرست پیش‌نویس‌های مازاد من</a></p>'
+                        if household_surplus_draft_ledger is not None else '')
                     + ('<form method="get" action="/my-drafts/' + quote(ref)
                         + '/surplus-publication-readiness">'
                         '<label for="surplus-offer-ref">شناسه پیشنهاد مازاد (DEMO)</label>'
@@ -2449,7 +2452,7 @@ def build_authenticated_ui_router(
         @router.get("/my-drafts/{ref}/surplus-offers")
         def household_surplus_draft_page(
             ref: str,
-            offer_ref: str,
+            offer_ref: str | None = None,
             sid: str | None = Cookie(default=None, alias=cookie_name),
         ) -> HTMLResponse:
             try:
@@ -2469,6 +2472,45 @@ def build_authenticated_ui_router(
                     503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",
                 ) from exc
             if permitted is not True:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            if offer_ref is None:
+                try:
+                    records = household_surplus_draft_ledger.list_owned(identity, ref)
+                except LookupError:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND") from None
+                except (RuntimeError, sqlite3.Error) as exc:
+                    raise HTTPException(503, detail="SURPLUS_DRAFT_UNAVAILABLE") from exc
+                items = []
+                for record in records:
+                    state = (
+                        "طرح‌واره تغییر کرده؛ بازبینی لازم است"
+                        if record.schema_digest != household_surplus_draft_ledger.schema.digest
+                        else "نسخه " + str(record.revision) + " · خصوصی و منتشرنشده"
+                    )
+                    href = ("/my-drafts/" + quote(ref)
+                            + "/surplus-offers?offer_ref=" + quote(record.offer_ref))
+                    items.append(
+                        '<li><a href="' + escape(href, quote=True) + '">'
+                        + escape(record.offer_ref) + '</a><span>'
+                        + escape(state) + '</span></li>'
+                    )
+                body = (
+                    '<article class="panel"><h2>پیش‌نویس‌های مازاد من</h2>'
+                    '<p>فهرست فقط شناسه و وضعیت نسخه را نشان می‌دهد و مقدار فرم‌ها را افشا نمی‌کند.</p>'
+                    + ('<ul>' + ''.join(items) + '</ul>' if items else
+                       '<p>هنوز پیش‌نویسی ثبت نشده است.</p>')
+                    + '<form method="get" action="/my-drafts/' + quote(ref)
+                    + '/surplus-offers"><label for="surplus-draft-offer-ref">'
+                    'شناسهٔ جدید پیش‌نویس (DEMO)</label>'
+                    '<input id="surplus-draft-offer-ref" name="offer_ref" required '
+                    'pattern="DEMO-[A-Za-z0-9._:-]{1,96}" maxlength="101">'
+                    '<button type="submit">ساخت پیش‌نویس جدید</button></form>'
+                    '<p><a href="/my-drafts/' + quote(ref)
+                    + '/cultivation-inputs">بازگشت به پرونده</a></p></article>'
+                )
+                return page("روناس — پیش‌نویس‌های مازاد", body,
+                            logged_in=True, local_test_form=True)
+            if not _synthetic_ref(offer_ref):
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
             current = None
             try:

@@ -45,6 +45,45 @@ def build_domestic_surplus_drafts_router(
             "real_data": False,
         }
 
+    collection = (
+        "/api/v1/domestic/household-intake/my-drafts/{household_ref}"
+        "/surplus-offers"
+    )
+
+    @router.get(collection)
+    def list_drafts(
+        household_ref: str,
+        principal: Principal = Depends(verified_principal),
+    ) -> dict:
+        try:
+            records = ledger.list_owned(principal, household_ref)
+        except LookupError as exc:
+            raise HTTPException(404, detail="DRAFT_NOT_FOUND") from exc
+        except SurplusDraftIntegrityError as exc:
+            raise HTTPException(503, detail="DRAFT_INTEGRITY_FAILURE") from exc
+        except RuntimeError as exc:
+            raise HTTPException(503, detail="DRAFT_AUTHORITY_UNAVAILABLE") from exc
+        return {
+            "contract_version": "ronas.domestic.surplus-draft-list.v1",
+            "household_ref": household_ref,
+            "offers": [
+                {
+                    "offer_ref": record.offer_ref,
+                    "schema_ref": record.schema_ref,
+                    "schema_version": record.schema_version,
+                    "schema_digest": record.schema_digest,
+                    "active_schema_ref": ledger.schema.schema_ref,
+                    "active_schema_version": ledger.schema.version,
+                    "active_schema_digest": ledger.schema.digest,
+                    "schema_changed": record.schema_digest != ledger.schema.digest,
+                    "revision": record.revision,
+                    "published": False,
+                    "real_data": False,
+                }
+                for record in records
+            ],
+        }
+
     @router.get(base)
     def read_draft(
         household_ref: str,

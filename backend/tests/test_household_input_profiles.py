@@ -1068,6 +1068,54 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         cookie_only = client.put(path, json=stale)
         self.assertEqual(cookie_only.status_code, 401)
 
+    def test_surplus_draft_api_fails_closed_on_tampered_receipt_chain(self):
+        ledger = SqliteSyntheticSurplusDraftLedger(
+            str(self.path.parent / "surplus-drafts-tampered.sqlite3"),
+            self.schema, self.allowed,
+        )
+        client = TestClient(
+            self.make_app(surplus_draft_ledger=ledger), base_url=ORIGIN,
+        )
+        path = (
+            f"/api/v1/domestic/household-intake/my-drafts/{REF}"
+            "/surplus-offers/DEMO-OFFER-TAMPER-1"
+        )
+        command = {
+            "action_id": "DEMO-OFFER-TAMPER-A1",
+            "expected_revision": 0,
+            "values": {"field_alpha": "synthetic product",
+                       "field_choice": "sample-a"},
+        }
+        created = client.put(path, json=command, headers=self.bearer())
+        self.assertEqual(created.status_code, 201, created.text)
+        with ledger._connect() as db:
+            db.execute("DROP TRIGGER surplus_draft_revision_no_update")
+            db.execute(
+                "UPDATE domestic_surplus_draft_revision SET values_json=? "
+                "WHERE action_id=?",
+                ('{"field_alpha":"tampered private value",'
+                 '"field_choice":"sample-a"}', command["action_id"]),
+            )
+
+        read = client.get(path, headers=self.bearer())
+        self.assertEqual(read.status_code, 503, read.text)
+        self.assertEqual(read.json()["detail"], "DRAFT_INTEGRITY_FAILURE")
+        self.assertNotIn("tampered private value", read.text)
+        update = dict(
+            command, action_id="DEMO-OFFER-TAMPER-A2", expected_revision=1,
+            values={"field_alpha": "another synthetic value",
+                    "field_choice": "sample-b"},
+        )
+        saved = client.put(path, json=update, headers=self.bearer())
+        self.assertEqual(saved.status_code, 503, saved.text)
+        self.assertEqual(saved.json()["detail"], "DRAFT_INTEGRITY_FAILURE")
+        with ledger._connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM domestic_surplus_draft_revision "
+                "WHERE household_ref=? AND offer_ref=?",
+                (REF, "DEMO-OFFER-TAMPER-1"),
+            ).fetchone()[0], 1)
+
     def test_surplus_draft_household_ui_uses_csrf_utf8_and_version_conflicts(self):
         ledger = SqliteSyntheticSurplusDraftLedger(
             str(self.path.parent / "surplus-drafts-ui.sqlite3"),

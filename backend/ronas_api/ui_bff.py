@@ -2515,9 +2515,13 @@ def build_authenticated_ui_router(
                     503, detail="SURPLUS_DRAFT_UNAVAILABLE",
                 ) from exc
             entries = []
-            for record in revisions:
-                schema_matches = (
-                    record.schema_digest == household_surplus_draft_ledger.schema.digest
+            active_digest = household_surplus_draft_ledger.schema.digest
+            for index, record in enumerate(revisions):
+                schema_matches = record.schema_digest == active_digest
+                previous = revisions[index - 1] if index else None
+                diff_matches = (
+                    schema_matches
+                    and (previous is None or previous.schema_digest == active_digest)
                 )
                 if schema_matches:
                     values = "<dl>" + "".join(
@@ -2526,13 +2530,43 @@ def build_authenticated_ui_router(
                         for key, value in sorted(record.values.items())
                     ) + "</dl>"
                     state = "نسخهٔ طرح‌وارهٔ جاری"
+                    if diff_matches:
+                        before = {} if previous is None else previous.values
+                        changes = [
+                            (key, before.get(key), record.values.get(key))
+                            for key in sorted(set(before) | set(record.values))
+                            if before.get(key) != record.values.get(key)
+                        ]
+                        if changes:
+                            diff = "<ul>" + "".join(
+                                "<li><strong>" + escape(key) + "</strong>: "
+                                + ("بدون مقدار" if old is None else escape(old))
+                                + " ← "
+                                + ("حذف‌شده" if new is None else escape(new))
+                                + "</li>"
+                                for key, old, new in changes
+                            ) + "</ul>"
+                        else:
+                            diff = "<p>در این نسخه تغییری نسبت به نسخهٔ قبل ثبت نشده است.</p>"
+                        diff_block = (
+                            '<section aria-label="تفاوت با نسخهٔ قبل"><h4>'
+                            'تفاوت با نسخهٔ قبل</h4>' + diff + '</section>'
+                        )
+                    else:
+                        diff_block = (
+                            '<p>طرح‌وارهٔ نسخهٔ قبل متفاوت است؛ تفاوت مقادیر '
+                            'نمایش داده نمی‌شود.</p>'
+                        )
                 else:
                     values = "<p>طرح‌واره تغییر کرده؛ مقادیر این نسخه نمایش داده نمی‌شود.</p>"
                     state = "نیازمند بازبینی در طرح‌وارهٔ جاری"
+                    diff_block = (
+                        '<p>طرح‌واره تغییر کرده؛ تفاوت مقادیر قابل مقایسه نیست.</p>'
+                    )
                 entries.append(
                     '<section><h3>نسخه ' + str(record.revision)
                     + ' · طرح‌واره ' + str(record.schema_version) + '</h3>'
-                    + '<p>' + state + '</p>' + values + '</section>'
+                    + '<p>' + state + '</p>' + values + diff_block + '</section>'
                 )
             body = (
                 '<article class="panel"><h2>تاریخچهٔ پیش‌نویس مازاد</h2>'

@@ -67,22 +67,38 @@ class RotationSettings:
 
 
 def _read_private_key(path: Path, *, parent_mode: int) -> bytes:
+    """Read with O_NOFOLLOW and verify the opened inode, mode, and owner."""
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise RotationConfigurationError("platform cannot safely open private keys")
     try:
-        info = path.lstat()
+        initial = path.lstat()
         parent = path.parent.lstat()
-        if (not stat.S_ISREG(info.st_mode)
-                or stat.S_IMODE(info.st_mode) != 0o600
+        if (not stat.S_ISREG(initial.st_mode)
+                or stat.S_IMODE(initial.st_mode) != 0o600
                 or not stat.S_ISDIR(parent.st_mode)
                 or stat.S_IMODE(parent.st_mode) & ~parent_mode
                 or (hasattr(os, "getuid")
-                    and (info.st_uid != os.getuid()
+                    and (initial.st_uid != os.getuid()
                          or parent.st_uid != os.getuid()))):
             raise RotationConfigurationError("private key ownership or permissions invalid")
-        with path.open("rb") as stream:
-            value = stream.read(33)
-        if len(value) != 32:
-            raise RotationConfigurationError("key files must contain exactly 32 bytes")
-        return value
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if (not stat.S_ISREG(opened.st_mode)
+                    or opened.st_dev != initial.st_dev
+                    or opened.st_ino != initial.st_ino
+                    or stat.S_IMODE(opened.st_mode) != 0o600
+                    or (hasattr(os, "getuid") and opened.st_uid != os.getuid())):
+                raise RotationConfigurationError("private key changed during open")
+            value = os.read(descriptor, 33)
+            if len(value) != 32:
+                raise RotationConfigurationError("key files must contain exactly 32 bytes")
+            return value
+        finally:
+            os.close(descriptor)
+    except RotationConfigurationError:
+        raise
     except OSError as exc:
         raise RotationConfigurationError("private key material unavailable") from exc
 

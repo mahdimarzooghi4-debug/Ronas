@@ -66,6 +66,19 @@ class StageArtifactKeyRotationTests(unittest.TestCase):
             with self.assertRaises(RotationConfigurationError):
                 load_key_material(self.settings(root, keys, scope))
 
+    def test_refuses_symlink_key_even_when_target_is_private(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            keys = root / "keys"
+            keys.mkdir(mode=0o700)
+            target = root / "target"
+            self.private_key(target, b"x")
+            (keys / "key-b.key").symlink_to(target)
+            scope = root / "scope.key"
+            self.private_key(scope, b"s")
+            with self.assertRaises(RotationConfigurationError):
+                load_key_material(self.settings(root, keys, scope))
+
     def test_environment_requires_explicit_local_test_opt_in_and_inputs(self):
         with self.assertRaises(RotationConfigurationError):
             RotationSettings.from_environment({})

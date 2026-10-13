@@ -1,6 +1,6 @@
 """Owner-scoped HTTP API for private surplus draft revisions."""
-from collections.abc import Callable
 import sqlite3
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response

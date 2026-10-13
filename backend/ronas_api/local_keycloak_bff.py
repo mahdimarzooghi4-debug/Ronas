@@ -225,6 +225,7 @@ def create_local_test_bff(
     household_stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
     household_stage_artifact_store: StageArtifactStore | None = None,
     household_surplus_publication_authority=None,
+    household_surplus_draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
 ) -> FastAPI:
     """Explicit local SQLite BFF composition; default app remains disabled."""
     if not isinstance(settings, LocalBFFSettings):
@@ -233,6 +234,7 @@ def create_local_test_bff(
         case_ledger, agronomy_workspace, household_profile_schema,
         household_profile_access_authority, household_stage_context_authority,
         household_stage_artifact_store, household_surplus_publication_authority,
+        household_surplus_draft_ledger,
     )
     try:
         directory = settings.session_database.parent.lstat()
@@ -252,6 +254,7 @@ def create_local_test_bff(
         household_stage_context_authority=household_stage_context_authority,
         household_stage_artifact_store=household_stage_artifact_store,
         household_surplus_publication_authority=household_surplus_publication_authority,
+        household_surplus_draft_ledger=household_surplus_draft_ledger,
     )
     app.state.ronas_local_bff_session_backend = "sqlite"
     return app
@@ -318,6 +321,7 @@ def create_postgres_local_test_bff(
     household_stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
     household_stage_artifact_store: StageArtifactStore | None = None,
     household_surplus_publication_authority=None,
+    household_surplus_draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
 ) -> FastAPI:
     """Opt-in LOCAL/TEST composition using the shared PostgreSQL session adapter."""
     if not isinstance(settings, PostgresLocalBFFSettings):

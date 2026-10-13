@@ -15,8 +15,8 @@ Let an authenticated household create and revise a private Domestic surplus draf
 ## Security and state
 
 - New drafts are private and unpublished. The published flag is always false in this lifecycle.
-- Draft content is never exposed to buyers, experts, or other households by these endpoints.
-- Validation errors contain field keys and stable error codes only; they do not echo submitted values.
+- The ledger exposes only owner-scoped read/write methods; HTTP and browser route composition remains a later integration step.
+- Injected owner authority is checked on every read and write. Validation errors originate from schema rules and do not echo submitted values.
 - The current surplus publication-readiness gate remains a separate, read-only evaluation. It must bind to the exact current offer revision and payload digest.
 - Local/test persistence is not a production-storage approval.
 

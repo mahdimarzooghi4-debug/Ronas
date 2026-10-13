@@ -77,7 +77,7 @@ class DomesticSurplusPublicationTests(unittest.TestCase):
             seller_eligibility_verified=True,
             household_permission_active=True, marketplace_gate_open=True,
         )
-        result = evaluate_surplus_publication(revised, authorities)
+        result = evaluate_surplus_publication(current, authorities)
         self.assertFalse(result.can_publish)
         self.assertIn("OFFER_VERSION_CHANGED", result.blockers)
         self.assertIn("PRODUCER_APPROVAL_STALE", result.blockers)

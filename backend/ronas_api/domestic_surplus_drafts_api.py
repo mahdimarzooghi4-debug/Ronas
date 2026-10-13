@@ -2,7 +2,7 @@
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 
 from .auth import Principal
 from .domestic_surplus_drafts import (
@@ -56,10 +56,13 @@ def build_domestic_surplus_drafts_router(
     def save_draft(
         household_ref: str,
         offer_ref: str,
+        request: Request,
         response: Response,
         payload: dict = Body(...),
         principal: Principal = Depends(verified_principal),
     ) -> dict:
+        if not request.headers.get("authorization", "").startswith("Bearer "):
+            raise HTTPException(401, detail="BEARER_TOKEN_REQUIRED")
         if set(payload) != {"action_id", "expected_revision", "values"}:
             raise HTTPException(422, detail="INVALID_SURPLUS_DRAFT_COMMAND")
         try:

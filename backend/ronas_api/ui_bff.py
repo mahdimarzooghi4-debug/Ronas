@@ -327,7 +327,7 @@ def build_authenticated_ui_router(
             or household_input_ledger is not technical_review_ledger
             or not callable(household_profile_access_authority)
             or household_surplus_draft_ledger._owner_access_authority
-                is not household_profile_access_authority):
+                != household_profile_access_authority):
         raise ValueError(
             "surplus draft UI requires the shared owner-scoped household authority"
         )

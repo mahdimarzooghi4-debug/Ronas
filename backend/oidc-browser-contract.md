@@ -56,3 +56,35 @@ Ronas application still does not mount the browser or review routes.
 Tests: `PYTHONPATH=backend python -m unittest discover -s backend/tests -v` and the existing CI suite. No secret, purchased resource or actual Keycloak account is needed.
 
 This slice contains a local encrypted session adapter and optional same-origin server-side role-gated HTML UI. Next iteration: determine/implement an independently-reviewed distributed operational session architecture when needed, with explicit deployment approval. This document authorizes neither Stage nor Production.
+
+
+## Server-side refresh lifecycle
+
+When the operator-pinned Keycloak token endpoint returns a bounded refresh token,
+the BFF stores it only inside the encrypted session payload. The browser receives
+neither access nor refresh tokens. The authenticated shell requests the session
+expiry and schedules a CSRF- and Origin-protected refresh shortly before expiry.
+A successful grant validates issuer, audience, role claims, subject continuity,
+and expiry; it rotates CSRF and the refresh token when Keycloak returns one.
+
+SQLite and PostgreSQL use a shared per-session refresh lease so two API workers
+cannot submit the same rotating refresh credential concurrently. A rejected or
+ambiguous refresh revokes the local session and requires a new sign-in. The
+refresh lock expires after a bounded interval to recover from a worker crash.
+This behavior is covered with synthetic tokens and mock transport; live realm
+policy and provider-side refresh-token rotation remain externally configured.
+
+
+## Server-side refresh lifecycle
+
+When the operator-pinned Keycloak token endpoint returns a bounded refresh token,
+the BFF stores it only inside the encrypted server-side session payload. The browser receives
+neither access nor refresh tokens. The authenticated shell reads the session expiry and
+schedules a CSRF- and Origin-protected refresh shortly before expiry. A successful grant
+validates issuer, audience, subject continuity, role claims, and expiry; it rotates CSRF
+and adopts the new refresh token when Keycloak returns one.
+
+SQLite and PostgreSQL use a shared, short-lived per-session refresh lease so two API workers
+cannot submit the same rotating credential concurrently. A rejected or ambiguous refresh
+revokes the local session and requires a new sign-in. Tests use synthetic tokens and mock
+transport; the live realm’s refresh-token rotation policy remains externally configured.

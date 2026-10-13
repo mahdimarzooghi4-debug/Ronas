@@ -1118,14 +1118,14 @@ class HouseholdProfileFlowTests(unittest.TestCase):
 
     def test_surplus_draft_schema_change_hides_old_values_and_accepts_new_revision(self):
         old_schema = HouseholdInputSchema(
-            "RONAS-DOMESTIC-SURPLUS", 1,
+            "RONAS-DOMESTIC-INPUT", 1,
             (HouseholdInputField(
                 "legacy_field", "فیلد قدیمی", "text",
                 required=True, max_length=80,
             ),),
         )
         new_schema = HouseholdInputSchema(
-            "RONAS-DOMESTIC-SURPLUS", 2,
+            "RONAS-DOMESTIC-INPUT", 2,
             (HouseholdInputField(
                 "current_field", "فیلد جاری", "text",
                 required=True, max_length=80,

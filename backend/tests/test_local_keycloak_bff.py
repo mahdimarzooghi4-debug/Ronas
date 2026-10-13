@@ -501,9 +501,9 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
         replied = owner.post(
             "/my-drafts/DEMO-D-1/question-responses/demo-reply",
             data={
-                "csrf": owner_csrf, "case_version": "3",
-                "input_revision": "1", "question_revision": "1",
-                "scenario": "DEMO-REPLY-ALPHA",
+                "csrf": owner_csrf, "action_id": "DEMO-UI-R-KEYCLOAK",
+                "case_version": "3", "input_revision": "1",
+                "question_revision": "1", "scenario": "DEMO-REPLY-ALPHA",
             },
             headers={"Origin": ORIGIN},
         )

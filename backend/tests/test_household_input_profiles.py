@@ -1036,6 +1036,9 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             f"/api/v1/domestic/household-intake/my-drafts/{REF}"
             "/surplus-offers/DEMO-OFFER-API-1"
         )
+        disabled = TestClient(create_app(self.config), base_url=ORIGIN)
+        self.assertEqual(disabled.get(path).status_code, 404)
+        self.assertEqual(disabled.put(path, json={}).status_code, 404)
         command = {
             "action_id": "DEMO-OFFER-API-A1",
             "expected_revision": 0,

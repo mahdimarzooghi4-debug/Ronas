@@ -28,7 +28,9 @@ from ronas_api.agronomy_workspace import (
     SyntheticAgronomyAssignment, SyntheticAgronomyWorkspace,
 )
 from ronas_api.expert_review_questions_sqlite import SqliteSyntheticExpertQuestionLedger
-from ronas_api.domestic_surplus_publication import OfferRevision, PublicationAuthorities
+from ronas_api.domestic_surplus_publication import (
+    OfferRevision, PublicationAttestation, PublicationAuthorities,
+)
 from ronas_api.domestic_surplus_drafts import SqliteSyntheticSurplusDraftLedger
 from ronas_api.internal_cultivation_plan_contract import (
     InternalCultivationProposal, ProposedCultivationStage,
@@ -1584,6 +1586,98 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(denied.status_code, 404)
         self.assertNotIn("private authority secret", denied.text)
         self.assertEqual(len(calls), 2)
+
+    def test_surplus_readiness_binds_to_persisted_latest_revision_and_schema(self):
+        path = str(self.path.parent / "surplus-readiness-bound.sqlite3")
+        ledger = SqliteSyntheticSurplusDraftLedger(
+            path, self.schema, self.allowed,
+        )
+        owner = Principal(OWNER, frozenset({"household"}))
+        offer_ref = "DEMO-OFFER-BOUND-1"
+        ledger.save(
+            owner, REF, offer_ref, action_id="DEMO-BOUND-A1",
+            expected_revision=0,
+            values={"field_alpha": "first value", "field_choice": "sample-a"},
+        )
+        old = OfferRevision(
+            offer_ref, REF, OWNER, 1,
+            ledger.read_owned(owner, REF, offer_ref).payload_digest,
+        )
+        producer = PublicationAttestation(
+            "DEMO-ATTEST-PRODUCER-1", offer_ref, 1, old.payload_digest,
+            "PRODUCER", OWNER, "a" * 64, True, True,
+        )
+        quality = PublicationAttestation(
+            "DEMO-ATTEST-QUALITY-1", offer_ref, 1, old.payload_digest,
+            "QUALITY_SAFETY", "synthetic-independent-reviewer", "b" * 64,
+            True, True,
+        )
+
+        def old_authority(_principal, _household_ref, _offer_ref):
+            return old, PublicationAuthorities(
+                current_offer=old, producer_approval=producer,
+                quality_safety_verification=quality,
+                seller_eligibility_verified=True,
+                household_permission_active=True, marketplace_gate_open=True,
+            )
+
+        client = TestClient(self.make_app(
+            surplus_authority=old_authority, surplus_draft_ledger=ledger,
+        ), base_url=ORIGIN)
+        readiness_path = (
+            f"/api/v1/domestic/household-intake/my-drafts/{REF}"
+            f"/surplus-offers/{offer_ref}/publication-readiness"
+        )
+        first = client.get(readiness_path, headers=self.bearer())
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["contract_version"],
+                         "ronas.domestic.surplus-publication-gate.v2")
+        self.assertTrue(first.json()["can_publish"])
+        self.assertEqual(first.json()["revision"], 1)
+
+        ledger.save(
+            owner, REF, offer_ref, action_id="DEMO-BOUND-A2",
+            expected_revision=1,
+            values={"field_alpha": "second value", "field_choice": "sample-a"},
+        )
+        changed = client.get(readiness_path, headers=self.bearer())
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertEqual(changed.json()["revision"], 2)
+        self.assertFalse(changed.json()["can_publish"])
+        self.assertEqual(
+            set(changed.json()["blockers"]),
+            {"OFFER_VERSION_CHANGED", "PRODUCER_APPROVAL_STALE",
+             "QUALITY_SAFETY_VERIFICATION_STALE"},
+        )
+
+        session = self.browser_session()
+        sid = next(key for key, value in self.sessions.sessions.items()
+                   if value is session)
+        client.cookies.set("__Host-ronas_session", sid)
+        page = client.get(
+            f"/my-drafts/{REF}/surplus-publication-readiness",
+            params={"offer_ref": offer_ref},
+        )
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("نسخه پیشنهاد تغییر کرده است", page.text)
+
+        changed_schema = HouseholdInputSchema(
+            self.schema.schema_ref, self.schema.version + 1,
+            (HouseholdInputField("field_alpha", "فیلد تغییر یافته"),),
+        )
+        stale_schema_ledger = SqliteSyntheticSurplusDraftLedger(
+            path, changed_schema, self.allowed,
+        )
+        stale_schema_client = TestClient(self.make_app(
+            surplus_authority=old_authority,
+            surplus_draft_ledger=stale_schema_ledger,
+        ), base_url=ORIGIN)
+        stale = stale_schema_client.get(readiness_path, headers=self.bearer())
+        self.assertEqual(stale.status_code, 200, stale.text)
+        self.assertFalse(stale.json()["can_publish"])
+        self.assertIn("OFFER_SCHEMA_CHANGED", stale.json()["blockers"])
+        self.assertNotIn("first value", stale.text)
+        self.assertTrue(ledger.verify_integrity())
 
     def test_surplus_readiness_route_is_absent_without_explicit_authority(self):
         client = TestClient(self.app, base_url=ORIGIN)

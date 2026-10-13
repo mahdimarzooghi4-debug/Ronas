@@ -319,6 +319,13 @@ class BrowserLoginTests(unittest.TestCase):
                      "X-CSRF-Token": session["csrf"]},
         ).status_code, 403)
         self.assertEqual(self.client.get("/api/auth/session").status_code, 200)
+        oversized = self.client.post(
+            "/api/auth/logout/keycloak", content=b"csrf=" + b"x" * 2048,
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        self.assertEqual(oversized.status_code, 413)
+        self.assertEqual(self.client.get("/api/auth/session").status_code, 200)
 
     def test_bearer_header_has_no_cookie_fallback(self):
         _, params = self.start()

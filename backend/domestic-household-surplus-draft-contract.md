@@ -11,6 +11,7 @@ Let an authenticated household create and revise a private Domestic surplus draf
 - Only the current owner may read or revise the draft. A revision uses compare-and-swap against the expected current revision; stale writes return a conflict and never overwrite history.
 - Replaying an action reference with identical command content returns the original receipt. Reusing it with different content is rejected.
 - Historical revisions are immutable. A schema change requires a new revision and never silently reinterprets prior values.
+- Reads, idempotent retries, and new writes verify each stored command, payload, revision link, and receipt digest across the full offer history; damaged chains fail closed without returning stored values.
 
 ## Security and state
 
@@ -22,4 +23,4 @@ Let an authenticated household create and revise a private Domestic surplus draf
 
 ## Verification
 
-Tests cover owner isolation, role enforcement, injected-schema validation, stale revision conflicts, immutable history, schema-version binding, idempotent retry, conflicting replay, safe Persian rendering, browser CSRF/Origin, cookie-only API write rejection, and the invariant that no draft transition publishes an offer.
+Tests cover owner isolation, role enforcement, injected-schema validation, stale revision conflicts, immutable history, schema-version binding, idempotent retry, conflicting replay, tampered-chain fail-closed behavior, safe Persian rendering, browser CSRF/Origin, cookie-only API write rejection, and the invariant that no draft transition publishes an offer.

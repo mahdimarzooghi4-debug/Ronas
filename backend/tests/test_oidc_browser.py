@@ -286,7 +286,7 @@ class BrowserLoginTests(unittest.TestCase):
             query["post_logout_redirect_uri"],
             [ORIGIN + "/api/auth/logout/callback"],
         )
-        self.assertEqual(len(query["id_token_hint"][0]), 3 * 3 + 1)
+        self.assertEqual(len(query["id_token_hint"][0].split(".")), 3)
         state = query["state"][0]
         self.assertIn("Secure", response.headers["set-cookie"])
         self.assertIn("HttpOnly", response.headers["set-cookie"])

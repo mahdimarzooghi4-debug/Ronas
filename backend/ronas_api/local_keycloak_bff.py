@@ -27,6 +27,7 @@ from .agronomy_workspace import SyntheticAgronomyWorkspace
 from .household_input_profiles import HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger
 from .domestic_stage_observation import CurrentStageContext
 from .stage_observation_artifacts import StageArtifactStore
+from .domestic_surplus_drafts import SqliteSyntheticSurplusDraftLedger
 
 
 class LocalBFFConfigurationError(ValueError):
@@ -119,6 +120,7 @@ def _validate_synthetic_composition(
     household_stage_context_authority,
     household_stage_artifact_store,
     household_surplus_publication_authority,
+    household_surplus_draft_ledger,
 ) -> None:
     if case_ledger is not None and not isinstance(
         case_ledger, SqliteSyntheticExpertQuestionLedger,
@@ -142,6 +144,17 @@ def _validate_synthetic_composition(
         raise LocalBFFConfigurationError(
             "surplus readiness requires the shared household profile authority"
         )
+    if household_surplus_draft_ledger is not None and (
+            not isinstance(household_surplus_draft_ledger,
+                            SqliteSyntheticSurplusDraftLedger)
+            or not isinstance(case_ledger, SqliteSyntheticHouseholdProfileLedger)
+            or household_profile_schema is None
+            or not callable(household_profile_access_authority)
+            or household_surplus_draft_ledger._owner_access_authority
+                is not household_profile_access_authority):
+        raise LocalBFFConfigurationError(
+            "surplus drafts require the shared household profile owner authority"
+        )
     if agronomy_workspace is not None and (
         case_ledger is None
         or not isinstance(agronomy_workspace, SyntheticAgronomyWorkspace)
@@ -162,11 +175,13 @@ def _compose_local_test_bff(
     household_stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
     household_stage_artifact_store: StageArtifactStore | None = None,
     household_surplus_publication_authority=None,
+    household_surplus_draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
 ) -> FastAPI:
     _validate_synthetic_composition(
         case_ledger, agronomy_workspace, household_profile_schema,
         household_profile_access_authority, household_stage_context_authority,
         household_stage_artifact_store, household_surplus_publication_authority,
+        household_surplus_draft_ledger,
     )
     cfg = BrowserOIDCConfig(keycloak, callback_url)
 
@@ -193,6 +208,7 @@ def _compose_local_test_bff(
         household_stage_context_authority=household_stage_context_authority,
         household_stage_artifact_store=household_stage_artifact_store,
         household_surplus_publication_authority=household_surplus_publication_authority,
+        household_surplus_draft_ledger=household_surplus_draft_ledger,
     )
     app.state.ronas_local_test_only = True
     return app

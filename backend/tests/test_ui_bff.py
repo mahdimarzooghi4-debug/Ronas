@@ -146,7 +146,9 @@ class TwoShellBFFTests(unittest.TestCase):
         javascript = self.client.get("/assets/ronas-auth.js")
         self.assertEqual(javascript.status_code, 200)
         self.assertIn("same-origin", javascript.text)
-        self.assertIn("X-CSRF-Token", javascript.text)
+        self.assertIn("form.action = '/api/auth/logout/keycloak'", javascript.text)
+        self.assertIn("csrf.name = 'csrf'", javascript.text)
+        self.assertIn("form.requestSubmit()", javascript.text)
         self.assertNotIn("fixed-test-csrf", javascript.text)
 
     def test_opt_in_only_default_app_exposes_no_user_shell_or_assets(self):

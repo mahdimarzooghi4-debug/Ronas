@@ -137,5 +137,62 @@ class PostgresStageArtifactStoreTests(unittest.TestCase):
             self.store.get(self.owner, self.case, "../invalid")
 
 
+    def test_key_rotation_preserves_reads_and_reencrypts_rows_in_bounded_batches(self):
+        first = self.store.put(self.owner, self.case + ":one", "image/png", PNG)
+        second = self.store.put(
+            self.owner, self.case + ":two", "image/png", PNG + b"-second",
+        )
+        new_key = secrets.token_bytes(32)
+        rotated = PostgresStageArtifactStore(
+            DSN, keyring={"default": self.key, "rotation-2026-10": new_key},
+            active_key_id="rotation-2026-10", scope_key=self.key,
+        )
+        self.assertEqual(rotated.get(self.owner, self.case + ":one", first.digest), (first, PNG))
+        self.assertEqual(rotated.rotate_batch(limit=1), 1)
+        self.assertEqual(rotated.rotate_batch(limit=1), 1)
+        self.assertEqual(rotated.rotate_batch(limit=1), 0)
+        with psycopg.connect(DSN) as db:
+            ids = db.execute("""
+                SELECT DISTINCT encryption_key_id FROM ronas_stage_artifact
+                WHERE owner_hash=%s
+            """, (self.owner_hash,)).fetchall()
+        self.assertEqual(ids, [("rotation-2026-10",)])
+        self.assertEqual(rotated.get(self.owner, self.case + ":two", second.digest),
+                         (second, PNG + b"-second"))
+
+    def test_two_workers_can_rotate_without_double_processing(self):
+        one = self.store.put(self.owner, self.case + ":one", "image/png", PNG)
+        two = self.store.put(self.owner, self.case + ":two", "image/png", PNG + b"-two")
+        new_key = secrets.token_bytes(32)
+        config = dict(
+            keyring={"default": self.key, "rotation-2026-10": new_key},
+            active_key_id="rotation-2026-10", scope_key=self.key,
+        )
+        first_worker = PostgresStageArtifactStore(DSN, **config)
+        second_worker = PostgresStageArtifactStore(DSN, **config)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda worker: worker.rotate_batch(1),
+                                    (first_worker, second_worker)))
+        self.assertEqual(sum(results), 2)
+        self.assertEqual(first_worker.get(self.owner, self.case + ":one", one.digest),
+                         (one, PNG))
+        self.assertEqual(second_worker.get(self.owner, self.case + ":two", two.digest),
+                         (two, PNG + b"-two"))
+
+    def test_rotation_requires_old_keys_and_bounds_batch_size(self):
+        artifact = self.store.put(self.owner, self.case, "image/png", PNG)
+        new_key = secrets.token_bytes(32)
+        missing_old = PostgresStageArtifactStore(
+            DSN, keyring={"new": new_key}, active_key_id="new", scope_key=self.key,
+        )
+        with self.assertRaises(StageArtifactStoreError):
+            missing_old.get(self.owner, self.case, artifact.digest)
+        with self.assertRaises(ValueError):
+            missing_old.rotate_batch(0)
+        with self.assertRaises(ValueError):
+            missing_old.rotate_batch(501)
+
+
 if __name__ == "__main__":
     unittest.main()

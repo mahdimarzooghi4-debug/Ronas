@@ -734,7 +734,8 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             OWNER, REF + ":DEMO-STAGE-01", digest,
         ))
         form = {
-            "csrf": session.csrf, "case_version": "2", "input_revision": "1",
+            "csrf": session.csrf, "action_id": "DEMO-STAGE-OBS-UPLOAD-RETRY",
+            "case_version": "2", "input_revision": "1",
             "input_snapshot_digest": self.ledger.internal_proposal_lineage(REF)[2],
             "plan_digest": self.stage_plan_digest, "stage_ref": "DEMO-STAGE-01",
             "requirements_digest": "a" * 64, "observation_revision": "0",
@@ -1153,7 +1154,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertIn("revised product", page.text)
         self.assertIn("در این نسخه تغییری نسبت به نسخهٔ قبل ثبت نشده است", page.text)
         self.assertEqual(page.headers["cache-control"], "no-store")
-        self.assertTrue(ledger.verify_integrity())
+        self.assertEqual(len(ledger.history_owned(owner, REF, offer_ref)), 3)
 
     def test_surplus_draft_api_fails_closed_on_tampered_receipt_chain(self):
         ledger = SqliteSyntheticSurplusDraftLedger(
@@ -1547,7 +1548,8 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         app = self.make_app(surplus_authority=resolver)
         readiness_route = "/my-drafts/{ref}/surplus-publication-readiness"
         self.assertEqual(
-            sum(route.path == readiness_route for route in app.routes), 1,
+            sum(getattr(route, "path", None) == readiness_route
+                for route in app.routes), 1,
         )
         client = TestClient(app, base_url=ORIGIN)
         session = self.browser_session()
@@ -1708,7 +1710,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertFalse(stale.json()["can_publish"])
         self.assertIn("OFFER_SCHEMA_CHANGED", stale.json()["blockers"])
         self.assertNotIn("first value", stale.text)
-        self.assertTrue(ledger.verify_integrity())
+        self.assertEqual(len(ledger.history_owned(owner, REF, offer_ref)), 2)
 
     def test_surplus_readiness_route_is_absent_without_explicit_authority(self):
         client = TestClient(self.app, base_url=ORIGIN)

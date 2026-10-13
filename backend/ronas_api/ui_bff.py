@@ -2895,6 +2895,8 @@ def build_authenticated_ui_router(
                     + quote(ref) + '/question-responses/demo-reply">'
                     '<input type="hidden" name="csrf" value="'
                     + escape(session.csrf, quote=True) + '">'
+                    '<input type="hidden" name="action_id" value="DEMO-UI-R-'
+                    + secrets.token_hex(10).upper() + '">'
                     '<input type="hidden" name="case_version" value="'
                     + str(notes["case_version"]) + '">'
                     '<input type="hidden" name="input_revision" value="'
@@ -2952,7 +2954,7 @@ def build_authenticated_ui_router(
         ) -> RedirectResponse:
             principal, form = await checked_browser_form(
                 request, sid, fields=frozenset({
-                    "csrf", "case_version", "input_revision",
+                    "csrf", "action_id", "case_version", "input_revision",
                     "question_revision", "scenario",
                 }),
             )
@@ -2961,7 +2963,7 @@ def build_authenticated_ui_router(
             try:
                 saved = household_input_ledger.append_owned_question_response(
                     ref, principal,
-                    action_id="DEMO-UI-R-" + secrets.token_hex(10).upper(),
+                    action_id=form["action_id"],
                     track="HOUSEHOLD_INPUT_ADEQUACY",
                     expected_case_version=form_version(
                         form["case_version"], zero_allowed=False,

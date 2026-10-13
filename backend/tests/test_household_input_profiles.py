@@ -1209,7 +1209,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         )
         self.assertEqual(started.status_code, 303, started.text)
         generated_ref = parse_qs(urlsplit(started.headers["location"]).query)["offer_ref"][0]
-        self.assertRegex(generated_ref, r"^DEMO-OFFER-[0-9A-F]{24}$")
+        self.assertRegex(generated_ref, r"^DEMO-OFFER-[0-9A-F]{32}$")
         editor = client.get(started.headers["location"])
         self.assertEqual(editor.status_code, 200, editor.text)
         self.assertIn("پیش‌نویس جدید و خصوصی", editor.text)

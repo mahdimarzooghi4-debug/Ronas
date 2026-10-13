@@ -367,10 +367,12 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         page = self.client.get(path)
         self.assertEqual(page.status_code, 200, page.text)
         self.assertIn("ثبت رسید مشاهده", page.text)
+        self.assertIn('name="action_id"', page.text)
         self.assertIn("هنوز رسیدی ثبت نشده", page.text)
         values = self.stage_command()
         form = {
             "csrf": session.csrf,
+            "action_id": "DEMO-STAGE-OBS-BROWSER-RETRY",
             "case_version": str(values["expected_case_version"]),
             "input_revision": str(values["expected_input_revision"]),
             "input_snapshot_digest": values["expected_input_snapshot_digest"],
@@ -388,6 +390,18 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             follow_redirects=False,
         )
         self.assertEqual(saved.status_code, 303, saved.text)
+        replay = self.client.post(
+            path, content=urlencode(form),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(replay.status_code, 303, replay.text)
+        api_history = self.client.get(
+            ROOT.replace("/cultivation-inputs", "/stage-observations"),
+            headers=self.bearer(),
+        )
+        self.assertEqual(len(api_history.json()["observations"]), 1)
         current_page = self.client.get(path)
         self.assertIn("رسید جاری", current_page.text)
         self.assertIn("رسید جاری ثبت شده", current_page.text)

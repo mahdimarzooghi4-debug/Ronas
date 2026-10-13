@@ -10,9 +10,7 @@ from .scoped_drafts import _synthetic_ref
 from .domestic_surplus_publication import (
     OfferRevision, PublicationAuthorities, evaluate_surplus_publication,
 )
-from .domestic_surplus_drafts import (
-    SqliteSyntheticSurplusDraftLedger, SurplusDraftIntegrityError,
-)
+from .domestic_surplus_drafts import SqliteSyntheticSurplusDraftLedger
 
 PublicationAuthority = Callable[
     [Principal, str, str],

@@ -82,7 +82,7 @@ class SqliteBrowserSessionStore:
 
     def _encrypt(self, area: str, digest: str, data: dict) -> bytes:
         plaintext = json.dumps(data, separators=(",", ":"), sort_keys=True).encode("utf-8")
-        if len(plaintext) > 16000:
+        if len(plaintext) > 32000:
             raise ValueError("session payload exceeds technical limit")
         nonce = secrets.token_bytes(12)
         return nonce + self._cipher.encrypt(nonce, plaintext, (area + digest).encode("ascii"))

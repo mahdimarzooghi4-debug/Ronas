@@ -1069,6 +1069,67 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         cookie_only = client.put(path, json=stale)
         self.assertEqual(cookie_only.status_code, 401)
 
+    def test_surplus_draft_history_exposes_only_same_schema_revision_diffs(self):
+        ledger = SqliteSyntheticSurplusDraftLedger(
+            str(self.path.parent / "surplus-draft-diffs.sqlite3"),
+            self.schema, self.allowed,
+        )
+        client = TestClient(
+            self.make_app(surplus_draft_ledger=ledger), base_url=ORIGIN,
+        )
+        owner = Principal(OWNER, frozenset({"household"}))
+        offer_ref = "DEMO-OFFER-DIFF-1"
+        first = {"field_alpha": "initial product", "field_choice": "sample-a"}
+        ledger.save(owner, REF, offer_ref, action_id="DEMO-DIFF-A1",
+                    expected_revision=0, values=first)
+        ledger.save(owner, REF, offer_ref, action_id="DEMO-DIFF-A2",
+                    expected_revision=1, values=dict(first))
+        ledger.save(
+            owner, REF, offer_ref, action_id="DEMO-DIFF-A3",
+            expected_revision=2,
+            values={"field_alpha": "revised product", "field_choice": "sample-a"},
+        )
+
+        api_path = (
+            f"/api/v1/domestic/household-intake/my-drafts/{REF}"
+            f"/surplus-offers/{offer_ref}/revisions"
+        )
+        response = client.get(api_path, headers=self.bearer())
+        self.assertEqual(response.status_code, 200, response.text)
+        history = response.json()
+        self.assertEqual(
+            history["contract_version"], "ronas.domestic.surplus-draft-history.v2",
+        )
+        revisions = history["revisions"]
+        self.assertTrue(revisions[0]["diff_available"])
+        self.assertEqual(revisions[0]["changes"], [
+            {"field": "field_alpha", "before": None, "after": "initial product"},
+            {"field": "field_choice", "before": None, "after": "sample-a"},
+        ])
+        self.assertEqual(revisions[1]["changes"], [])
+        self.assertEqual(revisions[2]["changes"], [
+            {"field": "field_alpha", "before": "initial product",
+             "after": "revised product"},
+        ])
+        denied = client.get(
+            api_path, headers=self.bearer("synthetic-other-owner", ("household",)),
+        )
+        self.assertEqual(denied.status_code, 404)
+
+        session = self.browser_session()
+        sid = next(key for key, value in self.sessions.sessions.items()
+                   if value is session)
+        client.cookies.set("__Host-ronas_session", sid)
+        page_path = f"/my-drafts/{REF}/surplus-offers/{offer_ref}/revisions"
+        page = client.get(page_path)
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("تفاوت با نسخهٔ قبل", page.text)
+        self.assertIn("initial product", page.text)
+        self.assertIn("revised product", page.text)
+        self.assertIn("در این نسخه تغییری نسبت به نسخهٔ قبل ثبت نشده است", page.text)
+        self.assertEqual(page.headers["cache-control"], "no-store")
+        self.assertTrue(ledger.verify_integrity())
+
     def test_surplus_draft_api_fails_closed_on_tampered_receipt_chain(self):
         ledger = SqliteSyntheticSurplusDraftLedger(
             str(self.path.parent / "surplus-drafts-tampered.sqlite3"),

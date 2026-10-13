@@ -163,6 +163,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             export_supplier_workspace=export_supplier_workspace,
             domestic_partner_workspace=domestic_partner_workspace,
             export_source_connectors=export_source_connectors,
+            household_surplus_publication_authority=household_surplus_publication_authority,
         ))
 
     @app.middleware("http")

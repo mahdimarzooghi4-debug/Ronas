@@ -3143,6 +3143,7 @@ def build_authenticated_ui_router(
                 )
             blocker_labels = {
                 "CURRENT_OFFER_UNAVAILABLE": "نسخه جاری پیشنهاد در دسترس نیست",
+                "OFFER_SCHEMA_CHANGED": "ساختار پیشنهاد تغییر کرده و بازبینی لازم است",
                 "OFFER_VERSION_CHANGED": "نسخه پیشنهاد تغییر کرده است",
                 "PRODUCER_APPROVAL_REQUIRED": "تأیید تولیدکننده ثبت نشده است",
                 "PRODUCER_APPROVAL_STALE": "تأیید تولیدکننده با نسخه جاری هم‌خوان نیست",

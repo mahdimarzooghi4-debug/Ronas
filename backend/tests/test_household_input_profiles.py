@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import secrets
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -1333,6 +1334,21 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(revisions[1]["values"],
                          {"current_field": "value under active schema"})
         self.assertNotIn("private old meaning", history_api.text)
+        original_chain_reader = current_ledger._chain_rows
+
+        def storage_failure(*_args):
+            raise sqlite3.OperationalError("private database location")
+
+        current_ledger._chain_rows = storage_failure
+        try:
+            unavailable = client.get(
+                api_path + "/revisions", headers=self.bearer(),
+            )
+        finally:
+            current_ledger._chain_rows = original_chain_reader
+        self.assertEqual(unavailable.status_code, 503, unavailable.text)
+        self.assertEqual(unavailable.json()["detail"], "DRAFT_STORAGE_UNAVAILABLE")
+        self.assertNotIn("private database location", unavailable.text)
         hidden_history = client.get(
             api_path + "/revisions",
             headers=self.bearer("synthetic-other-owner", ("household",)),

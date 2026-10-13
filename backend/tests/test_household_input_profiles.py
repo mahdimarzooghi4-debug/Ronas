@@ -1117,11 +1117,21 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             ).fetchone()[0], 1)
 
     def test_surplus_draft_list_is_owner_scoped_and_redacts_private_values(self):
+        def list_owner_authority(principal, ref, schema_ref):
+            return (self.allowed(principal, ref, schema_ref)
+                    and principal.subject == OWNER and ref == REF)
+
         ledger = SqliteSyntheticSurplusDraftLedger(
             str(self.path.parent / "surplus-draft-list.sqlite3"),
-            self.schema, self.allowed,
+            self.schema, list_owner_authority,
         )
-        app = self.make_app(surplus_draft_ledger=ledger)
+        app = create_app(
+            self.config, self.flow, scoped_registry=self.ledger,
+            technical_review_ledger=self.ledger,
+            household_profile_schema=self.schema,
+            household_profile_access_authority=list_owner_authority,
+            household_surplus_draft_ledger=ledger,
+        )
         client = TestClient(app, base_url=ORIGIN)
         owner = Principal(OWNER, frozenset({"household"}))
         ledger.save(

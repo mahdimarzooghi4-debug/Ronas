@@ -37,3 +37,8 @@ callback consumption, session access, token confinement to the server, and
 callback replay rejection. It does not exercise a live browser, hosted identity
 provider, multi-region database, operational key rotation, backups, or
 Production acceptance.
+
+
+The browser session store also provides a shared per-session refresh lease. The
+lease serializes Keycloak refresh grants across API instances and is cleared in
+the same database transaction that replaces the encrypted session payload.

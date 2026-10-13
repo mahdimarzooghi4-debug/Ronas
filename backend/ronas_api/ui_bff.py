@@ -80,6 +80,34 @@ STYLE = Path(__file__).resolve().parents[2] / "prototype" / "ui" / "styles.css"
 LOGOUT_SCRIPT = """document.addEventListener('DOMContentLoaded', () => {
   const button = document.getElementById('ronas-logout');
   if (!button) return;
+  const retryMessage = 'نشست به‌روزرسانی نشد؛ برای ادامه دوباره وارد شوید.';
+  const scheduleRenewal = async () => {
+    try {
+      const status = await fetch('/api/auth/session', {credentials:'same-origin', cache:'no-store'});
+      if (!status.ok) return;
+      const current = await status.json();
+      const delay = Math.max(5000, current.expires_at * 1000 - Date.now() - 60000);
+      window.setTimeout(async () => {
+        try {
+          const renewed = await fetch('/api/auth/refresh', {
+            method:'POST', credentials:'same-origin', cache:'no-store',
+            headers:{'X-CSRF-Token':current.csrf}
+          });
+          if (renewed.status === 409) { window.setTimeout(scheduleRenewal, 2000); return; }
+          if (!renewed.ok) throw Error('SESSION_REFRESH_REJECTED');
+          scheduleRenewal();
+        } catch {
+          const notice = document.getElementById('logout-message');
+          if (notice) notice.textContent = retryMessage;
+        }
+      }, delay);
+    } catch {
+      const notice = document.getElementById('logout-message');
+      if (notice) notice.textContent = retryMessage;
+      window.setTimeout(scheduleRenewal, 20000);
+    }
+  };
+  scheduleRenewal();
   button.addEventListener('click', async () => {
     button.disabled = true;
     try {

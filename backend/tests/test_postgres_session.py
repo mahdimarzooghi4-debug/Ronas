@@ -66,6 +66,7 @@ class PostgresBrowserSessionStoreTests(unittest.TestCase):
             "csrf-" + secrets.token_urlsafe(24),
             int(self.clock[0]) + 600,
             "id-" + secrets.token_urlsafe(24),
+            "refresh-" + secrets.token_urlsafe(24),
         )
         self.store.save_session(sid, session)
         self.assertEqual(self.peer.get_session(sid), session)
@@ -78,7 +79,7 @@ class PostgresBrowserSessionStoreTests(unittest.TestCase):
             ).fetchone()
         ciphertext = bytes(row[1])
         self.assertEqual(row[0], digest)
-        for secret_value in (session.subject, session.access_token, session.csrf, session.id_token):
+        for secret_value in (session.subject, session.access_token, session.csrf, session.id_token, session.refresh_token):
             self.assertNotIn(secret_value.encode(), ciphertext)
         self.peer.revoke_session(sid)
         self.assertIsNone(self.store.get_session(sid))
@@ -148,6 +149,29 @@ class PostgresBrowserSessionStoreTests(unittest.TestCase):
         self.assertIsNone(self.peer.take_pending(expired_state))
         self.assertEqual(self.store.purge_expired(), (0, 0))
 
+    def test_refresh_lease_is_single_owner_and_atomic_across_workers(self):
+        sid = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(sid.encode("ascii")).hexdigest()
+        self.session_hashes.append(digest)
+        before = BrowserSession(
+            "synthetic-refresh-user", frozenset({"household"}),
+            "access-" + secrets.token_urlsafe(24), "csrf-" + secrets.token_urlsafe(24),
+            int(self.clock[0]) + 600, "id-" + secrets.token_urlsafe(24),
+            "refresh-" + secrets.token_urlsafe(24),
+        )
+        self.store.save_session(sid, before)
+        lease, other = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
+        self.assertTrue(self.store.begin_refresh(sid, lease))
+        self.assertFalse(self.peer.begin_refresh(sid, other))
+        after = BrowserSession(
+            before.subject, before.roles, "new-access-" + secrets.token_urlsafe(24),
+            "new-csrf-" + secrets.token_urlsafe(24), int(self.clock[0]) + 700,
+            before.id_token, "new-refresh-" + secrets.token_urlsafe(24),
+        )
+        self.assertTrue(self.peer.complete_refresh(sid, lease, after))
+        self.assertEqual(self.store.get_session(sid), after)
+        self.assertTrue(self.peer.begin_refresh(sid, other))
+        self.peer.release_refresh(sid, other)
     def test_invalid_key_and_connection_bounds_fail_before_database_use(self):
         with self.assertRaises(ValueError):
             PostgresBrowserSessionStore(DSN, b"short")

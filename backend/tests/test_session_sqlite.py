@@ -33,7 +33,7 @@ class SqliteStoreTests(unittest.TestCase):
     def session(self):
         return BrowserSession("synthetic-user", frozenset({"domestic_ops"}),
                               "eyJfake.payload.signature", secrets.token_urlsafe(32),
-                              int(self.clock[0]) + 120)
+                              int(self.clock[0]) + 120, refresh_token="refresh-secret-token")
 
     def test_pending_single_use_survives_reopen(self):
         record = self.pending()
@@ -73,7 +73,7 @@ class SqliteStoreTests(unittest.TestCase):
         self.store.save_session(self.sid, active)
         content = self.path.read_bytes()
         for value in (self.state, self.sid, item.verifier, item.nonce,
-                      active.access_token, active.csrf, active.subject):
+                      active.access_token, active.csrf, active.subject, active.refresh_token):
             self.assertNotIn(value.encode(), content)
         with sqlite3.connect(self.path) as db:
             keys = db.execute("SELECT state_hash FROM pending_login").fetchall()
@@ -156,6 +156,20 @@ class SqliteStoreTests(unittest.TestCase):
             db.commit()
         self.assertIsNone(self.store.get_session(self.sid))
 
+    def test_refresh_lease_is_single_owner_and_atomically_replaces_ciphertext(self):
+        session = self.session()
+        self.store.save_session(self.sid, session)
+        first, second = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
+        self.assertTrue(self.store.begin_refresh(self.sid, first))
+        self.assertFalse(self.make_store().begin_refresh(self.sid, second))
+        renewed = BrowserSession(
+            session.subject, session.roles, "new-access-token", "new-csrf",
+            int(self.clock[0]) + 600, session.id_token, "new-refresh-token",
+        )
+        self.assertTrue(self.make_store().complete_refresh(self.sid, first, renewed))
+        self.assertEqual(self.store.get_session(self.sid), renewed)
+        self.assertTrue(self.store.begin_refresh(self.sid, second))
+        self.store.release_refresh(self.sid, second)
     def test_no_web_app_is_activated_by_store_construct(self):
         from fastapi.testclient import TestClient
         from ronas_api.app import create_app

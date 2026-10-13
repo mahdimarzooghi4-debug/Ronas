@@ -60,6 +60,10 @@ class SqliteBrowserSessionStore:
                 sid_hash TEXT PRIMARY KEY, ciphertext BLOB NOT NULL,
                 expires_at INTEGER NOT NULL
             )""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS browser_session_refresh_lock (
+                sid_hash TEXT PRIMARY KEY, lease_hash TEXT NOT NULL,
+                expires_at REAL NOT NULL
+            )""")
             connection.execute("CREATE INDEX IF NOT EXISTS pending_expiry ON pending_login(expires_at)")
             connection.execute("CREATE INDEX IF NOT EXISTS session_expiry ON browser_session(expires_at)")
 
@@ -82,7 +86,7 @@ class SqliteBrowserSessionStore:
 
     def _encrypt(self, area: str, digest: str, data: dict) -> bytes:
         plaintext = json.dumps(data, separators=(",", ":"), sort_keys=True).encode("utf-8")
-        if len(plaintext) > 32000:
+        if len(plaintext) > 48000:
             raise ValueError("session payload exceeds technical limit")
         nonce = secrets.token_bytes(12)
         return nonce + self._cipher.encrypt(nonce, plaintext, (area + digest).encode("ascii"))
@@ -155,8 +159,7 @@ class SqliteBrowserSessionStore:
         except (ValueError, TypeError):
             return None
 
-    def save_session(self, sid: str, session: BrowserSession) -> None:
-        digest = self._digest(sid)
+    def _encode_session(self, digest: str, session: BrowserSession) -> bytes:
         if (not isinstance(session, BrowserSession)
                 or type(session.expires_at) is not int
                 or not int(self._now()) < session.expires_at <= int(self._now()) + 900
@@ -165,13 +168,19 @@ class SqliteBrowserSessionStore:
                 or not all(isinstance(x, str) and x for x in (
                     session.subject, session.access_token, session.csrf
                 ))
-                or not isinstance(session.id_token, str) or len(session.id_token) > 12000):
+                or not isinstance(session.id_token, str) or len(session.id_token) > 12000
+                or not isinstance(session.refresh_token, str) or len(session.refresh_token) > 12000):
             raise ValueError("invalid browser session")
-        ciphertext = self._encrypt("session:", digest, {
+        return self._encrypt("session:", digest, {
             "subject": session.subject, "roles": sorted(session.roles),
             "access_token": session.access_token, "csrf": session.csrf,
-            "id_token": session.id_token, "expires_at": session.expires_at,
+            "id_token": session.id_token, "refresh_token": session.refresh_token,
+            "expires_at": session.expires_at,
         })
+
+    def save_session(self, sid: str, session: BrowserSession) -> None:
+        digest = self._digest(sid)
+        ciphertext = self._encode_session(digest, session)
         with self._db() as db:
             try:
                 db.execute("INSERT INTO browser_session VALUES (?, ?, ?)",
@@ -179,6 +188,64 @@ class SqliteBrowserSessionStore:
             except sqlite3.IntegrityError as exc:
                 raise ValueError("duplicate session") from exc
 
+    def begin_refresh(self, sid: str, lease: str) -> bool:
+        digest, lease_hash = self._digest(sid), self._digest(lease)
+        now = float(self._now())
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                db.execute("DELETE FROM browser_session_refresh_lock WHERE expires_at <= ?", (now,))
+                active = db.execute("SELECT 1 FROM browser_session WHERE sid_hash=? AND expires_at>?",
+                                    (digest, int(now))).fetchone()
+                if not active:
+                    db.execute("COMMIT")
+                    return False
+                cursor = db.execute(
+                    "INSERT OR IGNORE INTO browser_session_refresh_lock VALUES (?, ?, ?)",
+                    (digest, lease_hash, now + 30),
+                )
+                acquired = cursor.rowcount == 1
+                db.execute("COMMIT")
+                return acquired
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+
+    def complete_refresh(self, sid: str, lease: str, session: BrowserSession) -> bool:
+        digest, lease_hash = self._digest(sid), self._digest(lease)
+        ciphertext = self._encode_session(digest, session)
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                lock = db.execute(
+                    "SELECT expires_at FROM browser_session_refresh_lock WHERE sid_hash=? AND lease_hash=?",
+                    (digest, lease_hash),
+                ).fetchone()
+                if not lock or lock[0] <= self._now():
+                    db.execute("ROLLBACK")
+                    return False
+                updated = db.execute(
+                    "UPDATE browser_session SET ciphertext=?,expires_at=? WHERE sid_hash=?",
+                    (ciphertext, session.expires_at, digest),
+                ).rowcount
+                if updated != 1:
+                    db.execute("ROLLBACK")
+                    return False
+                db.execute("DELETE FROM browser_session_refresh_lock WHERE sid_hash=?", (digest,))
+                db.execute("COMMIT")
+                return True
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+
+    def release_refresh(self, sid: str, lease: str) -> None:
+        try:
+            digest, lease_hash = self._digest(sid), self._digest(lease)
+        except ValueError:
+            return
+        with self._db() as db:
+            db.execute("DELETE FROM browser_session_refresh_lock WHERE sid_hash=? AND lease_hash=?",
+                       (digest, lease_hash))
     def get_session(self, sid: str) -> BrowserSession | None:
         try:
             digest = self._digest(sid)
@@ -191,17 +258,18 @@ class SqliteBrowserSessionStore:
         if not row or type(row[1]) is not int or row[1] <= int(self._now()):
             return None
         data = self._decrypt("session:", digest, row[0])
-        if data is None or set(data) != {"subject", "roles", "access_token", "csrf", "id_token", "expires_at"}:
+        if data is None or set(data) != {"subject", "roles", "access_token", "csrf", "id_token", "refresh_token", "expires_at"}:
             return None
         try:
             roles = data["roles"]
             if (not isinstance(roles, list) or not roles or any(r not in ALL_ROLES for r in roles)
                     or len(roles) != len(set(roles)) or type(data["expires_at"]) is not int
                     or data["expires_at"] != row[1]
-                    or not all(isinstance(data[k], str) for k in ("subject", "access_token", "csrf", "id_token"))):
+                    or not all(isinstance(data[k], str) for k in ("subject", "access_token", "csrf", "id_token", "refresh_token"))):
                 return None
             return BrowserSession(data["subject"], frozenset(roles),
-                                  data["access_token"], data["csrf"], data["expires_at"], data["id_token"])
+                                  data["access_token"], data["csrf"], data["expires_at"], data["id_token"],
+                                  data["refresh_token"])
         except (ValueError, TypeError, KeyError):
             return None
 
@@ -214,6 +282,7 @@ class SqliteBrowserSessionStore:
             db.execute("BEGIN IMMEDIATE")
             try:
                 db.execute("DELETE FROM browser_session WHERE sid_hash=?", (digest,))
+                db.execute("DELETE FROM browser_session_refresh_lock WHERE sid_hash=?", (digest,))
                 db.execute("COMMIT")
             except Exception:
                 db.execute("ROLLBACK")
@@ -228,6 +297,8 @@ class SqliteBrowserSessionStore:
                                      (self._now(),)).rowcount
                 sessions = db.execute("DELETE FROM browser_session WHERE expires_at <= ?",
                                       (int(self._now()),)).rowcount
+                db.execute("DELETE FROM browser_session_refresh_lock WHERE expires_at <= ?",
+                           (self._now(),))
                 db.execute("COMMIT")
                 return pending, sessions
             except Exception:

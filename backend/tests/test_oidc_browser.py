@@ -31,6 +31,7 @@ class FakeAtomicStore:
         self.pending = {}
         self.sessions = {}
         self.latest_pending = None
+        self.refresh_leases = {}
 
     def save_pending(self, item):
         self.pending[item.state] = item
@@ -47,6 +48,24 @@ class FakeAtomicStore:
 
     def revoke_session(self, sid):
         self.sessions.pop(sid, None)
+        self.refresh_leases.pop(sid, None)
+
+    def begin_refresh(self, sid, lease):
+        if sid not in self.sessions or sid in self.refresh_leases:
+            return False
+        self.refresh_leases[sid] = lease
+        return True
+
+    def complete_refresh(self, sid, lease, session):
+        if sid not in self.sessions or self.refresh_leases.get(sid) != lease:
+            return False
+        self.sessions[sid] = session
+        self.refresh_leases.pop(sid, None)
+        return True
+
+    def release_refresh(self, sid, lease):
+        if self.refresh_leases.get(sid) == lease:
+            self.refresh_leases.pop(sid, None)
 
 
 class BrowserLoginTests(unittest.TestCase):
@@ -64,6 +83,8 @@ class BrowserLoginTests(unittest.TestCase):
         self.id_changes = {}
         self.access_changes = {}
         self.exchange_error = None
+        self.refresh_error = None
+        self.refresh_calls = []
 
         async def fake_exchange(code, verifier):
             self.exchange_calls.append((code, verifier))
@@ -90,11 +111,31 @@ class BrowserLoginTests(unittest.TestCase):
                                            headers={"kid": "realm-sign-001"}),
                 "id_token": jwt.encode(identity, self.private, algorithm="RS256",
                                        headers={"kid": "realm-sign-001"}),
+                "refresh_token": "refresh-original-token",
+            }
+
+        async def fake_refresh(refresh_token):
+            self.refresh_calls.append(refresh_token)
+            if self.refresh_error is not None:
+                raise self.refresh_error
+            now = int(self.fixed_time[0])
+            access = {
+                "iss": ISS, "aud": [API, "account"], "azp": BROWSER,
+                "typ": "Bearer", "sub": "synthetic-test-user", "iat": now - 1,
+                "nbf": now - 1, "exp": now + 800,
+                "resource_access": {API: {"roles": ["domestic_ops"]}},
+            }
+            return {
+                "token_type": "Bearer",
+                "access_token": jwt.encode(access, self.private, algorithm="RS256",
+                                           headers={"kid": "realm-sign-001"}),
+                "refresh_token": "refresh-rotated-token",
             }
 
         self.flow = BrowserOIDC(
             BrowserOIDCConfig(self.config, CALLBACK, "/admin"),
             self.store, fake_exchange, now=lambda: self.fixed_time[0],
+            refresh_exchange=fake_refresh,
         )
         self.client = TestClient(create_app(self.config, self.flow),
                                  base_url=ORIGIN, follow_redirects=False)
@@ -327,6 +368,60 @@ class BrowserLoginTests(unittest.TestCase):
         self.assertEqual(oversized.status_code, 413)
         self.assertEqual(self.client.get("/api/auth/session").status_code, 200)
 
+    def test_refresh_rotates_server_side_credentials_and_csrf(self):
+        _, params = self.start()
+        self.assertEqual(self.complete(params).status_code, 303)
+        before = self.client.get("/api/auth/session").json()
+        response = self.client.post("/api/auth/refresh", headers={
+            "Origin": ORIGIN, "X-CSRF-Token": before["csrf"],
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertNotIn("access_token", response.text)
+        after = response.json()
+        self.assertNotEqual(after["csrf"], before["csrf"])
+        self.assertGreater(after["expires_at"], before["expires_at"])
+        sid = self.client.cookies.get("__Host-ronas_session")
+        stored = self.store.get_session(sid)
+        self.assertEqual(stored.refresh_token, "refresh-rotated-token")
+        self.assertEqual(self.refresh_calls, ["refresh-original-token"])
+
+    def test_refresh_requires_exact_origin_and_csrf(self):
+        _, params = self.start()
+        self.complete(params)
+        csrf = self.client.get("/api/auth/session").json()["csrf"]
+        for headers in (
+            {"Origin": "https://attacker.example", "X-CSRF-Token": csrf},
+            {"Origin": ORIGIN, "X-CSRF-Token": "wrong"},
+        ):
+            self.assertEqual(self.client.post("/api/auth/refresh", headers=headers).status_code, 403)
+        self.assertEqual(self.refresh_calls, [])
+
+    def test_refresh_lease_prevents_parallel_rotating_grant(self):
+        _, params = self.start()
+        self.complete(params)
+        sid = self.client.cookies.get("__Host-ronas_session")
+        self.store.refresh_leases[sid] = "other-worker-lease"
+        csrf = self.client.get("/api/auth/session").json()["csrf"]
+        response = self.client.post("/api/auth/refresh", headers={
+            "Origin": ORIGIN, "X-CSRF-Token": csrf,
+        })
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.refresh_calls, [])
+        self.assertIsNotNone(self.store.get_session(sid))
+
+    def test_refresh_rejection_revokes_session_and_cookie(self):
+        _, params = self.start()
+        self.complete(params)
+        sid = self.client.cookies.get("__Host-ronas_session")
+        csrf = self.client.get("/api/auth/session").json()["csrf"]
+        self.refresh_error = ValueError("synthetic invalid grant")
+        response = self.client.post("/api/auth/refresh", headers={
+            "Origin": ORIGIN, "X-CSRF-Token": csrf,
+        })
+        self.assertEqual(response.status_code, 401)
+        self.assertIsNone(self.store.get_session(sid))
+        self.assertIn("__Host-ronas_session", response.headers.get("set-cookie", ""))
     def test_bearer_header_has_no_cookie_fallback(self):
         _, params = self.start()
         self.complete(params)
@@ -339,6 +434,7 @@ class BrowserLoginTests(unittest.TestCase):
         self.assertEqual(app.get("/api/auth/start").status_code, 404)
         self.assertEqual(app.get("/api/auth/session").status_code, 404)
         self.assertEqual(app.post("/api/auth/logout").status_code, 404)
+        self.assertEqual(app.post("/api/auth/refresh").status_code, 404)
         self.assertEqual(app.get(DOMESTIC_OPS).status_code, 401)
 
     def test_invalid_callback_config_is_rejected(self):

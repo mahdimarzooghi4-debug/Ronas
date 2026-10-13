@@ -149,7 +149,11 @@ class TwoShellBFFTests(unittest.TestCase):
         self.assertIn("form.action = '/api/auth/logout/keycloak'", javascript.text)
         self.assertIn("csrf.name = 'csrf'", javascript.text)
         self.assertIn("form.requestSubmit()", javascript.text)
+        self.assertIn("/api/auth/refresh", javascript.text)
+        self.assertIn("scheduleRenewal", javascript.text)
         self.assertNotIn("fixed-test-csrf", javascript.text)
+        self.assertIn("/api/auth/refresh", javascript.text)
+        self.assertIn("scheduleRenewal", javascript.text)
 
     def test_opt_in_only_default_app_exposes_no_user_shell_or_assets(self):
         app = TestClient(create_app(self.config), base_url=ORIGIN)

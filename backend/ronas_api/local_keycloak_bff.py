@@ -166,7 +166,13 @@ def _compose_local_test_bff(
         ) as client:
             return await KeycloakCodeExchanger(cfg, client)(code, verifier)
 
-    flow = BrowserOIDC(cfg, store, exchange)
+    async def refresh_exchange(refresh_token: str) -> dict:
+        async with httpx.AsyncClient(
+            transport=transport, trust_env=False, follow_redirects=False,
+        ) as client:
+            return await KeycloakCodeExchanger(cfg, client).refresh(refresh_token)
+
+    flow = BrowserOIDC(cfg, store, exchange, refresh_exchange=refresh_exchange)
     app = create_app(
         keycloak, browser_flow=flow,
         scoped_registry=case_ledger,

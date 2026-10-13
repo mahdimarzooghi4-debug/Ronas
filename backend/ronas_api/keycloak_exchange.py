@@ -1,4 +1,4 @@
-"""Fixed Keycloak code-to-token HTTP adapter, opt-in only."""
+"""Fixed Keycloak token HTTP adapters, opt-in only."""
 import httpx
 from .auth import InvalidToken
 from .oidc_browser import BrowserOIDCConfig, _safe_string
@@ -36,6 +36,44 @@ class KeycloakCodeExchanger:
             access, identity = body.get("access_token"), body.get("id_token")
             if not _safe_string(access, 12000) or not _safe_string(identity, 12000):
                 raise InvalidToken
-            return {"token_type": "Bearer", "access_token": access, "id_token": identity}
+            bundle = {"token_type": "Bearer", "access_token": access, "id_token": identity}
+            refresh = body.get("refresh_token")
+            if refresh is not None:
+                if not _safe_string(refresh, 12000):
+                    raise InvalidToken
+                bundle["refresh_token"] = refresh
+            return bundle
+        except (httpx.HTTPError, ValueError, TypeError, InvalidToken) as exc:
+            raise InvalidToken from exc
+
+    async def refresh(self, refresh_token: str) -> dict:
+        if not _safe_string(refresh_token, 12000):
+            raise InvalidToken
+        try:
+            result = await self.client.post(
+                self.endpoint,
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": self.config.keycloak.browser_client_id,
+                    "refresh_token": refresh_token,
+                },
+                headers={"Accept": "application/json"},
+                follow_redirects=False,
+                timeout=5.0,
+            )
+            if (result.status_code != 200 or len(result.content) > 65536
+                    or "application/json" not in result.headers.get("content-type", "").lower()):
+                raise InvalidToken
+            body = result.json()
+            if (not isinstance(body, dict) or body.get("token_type") != "Bearer"
+                    or not _safe_string(body.get("access_token"), 12000)):
+                raise InvalidToken
+            bundle = {"token_type": "Bearer", "access_token": body["access_token"]}
+            rotated = body.get("refresh_token")
+            if rotated is not None:
+                if not _safe_string(rotated, 12000):
+                    raise InvalidToken
+                bundle["refresh_token"] = rotated
+            return bundle
         except (httpx.HTTPError, ValueError, TypeError, InvalidToken) as exc:
             raise InvalidToken from exc

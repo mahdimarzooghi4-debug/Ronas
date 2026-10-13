@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import jwt
 from fastapi import APIRouter, Cookie, Header, HTTPException, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from .auth import InvalidToken, Principal
 from .keycloak import KeycloakConfig, KeycloakTokenVerifier
@@ -54,6 +54,7 @@ class BrowserSession:
     csrf: str
     expires_at: int
     id_token: str = ""
+    refresh_token: str = ""
 
 
 class BrowserSessionStore(Protocol):
@@ -64,10 +65,21 @@ class BrowserSessionStore(Protocol):
     def save_session(self, sid: str, session: BrowserSession) -> None: ...
     def get_session(self, sid: str) -> BrowserSession | None: ...
     def revoke_session(self, sid: str) -> None: ...
+    def begin_refresh(self, sid: str, lease: str) -> bool: ...
+    def complete_refresh(self, sid: str, lease: str, session: BrowserSession) -> bool: ...
+    def release_refresh(self, sid: str, lease: str) -> None: ...
 
 
 class CodeExchanger(Protocol):
     async def __call__(self, code: str, verifier: str) -> dict: ...
+
+
+class RefreshExchanger(Protocol):
+    async def __call__(self, refresh_token: str) -> dict: ...
+
+
+class RefreshBusy(Exception):
+    """Another API worker currently owns the refresh-token rotation lease."""
 
 
 @dataclass(frozen=True)
@@ -93,10 +105,12 @@ class BrowserOIDC:
     """No persistent in-memory store is implemented for operational use."""
 
     def __init__(self, config: BrowserOIDCConfig, store: BrowserSessionStore,
-                 exchange: CodeExchanger, now: Callable[[], float] = time.time):
+                 exchange: CodeExchanger, now: Callable[[], float] = time.time,
+                 refresh_exchange: RefreshExchanger | None = None):
         self.config = config
         self.store = store
         self.exchange = exchange
+        self.refresh_exchange = refresh_exchange
         self.now = now
         self.access_verifier = KeycloakTokenVerifier(config.keycloak)
 
@@ -190,7 +204,7 @@ class BrowserOIDC:
             self.store.save_session(sid, BrowserSession(
                 principal.subject, principal.roles,
                 bundle["access_token"], _opaque(), expires_at,
-                bundle["id_token"],
+                bundle["id_token"], bundle.get("refresh_token", ""),
             ))
             destination = pending.return_path
             admin_roles = {"domestic_ops", "export_ops", "finance", "governance"}
@@ -210,6 +224,58 @@ class BrowserOIDC:
         if user.subject != existing.subject or user.roles != existing.roles:
             raise InvalidToken
         return existing
+
+
+    async def refresh_session(self, sid: str) -> BrowserSession:
+        if self.refresh_exchange is None:
+            raise InvalidToken
+        current = self.session(sid)
+        if not _safe_string(current.refresh_token, 12000):
+            raise InvalidToken
+        lease = _opaque()
+        if not self.store.begin_refresh(sid, lease):
+            raise RefreshBusy
+        committed = False
+        try:
+            bundle = await self.refresh_exchange(current.refresh_token)
+            if (not isinstance(bundle, dict) or bundle.get("token_type") != "Bearer"
+                    or not _safe_string(bundle.get("access_token"), 12000)):
+                raise InvalidToken
+            rotated = bundle.get("refresh_token", current.refresh_token)
+            if not _safe_string(rotated, 12000):
+                raise InvalidToken
+            principal = self.access_verifier.verify(bundle["access_token"])
+            if not hmac.compare_digest(principal.subject, current.subject):
+                raise InvalidToken
+            key_id = jwt.get_unverified_header(bundle["access_token"])["kid"]
+            claims = jwt.decode(
+                bundle["access_token"], self.access_verifier.keys[key_id],
+                algorithms=["RS256"], issuer=self.config.keycloak.issuer,
+                audience=self.config.keycloak.api_client_id,
+                options={"require": ["iss", "aud", "sub", "exp", "iat", "nbf"],
+                         "strict_aud": False}, leeway=0,
+            )
+            expires_at = claims.get("exp")
+            if type(expires_at) is not int or expires_at <= int(self.now()):
+                raise InvalidToken
+            expires_at = min(expires_at, int(self.now()) + 900)
+            renewed = BrowserSession(
+                principal.subject, principal.roles, bundle["access_token"],
+                _opaque(), expires_at, current.id_token, rotated,
+            )
+            if not self.store.complete_refresh(sid, lease, renewed):
+                raise InvalidToken
+            committed = True
+            return renewed
+        except Exception as exc:
+            # A rotating grant may have reached Keycloak; do not retry a possibly consumed token.
+            self.store.revoke_session(sid)
+            if isinstance(exc, InvalidToken):
+                raise
+            raise InvalidToken from exc
+        finally:
+            if not committed:
+                self.store.release_refresh(sid, lease)
 
 
 def build_browser_router(flow: BrowserOIDC) -> APIRouter:
@@ -249,7 +315,44 @@ def build_browser_router(flow: BrowserOIDC) -> APIRouter:
             record = flow.session(cookie)
         except InvalidToken:
             raise HTTPException(status_code=401, detail="NO_ACTIVE_SESSION") from None
-        return {"subject": record.subject, "roles": sorted(record.roles), "csrf": record.csrf}
+        return {"subject": record.subject, "roles": sorted(record.roles), "csrf": record.csrf,
+                "expires_at": record.expires_at}
+
+    @router.post("/api/auth/refresh")
+    async def refresh(
+        request: Request,
+        cookie: str | None = Cookie(default=None, alias=name),
+        csrf: str | None = Header(default=None, alias="X-CSRF-Token"),
+        origin: str | None = Header(default=None, alias="Origin"),
+    ):
+        if origin != flow.config.origin:
+            raise HTTPException(status_code=403, detail="ORIGIN_REQUIRED")
+        try:
+            current = flow.session(cookie)
+        except InvalidToken:
+            raise HTTPException(status_code=401, detail="NO_ACTIVE_SESSION") from None
+        if not csrf or not hmac.compare_digest(current.csrf, csrf):
+            raise HTTPException(status_code=403, detail="CSRF_REQUIRED")
+        try:
+            renewed = await flow.refresh_session(cookie)
+        except RefreshBusy:
+            raise HTTPException(status_code=409, detail="SESSION_REFRESH_IN_PROGRESS") from None
+        except InvalidToken:
+            if cookie:
+                flow.store.revoke_session(cookie)
+            response = Response(status_code=401)
+            response.delete_cookie(name, path="/", secure=True, httponly=True, samesite="lax")
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        response = JSONResponse({
+            "roles": sorted(renewed.roles), "csrf": renewed.csrf,
+            "expires_at": renewed.expires_at,
+        })
+        response.set_cookie(name, cookie, max_age=max(1, renewed.expires_at - int(flow.now())),
+                            secure=True, httponly=True, samesite="lax", path="/")
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
 
     @router.post("/api/auth/logout")
     def logout(request: Request, response: Response,

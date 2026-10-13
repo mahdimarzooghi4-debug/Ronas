@@ -71,6 +71,15 @@ class PostgresBrowserSessionStore:
                 CREATE INDEX IF NOT EXISTS ronas_browser_session_expiry
                 ON ronas_browser_session (expires_at)
             """)
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS ronas_browser_session_refresh_lock (
+                    sid_hash CHAR(64) PRIMARY KEY
+                        CHECK (sid_hash ~ '^[0-9a-f]{64}$'),
+                    lease_hash CHAR(64) NOT NULL
+                        CHECK (lease_hash ~ '^[0-9a-f]{64}$'),
+                    expires_at DOUBLE PRECISION NOT NULL
+                )
+            """)
 
     @staticmethod
     def _digest(value: str) -> str:
@@ -80,7 +89,7 @@ class PostgresBrowserSessionStore:
 
     def _encrypt(self, area: str, digest: str, data: dict) -> bytes:
         plaintext = json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
-        if len(plaintext) > 32000:
+        if len(plaintext) > 48000:
             raise ValueError("session payload exceeds technical limit")
         nonce = secrets.token_bytes(12)
         return nonce + self._cipher.encrypt(nonce, plaintext, (area + digest).encode("ascii"))
@@ -150,8 +159,7 @@ class PostgresBrowserSessionStore:
         except (ValueError, TypeError):
             return None
 
-    def save_session(self, sid: str, session: BrowserSession) -> None:
-        digest = self._digest(sid)
+    def _encode_session(self, digest: str, session: BrowserSession) -> bytes:
         if (not isinstance(session, BrowserSession) or type(session.expires_at) is not int
                 or not int(self._now()) < session.expires_at <= int(self._now()) + 900
                 or not isinstance(session.roles, frozenset) or not session.roles
@@ -159,13 +167,19 @@ class PostgresBrowserSessionStore:
                 or not all(isinstance(v, str) and v for v in (
                     session.subject, session.access_token, session.csrf,
                 ))
-                or not isinstance(session.id_token, str) or len(session.id_token) > 12000):
+                or not isinstance(session.id_token, str) or len(session.id_token) > 12000
+                or not isinstance(session.refresh_token, str) or len(session.refresh_token) > 12000):
             raise ValueError("invalid browser session")
-        encrypted = self._encrypt("session:", digest, {
+        return self._encrypt("session:", digest, {
             "subject": session.subject, "roles": sorted(session.roles),
             "access_token": session.access_token, "csrf": session.csrf,
-            "id_token": session.id_token, "expires_at": session.expires_at,
+            "id_token": session.id_token, "refresh_token": session.refresh_token,
+            "expires_at": session.expires_at,
         })
+
+    def save_session(self, sid: str, session: BrowserSession) -> None:
+        digest = self._digest(sid)
+        encrypted = self._encode_session(digest, session)
         try:
             with self._connect() as db:
                 db.execute(
@@ -176,6 +190,55 @@ class PostgresBrowserSessionStore:
         except UniqueViolation as exc:
             raise ValueError("duplicate session") from exc
 
+    def begin_refresh(self, sid: str, lease: str) -> bool:
+        digest, lease_hash = self._digest(sid), self._digest(lease)
+        now = float(self._now())
+        with self._connect() as db:
+            db.execute("DELETE FROM ronas_browser_session_refresh_lock WHERE expires_at <= %s",
+                       (now,))
+            cursor = db.execute(
+                """INSERT INTO ronas_browser_session_refresh_lock
+                   (sid_hash,lease_hash,expires_at)
+                   SELECT %s,%s,%s
+                   WHERE EXISTS (SELECT 1 FROM ronas_browser_session
+                                 WHERE sid_hash=%s AND expires_at>%s)
+                   ON CONFLICT (sid_hash) DO NOTHING""",
+                (digest, lease_hash, now + 30, digest, int(now)),
+            )
+            return cursor.rowcount == 1
+
+    def complete_refresh(self, sid: str, lease: str, session: BrowserSession) -> bool:
+        digest, lease_hash = self._digest(sid), self._digest(lease)
+        encrypted = self._encode_session(digest, session)
+        with self._connect() as db:
+            lock = db.execute(
+                """SELECT expires_at FROM ronas_browser_session_refresh_lock
+                   WHERE sid_hash=%s AND lease_hash=%s FOR UPDATE""",
+                (digest, lease_hash),
+            ).fetchone()
+            if not lock or lock[0] <= self._now():
+                return False
+            updated = db.execute(
+                """UPDATE ronas_browser_session SET ciphertext=%s,expires_at=%s
+                   WHERE sid_hash=%s""",
+                (encrypted, session.expires_at, digest),
+            )
+            if updated.rowcount != 1:
+                return False
+            db.execute("DELETE FROM ronas_browser_session_refresh_lock WHERE sid_hash=%s",
+                       (digest,))
+            return True
+
+    def release_refresh(self, sid: str, lease: str) -> None:
+        try:
+            digest, lease_hash = self._digest(sid), self._digest(lease)
+        except ValueError:
+            return
+        with self._connect() as db:
+            db.execute(
+                """DELETE FROM ronas_browser_session_refresh_lock
+                   WHERE sid_hash=%s AND lease_hash=%s""", (digest, lease_hash),
+            )
     def get_session(self, sid: str) -> BrowserSession | None:
         try:
             digest = self._digest(sid)
@@ -190,7 +253,7 @@ class PostgresBrowserSessionStore:
             return None
         data = self._decrypt("session:", digest, row[0])
         if data is None or set(data) != {
-            "subject", "roles", "access_token", "csrf", "id_token", "expires_at",
+            "subject", "roles", "access_token", "csrf", "id_token", "refresh_token", "expires_at",
         }:
             return None
         try:
@@ -200,12 +263,12 @@ class PostgresBrowserSessionStore:
                     or len(roles) != len(set(roles))
                     or type(data["expires_at"]) is not int or data["expires_at"] != row[1]
                     or not all(isinstance(data[k], str) for k in (
-                        "subject", "access_token", "csrf", "id_token",
+                        "subject", "access_token", "csrf", "id_token", "refresh_token",
                     ))):
                 return None
             return BrowserSession(
                 data["subject"], frozenset(roles), data["access_token"],
-                data["csrf"], data["expires_at"], data["id_token"],
+                data["csrf"], data["expires_at"], data["id_token"], data["refresh_token"],
             )
         except (ValueError, TypeError, KeyError):
             return None
@@ -219,6 +282,9 @@ class PostgresBrowserSessionStore:
             db.execute(
                 "DELETE FROM ronas_browser_session WHERE sid_hash=%s", (digest,),
             )
+            db.execute(
+                "DELETE FROM ronas_browser_session_refresh_lock WHERE sid_hash=%s", (digest,),
+            )
 
     def purge_expired(self) -> tuple[int, int]:
         """Explicit cleanup; scheduling and retention remain caller-owned."""
@@ -231,4 +297,8 @@ class PostgresBrowserSessionStore:
                 "DELETE FROM ronas_browser_session WHERE expires_at <= %s",
                 (int(self._now()),),
             ).rowcount
+            db.execute(
+                "DELETE FROM ronas_browser_session_refresh_lock WHERE expires_at <= %s",
+                (self._now(),),
+            )
             return pending, sessions

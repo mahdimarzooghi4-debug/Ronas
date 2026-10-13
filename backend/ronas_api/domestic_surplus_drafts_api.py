@@ -84,6 +84,42 @@ def build_domestic_surplus_drafts_router(
             ],
         }
 
+    @router.get(base + "/revisions")
+    def read_draft_history(
+        household_ref: str,
+        offer_ref: str,
+        principal: Principal = Depends(verified_principal),
+    ) -> dict:
+        try:
+            records = ledger.history_owned(principal, household_ref, offer_ref)
+        except LookupError as exc:
+            raise HTTPException(404, detail="DRAFT_NOT_FOUND") from exc
+        except SurplusDraftIntegrityError as exc:
+            raise HTTPException(503, detail="DRAFT_INTEGRITY_FAILURE") from exc
+        except RuntimeError as exc:
+            raise HTTPException(503, detail="DRAFT_AUTHORITY_UNAVAILABLE") from exc
+        return {
+            "contract_version": "ronas.domestic.surplus-draft-history.v1",
+            "household_ref": household_ref,
+            "offer_ref": offer_ref,
+            "revisions": [
+                {
+                    "schema_ref": record.schema_ref,
+                    "schema_version": record.schema_version,
+                    "schema_digest": record.schema_digest,
+                    "schema_changed": record.schema_digest != ledger.schema.digest,
+                    "revision": record.revision,
+                    "values": (record.values
+                               if record.schema_digest == ledger.schema.digest else {}),
+                    "payload_digest": record.payload_digest,
+                    "receipt_digest": record.receipt_digest,
+                    "published": False,
+                    "real_data": False,
+                }
+                for record in records
+            ],
+        }
+
     @router.get(base)
     def read_draft(
         household_ref: str,

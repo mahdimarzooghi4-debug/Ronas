@@ -2464,7 +2464,25 @@ def build_authenticated_ui_router(
                 ) from exc
             if permitted is not True:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            offer_ref = "DEMO-OFFER-" + secrets.token_hex(12).upper()
+            try:
+                existing_refs = {
+                    record.offer_ref
+                    for record in household_surplus_draft_ledger.list_owned(identity, ref)
+                }
+            except LookupError:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND") from None
+            except (RuntimeError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                ) from exc
+            offer_ref = ""
+            for _ in range(8):
+                candidate = "DEMO-OFFER-" + secrets.token_hex(16).upper()
+                if candidate not in existing_refs:
+                    offer_ref = candidate
+                    break
+            if not offer_ref:
+                raise HTTPException(503, detail="SURPLUS_DRAFT_ID_UNAVAILABLE")
             return RedirectResponse(
                 "/my-drafts/" + quote(ref) + "/surplus-offers?offer_ref="
                 + quote(offer_ref), status_code=303,

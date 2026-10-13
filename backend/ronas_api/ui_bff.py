@@ -2483,7 +2483,11 @@ def build_authenticated_ui_router(
                 ) from exc
             except sqlite3.Error as exc:
                 raise HTTPException(503, detail="SURPLUS_DRAFT_UNAVAILABLE") from exc
-            values = {} if current is None else current.values
+            schema_matches = (
+                current is not None
+                and current.schema_digest == household_surplus_draft_ledger.schema.digest
+            )
+            values = current.values if schema_matches else {}
             controls = []
             for field in household_surplus_draft_ledger.schema.fields:
                 key = escape(field.key, quote=True)
@@ -2506,8 +2510,13 @@ def build_authenticated_ui_router(
                     control = '<input id="' + key + '" name="' + key + '" type="' + field.kind + '" maxlength="' + str(field.max_length) + '" value="' + safe_value + '"' + required + '>'
                 controls.append('<label for="' + key + '">' + label + '</label>' + control)
             expected_revision = 0 if current is None else current.revision
-            state = ("پیش‌نویس جدید و خصوصی" if current is None
-                     else "نسخه " + str(current.revision) + " · خصوصی و منتشرنشده")
+            state = (
+                "پیش‌نویس جدید و خصوصی" if current is None else
+                "نسخه " + str(current.revision) + " · خصوصی و منتشرنشده"
+                if schema_matches else
+                "نسخه " + str(current.revision)
+                + " · طرح‌واره تغییر کرده؛ مقادیر نسخه قبلی نمایش داده نمی‌شود"
+            )
             body = (
                 '<article class="panel"><h2>پیش‌نویس مازاد خانوار</h2>'
                 '<p>' + state + '</p>'

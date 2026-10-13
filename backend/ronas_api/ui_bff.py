@@ -2506,7 +2506,7 @@ def build_authenticated_ui_router(
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
             try:
                 revisions = household_surplus_draft_ledger.history_owned(
-                    identity, ref, offer_ref,
+                    identity, ref, offer_ref, household_surplus_draft_ledger,
                 )
             except LookupError:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND") from None
@@ -2801,6 +2801,7 @@ def build_authenticated_ui_router(
                 )
             blocker_labels = {
                 "CURRENT_OFFER_UNAVAILABLE": "نسخه جاری پیشنهاد در دسترس نیست",
+                "OFFER_SCHEMA_CHANGED": "ساختار پیشنهاد تغییر کرده و بازبینی لازم است",
                 "OFFER_VERSION_CHANGED": "نسخه پیشنهاد تغییر کرده است",
                 "PRODUCER_APPROVAL_REQUIRED": "تأیید تولیدکننده ثبت نشده است",
                 "PRODUCER_APPROVAL_STALE": "تأیید تولیدکننده با نسخه جاری هم‌خوان نیست",

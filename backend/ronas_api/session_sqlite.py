@@ -164,12 +164,13 @@ class SqliteBrowserSessionStore:
                 or not session.roles or not session.roles.issubset(ALL_ROLES)
                 or not all(isinstance(x, str) and x for x in (
                     session.subject, session.access_token, session.csrf
-                ))):
+                ))
+                or not isinstance(session.id_token, str) or len(session.id_token) > 12000):
             raise ValueError("invalid browser session")
         ciphertext = self._encrypt("session:", digest, {
             "subject": session.subject, "roles": sorted(session.roles),
             "access_token": session.access_token, "csrf": session.csrf,
-            "expires_at": session.expires_at,
+            "id_token": session.id_token, "expires_at": session.expires_at,
         })
         with self._db() as db:
             try:
@@ -190,17 +191,17 @@ class SqliteBrowserSessionStore:
         if not row or type(row[1]) is not int or row[1] <= int(self._now()):
             return None
         data = self._decrypt("session:", digest, row[0])
-        if data is None or set(data) != {"subject", "roles", "access_token", "csrf", "expires_at"}:
+        if data is None or set(data) != {"subject", "roles", "access_token", "csrf", "id_token", "expires_at"}:
             return None
         try:
             roles = data["roles"]
             if (not isinstance(roles, list) or not roles or any(r not in ALL_ROLES for r in roles)
                     or len(roles) != len(set(roles)) or type(data["expires_at"]) is not int
                     or data["expires_at"] != row[1]
-                    or not all(isinstance(data[k], str) for k in ("subject", "access_token", "csrf"))):
+                    or not all(isinstance(data[k], str) for k in ("subject", "access_token", "csrf", "id_token"))):
                 return None
             return BrowserSession(data["subject"], frozenset(roles),
-                                  data["access_token"], data["csrf"], data["expires_at"])
+                                  data["access_token"], data["csrf"], data["expires_at"], data["id_token"])
         except (ValueError, TypeError, KeyError):
             return None
 

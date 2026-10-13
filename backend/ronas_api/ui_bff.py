@@ -2488,6 +2488,65 @@ def build_authenticated_ui_router(
                 + quote(offer_ref), status_code=303,
             )
 
+        @router.get(
+            "/my-drafts/{ref}/surplus-offers/{offer_ref}/revisions"
+        )
+        def household_surplus_revision_history(
+            ref: str,
+            offer_ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            identity = Principal(session.subject, session.roles)
+            if ("household" not in identity.roles or not _synthetic_ref(ref)
+                    or not _synthetic_ref(offer_ref)):
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            try:
+                revisions = household_surplus_draft_ledger.history_owned(
+                    identity, ref, offer_ref,
+                )
+            except LookupError:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND") from None
+            except (RuntimeError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                ) from exc
+            entries = []
+            for record in revisions:
+                schema_matches = (
+                    record.schema_digest == household_surplus_draft_ledger.schema.digest
+                )
+                if schema_matches:
+                    values = "<dl>" + "".join(
+                        "<dt>" + escape(key) + "</dt><dd>"
+                        + escape(value) + "</dd>"
+                        for key, value in sorted(record.values.items())
+                    ) + "</dl>"
+                    state = "نسخهٔ طرح‌وارهٔ جاری"
+                else:
+                    values = "<p>طرح‌واره تغییر کرده؛ مقادیر این نسخه نمایش داده نمی‌شود.</p>"
+                    state = "نیازمند بازبینی در طرح‌وارهٔ جاری"
+                entries.append(
+                    '<section><h3>نسخه ' + str(record.revision)
+                    + ' · طرح‌واره ' + str(record.schema_version) + '</h3>'
+                    + '<p>' + state + '</p>' + values + '</section>'
+                )
+            body = (
+                '<article class="panel"><h2>تاریخچهٔ پیش‌نویس مازاد</h2>'
+                '<p>نسخه‌ها فقط‌خواندنی‌اند و تغییر یا حذف نمی‌شوند.</p>'
+                + ''.join(entries)
+                + '<p><a href="/my-drafts/' + quote(ref)
+                + '/surplus-offers?offer_ref=' + quote(offer_ref)
+                + '">بازگشت به ویرایش</a></p>'
+                + '<p><a href="/my-drafts/' + quote(ref)
+                + '/surplus-offers">بازگشت به فهرست</a></p></article>'
+            )
+            return page("روناس — تاریخچهٔ پیش‌نویس مازاد", body,
+                        logged_in=True)
+
         @router.get("/my-drafts/{ref}/surplus-offers")
         def household_surplus_draft_page(
             ref: str,
@@ -2500,7 +2559,8 @@ def build_authenticated_ui_router(
                 raise HTTPException(401, detail="INVALID_SESSION") from None
             identity = Principal(session.subject, session.roles)
             if ("household" not in identity.roles
-                    or not _synthetic_ref(ref) or not _synthetic_ref(offer_ref)):
+                    or not _synthetic_ref(ref)
+                    or (offer_ref is not None and not _synthetic_ref(offer_ref))):
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
             try:
                 permitted = household_profile_access_authority(
@@ -2528,10 +2588,16 @@ def build_authenticated_ui_router(
                     )
                     href = ("/my-drafts/" + quote(ref)
                             + "/surplus-offers?offer_ref=" + quote(record.offer_ref))
+                    history_href = (
+                        "/my-drafts/" + quote(ref) + "/surplus-offers/"
+                        + quote(record.offer_ref) + "/revisions"
+                    )
                     items.append(
                         '<li><a href="' + escape(href, quote=True) + '">'
                         + escape(record.offer_ref) + '</a><span>'
-                        + escape(state) + '</span></li>'
+                        + escape(state) + '</span><a href="'
+                        + escape(history_href, quote=True)
+                        + '">تاریخچه نسخه‌ها</a></li>'
                     )
                 body = (
                     '<article class="panel"><h2>پیش‌نویس‌های مازاد من</h2>'
@@ -2612,7 +2678,14 @@ def build_authenticated_ui_router(
                 + '<button type="submit">ذخیره نسخه خصوصی</button></form>'
                 '<p>ثبت پیش‌نویس به‌معنی تأیید کیفیت، عرضه، قیمت یا معامله نیست.</p>'
                 '<p><a href="/my-drafts/' + quote(ref)
-                + '/cultivation-inputs">بازگشت به پرونده</a></p></article>'
+                + '/cultivation-inputs">بازگشت به پرونده</a></p>'
+                + ('<p><a href="/my-drafts/' + quote(ref)
+                   + '/surplus-offers/' + quote(offer_ref)
+                   + '/revisions">مشاهده تاریخچه نسخه‌ها</a></p>'
+                   if current is not None else
+                   '<p><a href="/my-drafts/' + quote(ref)
+                   + '/surplus-offers">انصراف و دور انداختن فرم ذخیره‌نشده</a></p>')
+                + '</article>'
             )
             return page("روناس — پیش‌نویس مازاد خانوار", body,
                         logged_in=True, local_test_form=True)

@@ -397,6 +397,15 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             follow_redirects=False,
         )
         self.assertEqual(replay.status_code, 303, replay.text)
+        conflicting_replay = dict(form)
+        conflicting_replay["artifact_digest"] = "d" * 64
+        conflict = self.client.post(
+            path, content=urlencode(conflicting_replay),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(conflict.status_code, 409)
         api_history = self.client.get(
             ROOT.replace("/cultivation-inputs", "/stage-observations"),
             headers=self.bearer(),

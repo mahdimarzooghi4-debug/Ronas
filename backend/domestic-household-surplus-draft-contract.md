@@ -24,6 +24,7 @@ Let an authenticated household create and revise a private Domestic surplus draf
 ## Verification
 
 Tests cover owner isolation, role enforcement, injected-schema validation, stale revision conflicts, immutable history, schema-version binding, idempotent retry, conflicting replay, tampered-chain fail-closed behavior, schema-drift value hiding and re-entry, summary-list redaction and owner isolation, revision-history integrity, schema-drift redaction in API/UI history, unsaved-form cancellation, safe Persian rendering, browser CSRF/Origin, cookie-only API write rejection, and the invariant that no draft transition publishes an offer.
+
 ## Revision comparison
 
 The owner-only history view and API show each revision's changed field values relative

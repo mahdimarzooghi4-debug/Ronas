@@ -27,6 +27,7 @@ from ronas_api.agronomy_workspace import (
     SyntheticAgronomyAssignment, SyntheticAgronomyWorkspace,
 )
 from ronas_api.expert_review_questions_sqlite import SqliteSyntheticExpertQuestionLedger
+from ronas_api.domestic_surplus_publication import OfferRevision, PublicationAuthorities
 from ronas_api.internal_cultivation_plan_contract import (
     InternalCultivationProposal, ProposedCultivationStage,
 )
@@ -176,7 +177,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         )
 
     def make_app(self, *, schema=True, authority=True, stage_authority=True,
-                 artifact_store=None):
+                 artifact_store=None, surplus_authority=None):
         return create_app(
             self.config, self.flow, scoped_registry=self.ledger,
             technical_review_ledger=self.ledger,
@@ -186,6 +187,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
                 self.stage_context if stage_authority and schema else None
             ),
             household_stage_artifact_store=artifact_store,
+            household_surplus_publication_authority=surplus_authority,
         )
 
     def stage_command(self, *, action="DEMO-STAGE-OBS-1", revision=0):
@@ -1017,6 +1019,95 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(len(adapter.contexts), 1)
         self.assertEqual(adapter.contexts[0].input_revision, 1)
         self.assertEqual(self.ledger.internal_proposal_lineage(REF)[:2], (2, 2))
+
+
+    def test_surplus_readiness_ui_shows_safe_owner_projection(self):
+        producer = OWNER
+        offer_ref = "DEMO-OFFER-SURPLUS-1"
+        hidden_digest = "d" * 64
+
+        def resolver(principal, household_ref, requested_offer):
+            if (principal.subject != producer or household_ref != REF
+                    or requested_offer != offer_ref):
+                return None
+            offer = OfferRevision(
+                offer_ref, REF, producer, 1, hidden_digest,
+            )
+            return offer, PublicationAuthorities(current_offer=offer)
+
+        app = self.make_app(surplus_authority=resolver)
+        client = TestClient(app, base_url=ORIGIN)
+        session = self.browser_session()
+        sid = next(key for key, value in self.sessions.sessions.items()
+                   if value is session)
+        client.cookies.set("__Host-ronas_session", sid)
+
+        profile = client.get(PAGE)
+        self.assertEqual(profile.status_code, 200, profile.text)
+        self.assertIn("بررسی آمادگی فنی", profile.text)
+        response = client.get(
+            f"/my-drafts/{REF}/surplus-publication-readiness",
+            params={"offer_ref": offer_ref},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("پیشنهاد هنوز در وضعیت پیش‌نویس غیرعمومی است", response.text)
+        self.assertIn("تأیید تولیدکننده ثبت نشده است", response.text)
+        self.assertIn("وضعیت انتشار: منتشر نشده", response.text)
+        self.assertIn("به‌معنای انتشار", response.text)
+        self.assertNotIn(hidden_digest, response.text)
+        self.assertNotIn("readiness_digest", response.text)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_surplus_readiness_ui_hides_cross_household_and_redacts_authority_error(self):
+        calls = []
+
+        def wrong_owner(principal, household_ref, offer_ref):
+            calls.append((principal.subject, household_ref, offer_ref))
+            raise RuntimeError("private authority secret")
+
+        app = self.make_app(surplus_authority=wrong_owner)
+        client = TestClient(app, base_url=ORIGIN)
+        session = self.browser_session()
+        sid = next(key for key, value in self.sessions.sessions.items()
+                   if value is session)
+        client.cookies.set("__Host-ronas_session", sid)
+
+        hidden = client.get(
+            f"/my-drafts/{REF}/surplus-publication-readiness",
+            params={"offer_ref": "DEMO-OFFER-SECRET"},
+        )
+        self.assertEqual(hidden.status_code, 503)
+        self.assertNotIn("private authority secret", hidden.text)
+        self.assertIn("بعداً دوباره تلاش کنید", hidden.text)
+        self.assertEqual(len(calls), 1)
+
+        other = "synthetic-other-owner"
+        session_id = secrets.token_urlsafe(40)
+        self.sessions.sessions[session_id] = BrowserSession(
+            other, frozenset({"household"}), self.token(other),
+            secrets.token_urlsafe(32), int(time.time()) + 300,
+        )
+        client.cookies.set("__Host-ronas_session", session_id)
+        denied = client.get(
+            f"/my-drafts/{REF}/surplus-publication-readiness",
+            params={"offer_ref": "DEMO-OFFER-SECRET"},
+        )
+        self.assertEqual(denied.status_code, 404)
+        self.assertNotIn("private authority secret", denied.text)
+        self.assertEqual(len(calls), 2)
+
+    def test_surplus_readiness_route_is_absent_without_explicit_authority(self):
+        client = TestClient(self.app, base_url=ORIGIN)
+        session = self.browser_session()
+        sid = next(key for key, value in self.sessions.sessions.items()
+                   if value is session)
+        client.cookies.set("__Host-ronas_session", sid)
+        response = client.get(
+            f"/my-drafts/{REF}/surplus-publication-readiness",
+            params={"offer_ref": "DEMO-OFFER-1"},
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn("بررسی آمادگی فنی", client.get(PAGE).text)
 
 
 if __name__ == "__main__":

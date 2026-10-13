@@ -214,7 +214,7 @@ class PostgresLocalBFFSettings:
         if not isinstance(self.keycloak, KeycloakConfig):
             raise LocalBFFConfigurationError("operator-pinned Keycloak required")
         if (not isinstance(self.postgres_dsn, str) or not self.postgres_dsn
-                or len(self.postgres_dsn) > 4096 or "\\x00" in self.postgres_dsn):
+                or len(self.postgres_dsn) > 4096 or "\x00" in self.postgres_dsn):
             raise LocalBFFConfigurationError("PostgreSQL DSN required")
         try:
             parsed = urlsplit(self.callback_url)

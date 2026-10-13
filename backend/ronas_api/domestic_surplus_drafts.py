@@ -6,8 +6,10 @@ import hashlib
 import json
 import re
 import sqlite3
+from collections.abc import Callable
 from typing import Any
 
+from .auth import Principal
 from .household_input_profiles import HouseholdInputSchema
 from .scoped_drafts import _synthetic_ref
 
@@ -38,12 +40,17 @@ class SurplusDraftRevision:
 class SqliteSyntheticSurplusDraftLedger:
     """Append-only local/test draft journal with owner-bound compare-and-swap."""
 
-    def __init__(self, database_path: str, schema: HouseholdInputSchema):
+    def __init__(
+        self, database_path: str, schema: HouseholdInputSchema,
+        owner_access_authority: Callable[[Principal, str, str], bool],
+    ):
         if (not isinstance(database_path, str) or not database_path
-                or not isinstance(schema, HouseholdInputSchema)):
-            raise ValueError("database path and injected product schema required")
+                or not isinstance(schema, HouseholdInputSchema)
+                or not callable(owner_access_authority)):
+            raise ValueError("database path, injected product schema, and owner authority required")
         self._database_path = database_path
         self.schema = schema
+        self._owner_access_authority = owner_access_authority
         with self._connect() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS domestic_surplus_draft_revision (
@@ -97,11 +104,24 @@ class SqliteSyntheticSurplusDraftLedger:
             raise LookupError("draft unavailable")
         return principal.subject
 
+    def _authorized_owner(self, principal: Any, household_ref: str,
+                          offer_ref: str) -> str:
+        owner = self._owner(principal, household_ref, offer_ref)
+        try:
+            permitted = self._owner_access_authority(
+                principal, household_ref, self.schema.schema_ref,
+            )
+        except Exception as exc:
+            raise RuntimeError("household owner authority unavailable") from exc
+        if permitted is not True:
+            raise LookupError("draft unavailable")
+        return owner
+
     def save(
         self, principal: Any, household_ref: str, offer_ref: str, *,
         action_id: str, expected_revision: int, values: dict[str, str],
     ) -> SurplusDraftRevision:
-        owner = self._owner(principal, household_ref, offer_ref)
+        owner = self._authorized_owner(principal, household_ref, offer_ref)
         if (not isinstance(action_id, str) or not _ACTION.fullmatch(action_id)
                 or type(expected_revision) is not int or expected_revision < 0):
             raise ValueError("invalid surplus draft command")
@@ -170,7 +190,7 @@ class SqliteSyntheticSurplusDraftLedger:
     def read_owned(
         self, principal: Any, household_ref: str, offer_ref: str,
     ) -> SurplusDraftRevision:
-        owner = self._owner(principal, household_ref, offer_ref)
+        owner = self._authorized_owner(principal, household_ref, offer_ref)
         with self._connect() as db:
             row = db.execute(
                 """SELECT * FROM domestic_surplus_draft_revision

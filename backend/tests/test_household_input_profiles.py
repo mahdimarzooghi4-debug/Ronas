@@ -1077,6 +1077,9 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             self.make_app(surplus_draft_ledger=ledger), base_url=ORIGIN,
         )
         session = self.browser_session()
+        sid = next(key for key, value in self.sessions.sessions.items()
+                   if value is session)
+        client.cookies.set("__Host-ronas_session", sid)
         profile = client.get(PAGE)
         self.assertEqual(profile.status_code, 200, profile.text)
         self.assertIn("ثبت یا اصلاح پیش‌نویس مازاد", profile.text)

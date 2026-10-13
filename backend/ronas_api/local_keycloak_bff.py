@@ -111,6 +111,21 @@ def _private_session_key(path: Path) -> bytes:
         raise LocalBFFConfigurationError("private session key unavailable") from exc
 
 
+def _validate_synthetic_composition(
+    case_ledger,
+    agronomy_workspace,
+    household_profile_schema,
+    household_profile_access_authority,
+    household_stage_context_authority,
+    household_stage_artifact_store,
+) -> None:
+    _validate_synthetic_composition(
+        case_ledger, agronomy_workspace, household_profile_schema,
+        household_profile_access_authority, household_stage_context_authority,
+        household_stage_artifact_store,
+    )
+
+
 def _compose_local_test_bff(
     keycloak: KeycloakConfig,
     callback_url: str,
@@ -181,6 +196,11 @@ def create_local_test_bff(
     """Explicit local SQLite BFF composition; default app remains disabled."""
     if not isinstance(settings, LocalBFFSettings):
         raise LocalBFFConfigurationError("complete local BFF settings required")
+    _validate_synthetic_composition(
+        case_ledger, agronomy_workspace, household_profile_schema,
+        household_profile_access_authority, household_stage_context_authority,
+        household_stage_artifact_store,
+    )
     try:
         directory = settings.session_database.parent.lstat()
         if (not stat.S_ISDIR(directory.st_mode)
@@ -267,6 +287,11 @@ def create_postgres_local_test_bff(
     """Opt-in LOCAL/TEST composition using the shared PostgreSQL session adapter."""
     if not isinstance(settings, PostgresLocalBFFSettings):
         raise LocalBFFConfigurationError("complete PostgreSQL BFF settings required")
+    _validate_synthetic_composition(
+        case_ledger, agronomy_workspace, household_profile_schema,
+        household_profile_access_authority, household_stage_context_authority,
+        household_stage_artifact_store,
+    )
     from .postgres_session import PostgresBrowserSessionStore
     try:
         store = PostgresBrowserSessionStore(

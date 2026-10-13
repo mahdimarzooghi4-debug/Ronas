@@ -1929,15 +1929,8 @@ def build_authenticated_ui_router(
                     + str(result["current_revision"]) + '">'
                     + ''.join(controls)
                     + '<button type="submit">ذخیره نسخه جدید</button></form>'
-                    + ('<form method="get" action="/my-drafts/' + quote(ref)
-                        + '/surplus-offers">'
-                        '<label for="surplus-draft-offer-ref">شناسه پیش‌نویس مازاد (DEMO)</label>'
-                        '<input id="surplus-draft-offer-ref" name="offer_ref" required '
-                        'pattern="DEMO-[A-Za-z0-9._:-]{1,96}" maxlength="101">'
-                        '<button type="submit">ثبت یا اصلاح پیش‌نویس مازاد</button></form>'
-                        if household_surplus_draft_ledger is not None else '')
                     + ('<p><a href="/my-drafts/' + quote(ref)
-                        + '/surplus-offers">فهرست پیش‌نویس‌های مازاد من</a></p>'
+                        + '/surplus-offers">فهرست و شروع پیش‌نویس مازاد</a></p>'
                         if household_surplus_draft_ledger is not None else '')
                     + ('<form method="get" action="/my-drafts/' + quote(ref)
                         + '/surplus-publication-readiness">'
@@ -2449,6 +2442,52 @@ def build_authenticated_ui_router(
 
 
     if household_surplus_draft_ledger is not None:
+        @router.get("/my-drafts/{ref}/surplus-offers/new")
+        def household_start_surplus_draft(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            identity = Principal(session.subject, session.roles)
+            if "household" not in identity.roles or not _synthetic_ref(ref):
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            try:
+                permitted = household_profile_access_authority(
+                    identity, ref, household_surplus_draft_ledger.schema.schema_ref,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",
+                ) from exc
+            if permitted is not True:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            try:
+                existing_refs = {
+                    record.offer_ref
+                    for record in household_surplus_draft_ledger.list_owned(identity, ref)
+                }
+            except LookupError:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND") from None
+            except (RuntimeError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                ) from exc
+            offer_ref = ""
+            for _ in range(8):
+                candidate = "DEMO-OFFER-" + secrets.token_hex(16).upper()
+                if candidate not in existing_refs:
+                    offer_ref = candidate
+                    break
+            if not offer_ref:
+                raise HTTPException(503, detail="SURPLUS_DRAFT_ID_UNAVAILABLE")
+            return RedirectResponse(
+                "/my-drafts/" + quote(ref) + "/surplus-offers?offer_ref="
+                + quote(offer_ref), status_code=303,
+            )
+
         @router.get("/my-drafts/{ref}/surplus-offers")
         def household_surplus_draft_page(
             ref: str,
@@ -2499,12 +2538,8 @@ def build_authenticated_ui_router(
                     '<p>فهرست فقط شناسه و وضعیت نسخه را نشان می‌دهد و مقدار فرم‌ها را افشا نمی‌کند.</p>'
                     + ('<ul>' + ''.join(items) + '</ul>' if items else
                        '<p>هنوز پیش‌نویسی ثبت نشده است.</p>')
-                    + '<form method="get" action="/my-drafts/' + quote(ref)
-                    + '/surplus-offers"><label for="surplus-draft-offer-ref">'
-                    'شناسهٔ جدید پیش‌نویس (DEMO)</label>'
-                    '<input id="surplus-draft-offer-ref" name="offer_ref" required '
-                    'pattern="DEMO-[A-Za-z0-9._:-]{1,96}" maxlength="101">'
-                    '<button type="submit">ساخت پیش‌نویس جدید</button></form>'
+                    + '<p><a class="button" href="/my-drafts/' + quote(ref)
+                    + '/surplus-offers/new">شروع پیش‌نویس مازاد جدید</a></p>'
                     '<p><a href="/my-drafts/' + quote(ref)
                     + '/cultivation-inputs">بازگشت به پرونده</a></p></article>'
                 )

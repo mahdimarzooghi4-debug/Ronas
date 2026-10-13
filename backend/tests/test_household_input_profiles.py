@@ -6,7 +6,7 @@ import secrets
 import tempfile
 import time
 import unittest
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -1177,6 +1177,63 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertNotIn("SECRET PRIVATE TOMATO", ui.text)
         self.assertNotIn("SECOND SECRET VALUE", ui.text)
         self.assertEqual(ui.headers["cache-control"], "no-store")
+
+    def test_household_starts_surplus_draft_without_entering_offer_id(self):
+        ledger = SqliteSyntheticSurplusDraftLedger(
+            str(self.path.parent / "surplus-draft-onboarding.sqlite3"),
+            self.schema, self.allowed,
+        )
+        client = TestClient(
+            self.make_app(surplus_draft_ledger=ledger), base_url=ORIGIN,
+        )
+        session = self.browser_session()
+        sid = next(key for key, value in self.sessions.sessions.items()
+                   if value is session)
+        client.cookies.set("__Host-ronas_session", sid)
+
+        profile = client.get(PAGE)
+        self.assertEqual(profile.status_code, 200, profile.text)
+        self.assertIn("فهرست و شروع پیش‌نویس مازاد", profile.text)
+        self.assertNotIn('name="offer_ref"', profile.text)
+
+        listing = client.get(f"/my-drafts/{REF}/surplus-offers")
+        self.assertEqual(listing.status_code, 200, listing.text)
+        self.assertIn("شروع پیش‌نویس مازاد جدید", listing.text)
+        self.assertNotIn('name="offer_ref"', listing.text)
+        self.assertEqual(
+            ledger.list_owned(Principal(OWNER, frozenset({"household"})), REF), (),
+        )
+
+        started = client.get(
+            f"/my-drafts/{REF}/surplus-offers/new", follow_redirects=False,
+        )
+        self.assertEqual(started.status_code, 303, started.text)
+        generated_ref = parse_qs(urlsplit(started.headers["location"]).query)["offer_ref"][0]
+        self.assertRegex(generated_ref, r"^DEMO-OFFER-[0-9A-F]{32}$")
+        editor = client.get(started.headers["location"])
+        self.assertEqual(editor.status_code, 200, editor.text)
+        self.assertIn("پیش‌نویس جدید و خصوصی", editor.text)
+        self.assertEqual(
+            ledger.list_owned(Principal(OWNER, frozenset({"household"})), REF), (),
+        )
+
+        form = {
+            "csrf": session.csrf, "offer_ref": generated_ref,
+            "action_id": "DEMO-ONBOARDING-SAVE-1", "expected_revision": "0",
+            "field_alpha": "نمونهٔ محلی", "field_choice": "sample-a",
+        }
+        saved = client.post(
+            f"/my-drafts/{REF}/surplus-offers", content=urlencode(form),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(saved.status_code, 303, saved.text)
+        stored = ledger.read_owned(
+            Principal(OWNER, frozenset({"household"})), REF, generated_ref,
+        )
+        self.assertEqual(stored.revision, 1)
+        self.assertEqual(stored.values["field_alpha"], "نمونهٔ محلی")
 
     def test_surplus_draft_schema_change_hides_old_values_and_accepts_new_revision(self):
         old_schema = HouseholdInputSchema(

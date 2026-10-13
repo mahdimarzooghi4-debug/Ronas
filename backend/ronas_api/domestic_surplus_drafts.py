@@ -297,6 +297,20 @@ class SqliteSyntheticSurplusDraftLedger:
             current.append(self._decode(row))
         return tuple(current)
 
+    def history_owned(
+        self, principal: Any, household_ref: str, offer_ref: str,
+    ) -> tuple[SurplusDraftRevision, ...]:
+        """Return an integrity-checked revision history to its household owner."""
+        owner = self._authorized_owner(principal, household_ref, offer_ref)
+        with self._connect() as db:
+            rows = self._chain_rows(db, household_ref, offer_ref)
+        if not rows:
+            raise LookupError("draft unavailable")
+        self._verify_chain(rows)
+        if rows[-1]["producer_subject"] != owner:
+            raise LookupError("draft unavailable")
+        return tuple(self._decode(row) for row in rows)
+
     def read_owned(
         self, principal: Any, household_ref: str, offer_ref: str,
     ) -> SurplusDraftRevision:

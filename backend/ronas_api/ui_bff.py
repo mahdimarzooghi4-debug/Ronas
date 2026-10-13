@@ -70,6 +70,9 @@ from .domestic_preparation_preview import (
 from .gate_evidence_handoff_sqlite import SqliteSyntheticGateEvidenceHandoff
 from .gate_evidence_authority_enquiry_sqlite import SqliteSyntheticAuthorityEnquiryLedger
 from .domestic_surplus_publication_api import publication_readiness_snapshot
+from .domestic_surplus_drafts import (
+    SurplusDraftConflict, SqliteSyntheticSurplusDraftLedger,
+)
 ADMIN_ROLES = {
     "domestic_ops": "عملیات داخلی",
     "export_ops": "عملیات صادرات",
@@ -300,6 +303,7 @@ def build_authenticated_ui_router(
     household_stage_artifact_store: StageArtifactStore | None = None,
     export_source_connectors: ExportSourceConnectorRegistry | None = None,
     household_surplus_publication_authority=None,
+    household_surplus_draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
 ) -> APIRouter:
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
@@ -314,6 +318,18 @@ def build_authenticated_ui_router(
             or not callable(household_profile_access_authority)):
         raise ValueError(
             "surplus readiness UI requires the same owner-scoped household profile ledger"
+        )
+    if household_surplus_draft_ledger is not None and (
+            not isinstance(household_surplus_draft_ledger,
+                            SqliteSyntheticSurplusDraftLedger)
+            or not isinstance(household_input_ledger,
+                              SqliteSyntheticHouseholdProfileLedger)
+            or household_input_ledger is not technical_review_ledger
+            or not callable(household_profile_access_authority)
+            or household_surplus_draft_ledger._owner_access_authority
+                is not household_profile_access_authority):
+        raise ValueError(
+            "surplus draft UI requires the shared owner-scoped household authority"
         )
     # Only the opt-in same-instance ledger injected by create_app may
     # provide the synthetic worklist. Never trust a client-side role list.
@@ -376,7 +392,7 @@ def build_authenticated_ui_router(
         request: Request, sid: str | None, *,
         fields: frozenset[str], optional_fields: frozenset[str] = frozenset(),
         max_bytes: int = 1200, max_fields: int = 8,
-        max_value_length: int = 150,
+        max_value_length: int = 150, value_encoding: str = "ascii",
     ) -> tuple[Principal, dict[str, str]]:
         """Verified server session, strict Origin+CSRF and bounded form input.
 
@@ -399,7 +415,7 @@ def build_authenticated_ui_router(
             form = parse_qs(
                 raw.decode("ascii"), keep_blank_values=True,
                 strict_parsing=True, max_num_fields=max_fields,
-                encoding="ascii", errors="strict",
+                encoding=value_encoding, errors="strict",
             )
         except (ValueError, UnicodeError) as exc:
             raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
@@ -1914,6 +1930,13 @@ def build_authenticated_ui_router(
                     + ''.join(controls)
                     + '<button type="submit">ذخیره نسخه جدید</button></form>'
                     + ('<form method="get" action="/my-drafts/' + quote(ref)
+                        + '/surplus-offers">'
+                        '<label for="surplus-draft-offer-ref">شناسه پیش‌نویس مازاد (DEMO)</label>'
+                        '<input id="surplus-draft-offer-ref" name="offer_ref" required '
+                        'pattern="DEMO-[A-Za-z0-9._:-]{1,96}" maxlength="101">'
+                        '<button type="submit">ثبت یا اصلاح پیش‌نویس مازاد</button></form>'
+                        if household_surplus_draft_ledger is not None else '')
+                    + ('<form method="get" action="/my-drafts/' + quote(ref)
                         + '/surplus-publication-readiness">'
                         '<label for="surplus-offer-ref">شناسه پیشنهاد مازاد (DEMO)</label>'
                         '<input id="surplus-offer-ref" name="offer_ref" required '
@@ -2421,6 +2444,136 @@ def build_authenticated_ui_router(
                 status_code=303,
             )
 
+
+    if household_surplus_draft_ledger is not None:
+        @router.get("/my-drafts/{ref}/surplus-offers")
+        def household_surplus_draft_page(
+            ref: str,
+            offer_ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            identity = Principal(session.subject, session.roles)
+            if ("household" not in identity.roles
+                    or not _synthetic_ref(ref) or not _synthetic_ref(offer_ref)):
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            try:
+                permitted = household_profile_access_authority(
+                    identity, ref, household_surplus_draft_ledger.schema.schema_ref,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",
+                ) from exc
+            if permitted is not True:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            current = None
+            try:
+                current = household_surplus_draft_ledger.read_owned(
+                    identity, ref, offer_ref,
+                )
+            except LookupError:
+                pass
+            except RuntimeError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",
+                ) from exc
+            except sqlite3.Error as exc:
+                raise HTTPException(503, detail="SURPLUS_DRAFT_UNAVAILABLE") from exc
+            values = {} if current is None else current.values
+            controls = []
+            for field in household_surplus_draft_ledger.schema.fields:
+                key = escape(field.key, quote=True)
+                label = escape(field.label)
+                value = values.get(field.key, "")
+                safe_value = escape(value, quote=True)
+                required = " required" if field.required else ""
+                if field.kind == "choice":
+                    options = ['<option value="">انتخاب کنید</option>']
+                    options.extend(
+                        '<option value="' + escape(choice, quote=True) + '"'
+                        + (" selected" if choice == value else "") + ">"
+                        + escape(choice) + "</option>"
+                        for choice in field.choices
+                    )
+                    control = '<select id="' + key + '" name="' + key + '"' + required + '>' + ''.join(options) + '</select>'
+                elif field.kind == "text":
+                    control = '<textarea id="' + key + '" name="' + key + '" maxlength="' + str(field.max_length) + '"' + required + '>' + escape(value) + '</textarea>'
+                else:
+                    control = '<input id="' + key + '" name="' + key + '" type="' + field.kind + '" maxlength="' + str(field.max_length) + '" value="' + safe_value + '"' + required + '>'
+                controls.append('<label for="' + key + '">' + label + '</label>' + control)
+            expected_revision = 0 if current is None else current.revision
+            state = ("پیش‌نویس جدید و خصوصی" if current is None
+                     else "نسخه " + str(current.revision) + " · خصوصی و منتشرنشده")
+            body = (
+                '<article class="panel"><h2>پیش‌نویس مازاد خانوار</h2>'
+                '<p>' + state + '</p>'
+                '<p>فقط فیلدهای تعریف‌شده در طرح‌وارهٔ جاری دریافت می‌شوند؛ '
+                'این پیش‌نویس برای خریداران قابل مشاهده نیست.</p>'
+                '<form method="post" action="/my-drafts/' + quote(ref)
+                + '/surplus-offers"><input type="hidden" name="csrf" value="'
+                + escape(session.csrf, quote=True) + '">'
+                '<input type="hidden" name="offer_ref" value="'
+                + escape(offer_ref, quote=True) + '">'
+                '<input type="hidden" name="action_id" value="DEMO-OFFER-UI-'
+                + secrets.token_hex(10).upper() + '">'
+                '<input type="hidden" name="expected_revision" value="'
+                + str(expected_revision) + '">'
+                + ''.join(controls)
+                + '<button type="submit">ذخیره نسخه خصوصی</button></form>'
+                '<p>ثبت پیش‌نویس به‌معنی تأیید کیفیت، عرضه، قیمت یا معامله نیست.</p>'
+                '<p><a href="/my-drafts/' + quote(ref)
+                + '/cultivation-inputs">بازگشت به پرونده</a></p></article>'
+            )
+            return page("روناس — پیش‌نویس مازاد خانوار", body,
+                        logged_in=True, local_test_form=True)
+
+        @router.post("/my-drafts/{ref}/surplus-offers")
+        async def household_surplus_draft_submit(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            fields = frozenset(
+                {"csrf", "offer_ref", "action_id", "expected_revision"}
+                | {field.key for field in household_surplus_draft_ledger.schema.fields}
+            )
+            principal, form = await checked_browser_form(
+                request, sid, fields=fields, max_bytes=8192, max_fields=10,
+                max_value_length=300, value_encoding="utf-8",
+            )
+            if not _synthetic_ref(ref) or not _synthetic_ref(form["offer_ref"]):
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            try:
+                household_surplus_draft_ledger.save(
+                    principal, ref, form["offer_ref"],
+                    action_id=form["action_id"],
+                    expected_revision=form_version(form["expected_revision"]),
+                    values={
+                        field.key: form[field.key]
+                        for field in household_surplus_draft_ledger.schema.fields
+                    },
+                )
+            except SurplusDraftConflict as exc:
+                raise HTTPException(
+                    409, detail="SURPLUS_DRAFT_VERSION_CONFLICT",
+                ) from exc
+            except LookupError as exc:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND") from exc
+            except RuntimeError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",
+                ) from exc
+            except sqlite3.Error as exc:
+                raise HTTPException(503, detail="SURPLUS_DRAFT_UNAVAILABLE") from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_SURPLUS_DRAFT") from exc
+            return RedirectResponse(
+                "/my-drafts/" + quote(ref) + "/surplus-offers?offer_ref="
+                + quote(form["offer_ref"]), status_code=303,
+            )
 
     if household_surplus_publication_authority is not None:
         @router.get("/my-drafts/{ref}/surplus-publication-readiness")

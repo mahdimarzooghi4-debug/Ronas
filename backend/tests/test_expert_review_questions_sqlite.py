@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import json
+import re
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -3229,22 +3230,41 @@ class LocalExpertQuestionTests(unittest.TestCase):
         owner_page = self.client.get(owner_path)
         self.assertEqual(owner_page.status_code, 200, owner_page.text)
         self.assertIn("ثبت مرجع پاسخ DEMO", owner_page.text)
+        action_match = re.search(
+            r'name="action_id" value="(DEMO-UI-R-[A-Z0-9]+)"',
+            owner_page.text,
+        )
+        self.assertIsNotNone(action_match)
         answer = {
-            "csrf": csrf, "case_version": "3",
-            "input_revision": "1", "question_revision": "1",
-            "scenario": "DEMO-REPLY-BETA",
+            "csrf": csrf, "action_id": action_match.group(1),
+            "case_version": "3", "input_revision": "1",
+            "question_revision": "1", "scenario": "DEMO-REPLY-BETA",
         }
+        headers = {"Origin": "https://ronas.example.test"}
         res = self.client.post(
-            owner_path + "/demo-reply", data=answer,
-            headers={"Origin": "https://ronas.example.test"},
+            owner_path + "/demo-reply", data=answer, headers=headers,
             follow_redirects=False,
         )
         self.assertEqual(res.status_code, 303, res.text)
+        replay = self.client.post(
+            owner_path + "/demo-reply", data=answer, headers=headers,
+            follow_redirects=False,
+        )
+        self.assertEqual(replay.status_code, 303, replay.text)
         self.assertIn("DEMO-REPLY-BETA", self.client.get(owner_path).text)
-        self.assertEqual(self.client.post(
-            owner_path + "/demo-reply", data=answer,
-            headers={"Origin": "https://ronas.example.test"},
-        ).status_code, 409)
+        conflicting_replay = dict(answer, scenario="DEMO-REPLY-ALPHA")
+        conflict = self.client.post(
+            owner_path + "/demo-reply", data=conflicting_replay,
+            headers=headers, follow_redirects=False,
+        )
+        self.assertEqual(conflict.status_code, 409)
+        with self.ledger._transaction() as db:
+            stored = db.execute(
+                "SELECT count(*) FROM household_question_response "
+                "WHERE ref='DEMO-D-1' AND track='HOUSEHOLD_INPUT_ADEQUACY' "
+                "AND question_revision=1",
+            ).fetchone()[0]
+        self.assertEqual(stored, 1)
 
         csrf = self.login_browser_demo(EXPERT, "agronomy_expert")
         view = self.client.get(base)

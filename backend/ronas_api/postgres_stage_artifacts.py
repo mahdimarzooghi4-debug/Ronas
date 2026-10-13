@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import re
 import secrets
 
 import psycopg
@@ -35,6 +34,9 @@ class PostgresStageArtifactStore:
             raise ValueError("bounded connection timeout required")
         self._dsn = dsn
         self._cipher = AESGCM(encryption_key)
+        self._scope_key = hmac.new(
+            encryption_key, b"ronas:stage-artifact:scope:v1", hashlib.sha256,
+        ).digest()
         self._connect_timeout = connect_timeout
         self._initialize()
 
@@ -65,18 +67,20 @@ class PostgresStageArtifactStore:
                 )
             """)
 
-    @staticmethod
-    def _scope(owner: str, case_ref: str, digest: str | None = None) -> tuple[str, str]:
+    def _scope(self, owner: str, case_ref: str, digest: str | None = None) -> tuple[str, str]:
         if (not isinstance(owner, str) or not owner or len(owner) > 256
                 or not isinstance(case_ref, str) or not case_ref or len(case_ref) > 256
                 or "\x00" in owner or "\x00" in case_ref
                 or digest is not None
                    and (not isinstance(digest, str) or not _DIGEST.fullmatch(digest))):
             raise ValueError("invalid stage artifact scope")
-        return (
-            hashlib.sha256(owner.encode("utf-8")).hexdigest(),
-            hashlib.sha256(case_ref.encode("utf-8")).hexdigest(),
-        )
+        owner_hash = hmac.new(
+            self._scope_key, b"owner\x00" + owner.encode("utf-8"), hashlib.sha256,
+        ).hexdigest()
+        case_hash = hmac.new(
+            self._scope_key, b"case\x00" + case_ref.encode("utf-8"), hashlib.sha256,
+        ).hexdigest()
+        return owner_hash, case_hash
 
     @staticmethod
     def _aad(owner_hash: str, case_hash: str, digest: str) -> bytes:

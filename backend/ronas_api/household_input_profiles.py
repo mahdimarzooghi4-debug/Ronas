@@ -1066,7 +1066,14 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 command.observed_at, command.observation_artifact_digest,
             )
             if existing is not None:
-                if existing[:9] == expected_existing and existing[10] == actor:
+                # observed_at is generated when the browser submits. A retry with
+                # the same action ID and exact lineage/artifact must return the
+                # original receipt even though the server clock has advanced.
+                same_command = (
+                    existing[:7] == expected_existing[:7]
+                    and existing[8:9] == expected_existing[8:9]
+                )
+                if same_command and existing[10] == actor:
                     return {
                         "ref": ref, "revision": existing[9],
                         "receipt_digest": existing[12], "idempotent_replay": True,

@@ -2194,6 +2194,8 @@ def build_authenticated_ui_router(
                                 + quote(ref) + '/stage-observations"' + form_attrs + '>'
                                 + '<input type="hidden" name="csrf" value="'
                                 + escape(session.csrf, quote=True) + '">'
+                                '<input type="hidden" name="action_id" value="DEMO-STAGE-OBS-'
+                                + secrets.token_hex(10).upper() + '">'
                                 '<input type="hidden" name="case_version" value="'
                                 + str(current["case_version"]) + '">'
                                 '<input type="hidden" name="input_revision" value="'
@@ -2264,12 +2266,12 @@ def build_authenticated_ui_router(
                     principal, form = await checked_browser_form(
                         request, sid,
                         fields=frozenset({
-                            "csrf", "case_version", "input_revision",
+                            "csrf", "action_id", "case_version", "input_revision",
                             "input_snapshot_digest", "plan_digest", "stage_ref",
                             "requirements_digest", "observation_revision",
                             "artifact_digest",
                         }),
-                        max_bytes=4096, max_fields=9, max_value_length=128,
+                        max_bytes=4096, max_fields=10, max_value_length=128,
                     )
                     try:
                         permitted = household_profile_access_authority(
@@ -2283,7 +2285,7 @@ def build_authenticated_ui_router(
                         raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
                     try:
                         command = StageObservationCommand(
-                            action_id="DEMO-STAGE-OBS-" + secrets.token_hex(10).upper(),
+                            action_id=form["action_id"],
                             expected_case_version=form_version(
                                 form["case_version"], zero_allowed=False,
                             ),

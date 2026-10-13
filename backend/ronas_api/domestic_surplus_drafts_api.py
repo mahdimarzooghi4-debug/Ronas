@@ -1,5 +1,6 @@
 """Owner-scoped HTTP API for private surplus draft revisions."""
 from collections.abc import Callable
+import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
@@ -63,6 +64,8 @@ def build_domestic_surplus_drafts_router(
             raise HTTPException(503, detail="DRAFT_INTEGRITY_FAILURE") from exc
         except RuntimeError as exc:
             raise HTTPException(503, detail="DRAFT_AUTHORITY_UNAVAILABLE") from exc
+        except sqlite3.Error as exc:
+            raise HTTPException(503, detail="DRAFT_STORAGE_UNAVAILABLE") from exc
         return {
             "contract_version": "ronas.domestic.surplus-draft-list.v1",
             "household_ref": household_ref,
@@ -98,6 +101,8 @@ def build_domestic_surplus_drafts_router(
             raise HTTPException(503, detail="DRAFT_INTEGRITY_FAILURE") from exc
         except RuntimeError as exc:
             raise HTTPException(503, detail="DRAFT_AUTHORITY_UNAVAILABLE") from exc
+        except sqlite3.Error as exc:
+            raise HTTPException(503, detail="DRAFT_STORAGE_UNAVAILABLE") from exc
         return {
             "contract_version": "ronas.domestic.surplus-draft-history.v1",
             "household_ref": household_ref,

@@ -1547,10 +1547,18 @@ class HouseholdProfileFlowTests(unittest.TestCase):
 
         app = self.make_app(surplus_authority=resolver)
         readiness_route = "/my-drafts/{ref}/surplus-publication-readiness"
-        self.assertEqual(
-            sum(getattr(route, "path", None) == readiness_route
-                for route in app.routes), 1,
-        )
+
+        def registered_paths(routes):
+            found = []
+            for route in routes:
+                if getattr(route, "path", None) == readiness_route:
+                    found.append(route)
+                nested = getattr(route, "original_router", None)
+                if nested is not None:
+                    found.extend(registered_paths(nested.routes))
+            return found
+
+        self.assertEqual(len(registered_paths(app.routes)), 1)
         client = TestClient(app, base_url=ORIGIN)
         session = self.browser_session()
         sid = next(key for key, value in self.sessions.sessions.items()

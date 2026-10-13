@@ -6,6 +6,7 @@
 
 1. یک Keycloak خودمیزبان با PostgreSQL پایدار، DNS و TLS/HTTPS واقعی نیاز داریم. دقیقاً یک Issuer برای Realm روناس به شکل نمونه https://HOST/realms/REALM (HOST و REALM واقعی هنوز انتخاب نشده‌اند).
 2. در Realm دو Client مستقل تعریف شوند: **Browser Client عمومی** با Authorization Code + PKCE S256 (بدون Direct Access Grant و Implicit) و **API Client** برای سرویس روناس. Redirect URI و Web Origin مرورگر باید دقیقاً محدود به دامنه مصوب باشد، نه wildcard.
+   برای RP-Initiated Logout نیز Post Logout Redirect URI دقیق `{BFF_ORIGIN}/api/auth/logout/callback` را روی همان Browser Client ثبت کنید؛ wildcards مجاز نیستند. مسیر BFF فقط پس از تطبیق state یک‌بارمصرف به خانه برمی‌گردد.
 3. Audience Mapper / Audience Resolve باید شناسه API Client را به audience توکن دسترسی بیفزاید. کلاینت مرورگر باید در ادعای امضاشده azp قرار بگیرد. API فقط access token با ادعای typ=Bearer قبول می‌کند؛ ID token جایگزین نیست.
 4. **نقش‌ها فقط Client Roleهای API** و در فیلد امضاشده resource_access[API_CLIENT_ID].roles هستند؛ Realm roles، نقش‌های Client account، X-Role و منوی UI هیچ حق مستقلی ایجاد نمی‌کنند.
 5. تنها نقش‌های مجاز: household, local_buyer, agronomy_expert, equipment_seller, export_supplier, domestic_ops, export_ops, finance, governance. یک پنل مدیریت با چهار ناحیه مجوز جدا، بدون Super Admin خودکار.

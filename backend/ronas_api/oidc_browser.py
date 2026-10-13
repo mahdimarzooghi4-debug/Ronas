@@ -11,7 +11,7 @@ import hmac
 import secrets
 import time
 from typing import Awaitable, Callable, Protocol
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import jwt
 from fastapi import APIRouter, Cookie, Header, HTTPException, Request, Response
@@ -53,6 +53,7 @@ class BrowserSession:
     access_token: str
     csrf: str
     expires_at: int
+    id_token: str = ""
 
 
 class BrowserSessionStore(Protocol):
@@ -189,6 +190,7 @@ class BrowserOIDC:
             self.store.save_session(sid, BrowserSession(
                 principal.subject, principal.roles,
                 bundle["access_token"], _opaque(), expires_at,
+                bundle["id_token"],
             ))
             destination = pending.return_path
             admin_roles = {"domestic_ops", "export_ops", "finance", "governance"}
@@ -265,5 +267,88 @@ def build_browser_router(flow: BrowserOIDC) -> APIRouter:
         flow.store.revoke_session(cookie)
         response.delete_cookie(name, path="/", secure=True, httponly=True, samesite="lax")
         return {"session": "closed"}
+
+    @router.post("/api/auth/logout/keycloak")
+    async def keycloak_logout(
+        request: Request,
+        cookie: str | None = Cookie(default=None, alias=name),
+        csrf_header: str | None = Header(default=None, alias="X-CSRF-Token"),
+        origin: str | None = Header(default=None, alias="Origin"),
+    ):
+        if origin != flow.config.origin:
+            raise HTTPException(status_code=403, detail="ORIGIN_REQUIRED")
+        try:
+            record = flow.session(cookie)
+        except InvalidToken:
+            raise HTTPException(status_code=401, detail="NO_ACTIVE_SESSION") from None
+        csrf = csrf_header
+        if not csrf and request.headers.get("content-type", "").split(";", 1)[0].strip() == (
+            "application/x-www-form-urlencoded"
+        ):
+            declared = request.headers.get("content-length")
+            if declared:
+                try:
+                    if int(declared) > 2048:
+                        raise HTTPException(status_code=413, detail="LOGOUT_REQUEST_TOO_LARGE")
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail="INVALID_LOGOUT_REQUEST") from exc
+            chunks = bytearray()
+            async for chunk in request.stream():
+                chunks.extend(chunk)
+                if len(chunks) > 2048:
+                    raise HTTPException(status_code=413, detail="LOGOUT_REQUEST_TOO_LARGE")
+            try:
+                fields = parse_qs(bytes(chunks).decode("ascii"), strict_parsing=True)
+                csrf_values = fields.get("csrf", [])
+                csrf = csrf_values[0] if len(csrf_values) == 1 else None
+            except (UnicodeDecodeError, ValueError):
+                raise HTTPException(status_code=400, detail="INVALID_LOGOUT_REQUEST") from None
+        if not csrf or not hmac.compare_digest(record.csrf, csrf):
+            raise HTTPException(status_code=403, detail="CSRF_REQUIRED")
+        if not record.id_token:
+            raise HTTPException(status_code=503, detail="ID_TOKEN_LOGOUT_HINT_UNAVAILABLE")
+        state = _opaque()
+        logout_uri = (
+            flow.config.keycloak.issuer.rstrip("/")
+            + "/protocol/openid-connect/logout?"
+            + urlencode({
+                "id_token_hint": record.id_token,
+                "client_id": flow.config.keycloak.browser_client_id,
+                "post_logout_redirect_uri":
+                    flow.config.origin + "/api/auth/logout/callback",
+                "state": state,
+            })
+        )
+        # Revoke locally before sending the browser to the provider. If the
+        # provider is unreachable or the user cancels, Ronas stays signed out.
+        flow.store.revoke_session(cookie)
+        response = RedirectResponse(logout_uri, status_code=303)
+        response.delete_cookie(
+            name, path="/", secure=True, httponly=True, samesite="lax",
+        )
+        response.set_cookie(
+            "__Host-ronas_logout", state, max_age=300, secure=True,
+            httponly=True, samesite="lax", path="/",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
+    @router.get("/api/auth/logout/callback")
+    def keycloak_logout_callback(
+        state: str = "",
+        logout_state: str | None = Cookie(default=None, alias="__Host-ronas_logout"),
+    ):
+        if (not _safe_string(state, 180) or not _safe_string(logout_state, 180)
+                or not hmac.compare_digest(state, logout_state)):
+            raise HTTPException(status_code=400, detail="LOGOUT_CALLBACK_REJECTED")
+        response = RedirectResponse("/", status_code=303)
+        response.delete_cookie(
+            "__Host-ronas_logout", path="/", secure=True,
+            httponly=True, samesite="lax",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
 
     return router

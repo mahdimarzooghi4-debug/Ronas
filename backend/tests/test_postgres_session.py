@@ -65,6 +65,7 @@ class PostgresBrowserSessionStoreTests(unittest.TestCase):
             "access-" + secrets.token_urlsafe(24),
             "csrf-" + secrets.token_urlsafe(24),
             int(self.clock[0]) + 600,
+            "id-" + secrets.token_urlsafe(24),
         )
         self.store.save_session(sid, session)
         self.assertEqual(self.peer.get_session(sid), session)
@@ -77,7 +78,7 @@ class PostgresBrowserSessionStoreTests(unittest.TestCase):
             ).fetchone()
         ciphertext = bytes(row[1])
         self.assertEqual(row[0], digest)
-        for secret_value in (session.subject, session.access_token, session.csrf):
+        for secret_value in (session.subject, session.access_token, session.csrf, session.id_token):
             self.assertNotIn(secret_value.encode(), ciphertext)
         self.peer.revoke_session(sid)
         self.assertIsNone(self.store.get_session(sid))

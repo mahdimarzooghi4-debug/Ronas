@@ -80,7 +80,7 @@ class PostgresBrowserSessionStore:
 
     def _encrypt(self, area: str, digest: str, data: dict) -> bytes:
         plaintext = json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
-        if len(plaintext) > 16000:
+        if len(plaintext) > 32000:
             raise ValueError("session payload exceeds technical limit")
         nonce = secrets.token_bytes(12)
         return nonce + self._cipher.encrypt(nonce, plaintext, (area + digest).encode("ascii"))
@@ -158,12 +158,13 @@ class PostgresBrowserSessionStore:
                 or not session.roles.issubset(ALL_ROLES)
                 or not all(isinstance(v, str) and v for v in (
                     session.subject, session.access_token, session.csrf,
-                ))):
+                ))
+                or not isinstance(session.id_token, str) or len(session.id_token) > 12000):
             raise ValueError("invalid browser session")
         encrypted = self._encrypt("session:", digest, {
             "subject": session.subject, "roles": sorted(session.roles),
             "access_token": session.access_token, "csrf": session.csrf,
-            "expires_at": session.expires_at,
+            "id_token": session.id_token, "expires_at": session.expires_at,
         })
         try:
             with self._connect() as db:
@@ -189,7 +190,7 @@ class PostgresBrowserSessionStore:
             return None
         data = self._decrypt("session:", digest, row[0])
         if data is None or set(data) != {
-            "subject", "roles", "access_token", "csrf", "expires_at",
+            "subject", "roles", "access_token", "csrf", "id_token", "expires_at",
         }:
             return None
         try:
@@ -199,12 +200,12 @@ class PostgresBrowserSessionStore:
                     or len(roles) != len(set(roles))
                     or type(data["expires_at"]) is not int or data["expires_at"] != row[1]
                     or not all(isinstance(data[k], str) for k in (
-                        "subject", "access_token", "csrf",
+                        "subject", "access_token", "csrf", "id_token",
                     ))):
                 return None
             return BrowserSession(
                 data["subject"], frozenset(roles), data["access_token"],
-                data["csrf"], data["expires_at"],
+                data["csrf"], data["expires_at"], data["id_token"],
             )
         except (ValueError, TypeError, KeyError):
             return None

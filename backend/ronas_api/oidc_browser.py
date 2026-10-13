@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import jwt
 from fastapi import APIRouter, Cookie, Header, HTTPException, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from .auth import InvalidToken, Principal
 from .keycloak import KeycloakConfig, KeycloakTokenVerifier

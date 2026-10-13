@@ -99,7 +99,6 @@ LOGOUT_SCRIPT = """document.addEventListener('DOMContentLoaded', () => {
         } catch {
           const notice = document.getElementById('logout-message');
           if (notice) notice.textContent = retryMessage;
-          window.setTimeout(scheduleRenewal, 20000);
         }
       }, delay);
     } catch {

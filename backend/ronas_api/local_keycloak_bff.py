@@ -330,6 +330,7 @@ def create_postgres_local_test_bff(
         case_ledger, agronomy_workspace, household_profile_schema,
         household_profile_access_authority, household_stage_context_authority,
         household_stage_artifact_store, household_surplus_publication_authority,
+        household_surplus_draft_ledger,
     )
     from .postgres_session import PostgresBrowserSessionStore
     try:
@@ -346,6 +347,7 @@ def create_postgres_local_test_bff(
         household_stage_context_authority=household_stage_context_authority,
         household_stage_artifact_store=household_stage_artifact_store,
         household_surplus_publication_authority=household_surplus_publication_authority,
+        household_surplus_draft_ledger=household_surplus_draft_ledger,
     )
     app.state.ronas_local_bff_session_backend = "postgresql"
     return app

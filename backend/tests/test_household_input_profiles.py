@@ -1522,6 +1522,10 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             return offer, PublicationAuthorities(current_offer=offer)
 
         app = self.make_app(surplus_authority=resolver)
+        readiness_route = "/my-drafts/{ref}/surplus-publication-readiness"
+        self.assertEqual(
+            sum(route.path == readiness_route for route in app.routes), 1,
+        )
         client = TestClient(app, base_url=ORIGIN)
         session = self.browser_session()
         sid = next(key for key, value in self.sessions.sessions.items()
@@ -1543,6 +1547,10 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertNotIn(hidden_digest, response.text)
         self.assertNotIn("readiness_digest", response.text)
         self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertIn(
+            f'/my-drafts/{REF}/surplus-offers">بازگشت به فهرست پیشنهادها',
+            response.text,
+        )
 
     def test_surplus_readiness_ui_hides_cross_household_and_redacts_authority_error(self):
         calls = []

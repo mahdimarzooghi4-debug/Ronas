@@ -2790,13 +2790,13 @@ def build_authenticated_ui_router(
                     return page(
                         "روناس — آمادگی پیشنهاد مازاد",
                         '<p>پیشنهاد در دسترس نیست.</p>'
-                        '<p><a href="/my-drafts/' + quote(ref) + '/cultivation-inputs">بازگشت به پرونده</a></p>',
+                        '<p><a href="/my-drafts/' + quote(ref) + '/surplus-offers">بازگشت به فهرست پیشنهادها</a></p>',
                         logged_in=True, code=404,
                     )
                 return page(
                     "روناس — آمادگی پیشنهاد مازاد",
                     '<p role="status">وضعیت آمادگی اکنون قابل دریافت نیست؛ بعداً دوباره تلاش کنید.</p>'
-                    '<p><a href="/my-drafts/' + quote(ref) + '/cultivation-inputs">بازگشت به پرونده</a></p>',
+                    '<p><a href="/my-drafts/' + quote(ref) + '/surplus-offers">بازگشت به فهرست پیشنهادها</a></p>',
                     logged_in=True, code=503,
                 )
             blocker_labels = {
@@ -2838,7 +2838,7 @@ def build_authenticated_ui_router(
                 '<p>وضعیت انتشار: منتشر نشده</p>'
                 '<h3>موارد نیازمند توجه</h3><ul>' + items + '</ul>'
                 '<p><a href="/my-drafts/' + quote(ref)
-                + '/cultivation-inputs">بازگشت به پرونده</a></p></article>'
+                + '/surplus-offers">بازگشت به فهرست پیشنهادها</a></p></article>'
             )
             return page("روناس — آمادگی پیشنهاد مازاد", body, logged_in=True)
 
@@ -3109,80 +3109,6 @@ def build_authenticated_ui_router(
             return page("روناس — وضعیت پرونده من (آزمایشی)",
                         body, logged_in=True)
 
-
-    if household_surplus_publication_authority is not None:
-        @router.get("/my-drafts/{ref}/surplus-publication-readiness")
-        def household_surplus_readiness_page(
-            ref: str,
-            offer_ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            identity = Principal(session.subject, session.roles)
-            try:
-                result = publication_readiness_snapshot(
-                    household_surplus_publication_authority,
-                    identity, ref, offer_ref, household_surplus_draft_ledger,
-                )
-            except HTTPException as exc:
-                if exc.status_code == 404:
-                    return page(
-                        "روناس — آمادگی پیشنهاد مازاد",
-                        '<p>پیشنهاد در دسترس نیست.</p>'
-                        '<p><a href="/my-drafts/' + quote(ref) + '">بازگشت به پرونده</a></p>',
-                        logged_in=True, code=404,
-                    )
-                return page(
-                    "روناس — آمادگی پیشنهاد مازاد",
-                    '<p role="status">وضعیت آمادگی اکنون قابل دریافت نیست؛ بعداً دوباره تلاش کنید.</p>'
-                    '<p><a href="/my-drafts/' + quote(ref) + '">بازگشت به پرونده</a></p>',
-                    logged_in=True, code=503,
-                )
-            blocker_labels = {
-                "CURRENT_OFFER_UNAVAILABLE": "نسخه جاری پیشنهاد در دسترس نیست",
-                "OFFER_SCHEMA_CHANGED": "ساختار پیشنهاد تغییر کرده و بازبینی لازم است",
-                "OFFER_VERSION_CHANGED": "نسخه پیشنهاد تغییر کرده است",
-                "PRODUCER_APPROVAL_REQUIRED": "تأیید تولیدکننده ثبت نشده است",
-                "PRODUCER_APPROVAL_STALE": "تأیید تولیدکننده با نسخه جاری هم‌خوان نیست",
-                "QUALITY_SAFETY_VERIFICATION_REQUIRED": "بررسی مستقل کیفیت و ایمنی ثبت نشده است",
-                "QUALITY_SAFETY_VERIFICATION_STALE": "بررسی کیفیت و ایمنی با نسخه جاری هم‌خوان نیست",
-                "SELLER_ELIGIBILITY_UNVERIFIED": "وضعیت صلاحیت فروشنده احراز نشده است",
-                "HOUSEHOLD_PERMISSION_INACTIVE": "مجوز خانوار فعال نیست",
-                "MARKETPLACE_GATE_CLOSED": "درگاه فنی بازارگاه باز نیست",
-            }
-            blockers = result.get("blockers")
-            if (not isinstance(blockers, list)
-                    or any(code not in blocker_labels for code in blockers)
-                    or result.get("published") is not False
-                    or result.get("real_data") is not False):
-                return page(
-                    "روناس — آمادگی پیشنهاد مازاد",
-                    '<p role="status">وضعیت آمادگی قابل نمایش نیست.</p>',
-                    logged_in=True, code=503,
-                )
-            state = (
-                "الزامات فنیِ تعریف‌شده برای این نسخه برقرار است"
-                if result.get("can_publish") is True
-                and result.get("state") == "PUBLICATION_AUTHORIZED"
-                else "پیشنهاد هنوز در وضعیت پیش‌نویس غیرعمومی است"
-            )
-            items = ''.join(
-                '<li>' + blocker_labels[code] + '</li>' for code in blockers
-            ) or '<li>مانعی در کنترل‌های فنی ثبت نشده است</li>'
-            body = (
-                '<article class="panel"><h2>آمادگی فنی پیشنهاد مازاد</h2>'
-                '<p>' + state + '</p>'
-                '<p>این نتیجه فقط بررسی فنیِ نسخه جاری است؛ به‌معنای انتشار، '
-                'نمایش به خریدار، مجوز فروش، تأیید علمی کیفیت یا اقدام مالی نیست.</p>'
-                '<p>وضعیت انتشار: منتشر نشده</p>'
-                '<h3>موارد نیازمند توجه</h3><ul>' + items + '</ul>'
-                '<p><a href="/my-drafts/' + quote(ref) + '">بازگشت به پرونده</a></p>'
-                '</article>'
-            )
-            return page("روناس — آمادگی پیشنهاد مازاد", body, logged_in=True)
 
     def technical_worklist(engine: str, principal: Principal,
                            after_ref: str | None) -> str:

@@ -1392,8 +1392,12 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual([row["revision"] for row in revisions], [1, 2])
         self.assertEqual(revisions[0]["values"], {})
         self.assertTrue(revisions[0]["schema_changed"])
+        self.assertFalse(revisions[0]["diff_available"])
+        self.assertEqual(revisions[0]["changes"], [])
         self.assertEqual(revisions[1]["values"],
                          {"current_field": "value under active schema"})
+        self.assertFalse(revisions[1]["diff_available"])
+        self.assertEqual(revisions[1]["changes"], [])
         self.assertNotIn("private old meaning", history_api.text)
         original_chain_reader = current_ledger._chain_rows
 
@@ -1431,6 +1435,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertIn("value under active schema", history_page.text)
         self.assertNotIn("private old meaning", history_page.text)
         self.assertNotIn("legacy_field", history_page.text)
+        self.assertIn("تفاوت مقادیر قابل مقایسه نیست", history_page.text)
 
 
     def test_surplus_draft_household_ui_uses_csrf_utf8_and_version_conflicts(self):

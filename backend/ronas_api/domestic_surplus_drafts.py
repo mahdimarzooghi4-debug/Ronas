@@ -1,0 +1,194 @@
+"""Owner-scoped, schema-driven private Domestic surplus drafts (LOCAL/TEST)."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+import json
+import re
+import sqlite3
+from typing import Any
+
+from .household_input_profiles import HouseholdInputSchema
+from .scoped_drafts import _synthetic_ref
+
+_ACTION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$")
+
+
+class SurplusDraftConflict(ValueError):
+    """The draft revision or idempotency command no longer matches."""
+
+
+@dataclass(frozen=True, slots=True)
+class SurplusDraftRevision:
+    household_ref: str
+    offer_ref: str
+    producer_subject: str
+    schema_ref: str
+    schema_version: int
+    schema_digest: str
+    revision: int
+    values: dict[str, str]
+    payload_digest: str
+    previous_receipt_digest: str
+    receipt_digest: str
+    published: bool = False
+    real_data: bool = False
+
+
+class SqliteSyntheticSurplusDraftLedger:
+    """Append-only local/test draft journal with owner-bound compare-and-swap."""
+
+    def __init__(self, database_path: str, schema: HouseholdInputSchema):
+        if (not isinstance(database_path, str) or not database_path
+                or not isinstance(schema, HouseholdInputSchema)):
+            raise ValueError("database path and injected product schema required")
+        self._database_path = database_path
+        self.schema = schema
+        with self._connect() as db:
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS domestic_surplus_draft_revision (
+                    action_id TEXT PRIMARY KEY,
+                    household_ref TEXT NOT NULL,
+                    offer_ref TEXT NOT NULL,
+                    producer_subject TEXT NOT NULL,
+                    schema_ref TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL,
+                    schema_digest TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    values_json TEXT NOT NULL,
+                    command_digest TEXT NOT NULL,
+                    payload_digest TEXT NOT NULL,
+                    previous_receipt_digest TEXT NOT NULL,
+                    receipt_digest TEXT NOT NULL UNIQUE,
+                    UNIQUE(household_ref, offer_ref, revision)
+                );
+                CREATE TRIGGER IF NOT EXISTS surplus_draft_revision_no_update
+                BEFORE UPDATE ON domestic_surplus_draft_revision
+                BEGIN SELECT RAISE(ABORT, 'surplus draft history immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS surplus_draft_revision_no_delete
+                BEFORE DELETE ON domestic_surplus_draft_revision
+                BEGIN SELECT RAISE(ABORT, 'surplus draft history immutable'); END;
+                CREATE INDEX IF NOT EXISTS surplus_draft_owner_lookup
+                ON domestic_surplus_draft_revision(household_ref, offer_ref, revision);
+            """)
+
+    def _connect(self):
+        db = sqlite3.connect(self._database_path, timeout=5, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute("PRAGMA busy_timeout=5000")
+        return db
+
+    @staticmethod
+    def _hash(body: Any) -> str:
+        canonical = json.dumps(
+            body, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
+    @staticmethod
+    def _owner(principal: Any, household_ref: str, offer_ref: str) -> str:
+        from .auth import Principal
+        if (not isinstance(principal, Principal)
+                or "household" not in principal.roles
+                or not _synthetic_ref(household_ref)
+                or not _synthetic_ref(offer_ref)
+                or not principal.subject or len(principal.subject) > 256):
+            raise LookupError("draft unavailable")
+        return principal.subject
+
+    def save(
+        self, principal: Any, household_ref: str, offer_ref: str, *,
+        action_id: str, expected_revision: int, values: dict[str, str],
+    ) -> SurplusDraftRevision:
+        owner = self._owner(principal, household_ref, offer_ref)
+        if (not isinstance(action_id, str) or not _ACTION.fullmatch(action_id)
+                or type(expected_revision) is not int or expected_revision < 0):
+            raise ValueError("invalid surplus draft command")
+        normalized = self.schema.validate(values)
+        values_json = json.dumps(
+            normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+        payload_digest = self._hash({
+            "schema_digest": self.schema.digest, "values": normalized,
+        })
+        command_digest = self._hash({
+            "owner": owner, "household_ref": household_ref, "offer_ref": offer_ref,
+            "action_id": action_id, "expected_revision": expected_revision,
+            "schema_digest": self.schema.digest, "values": normalized,
+        })
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            replay = db.execute(
+                "SELECT * FROM domestic_surplus_draft_revision WHERE action_id=?",
+                (action_id,),
+            ).fetchone()
+            if replay is not None:
+                if replay["command_digest"] != command_digest:
+                    raise SurplusDraftConflict("action reference replay differs")
+                if replay["producer_subject"] != owner:
+                    raise LookupError("draft unavailable")
+                return self._decode(replay)
+            latest = db.execute(
+                """SELECT revision,receipt_digest,producer_subject
+                   FROM domestic_surplus_draft_revision
+                   WHERE household_ref=? AND offer_ref=? ORDER BY revision DESC LIMIT 1""",
+                (household_ref, offer_ref),
+            ).fetchone()
+            current_revision = 0 if latest is None else latest["revision"]
+            if latest is not None and latest["producer_subject"] != owner:
+                raise LookupError("draft unavailable")
+            if expected_revision != current_revision:
+                raise SurplusDraftConflict("surplus draft revision is stale")
+            revision = current_revision + 1
+            previous = "0" * 64 if latest is None else latest["receipt_digest"]
+            body = {
+                "household_ref": household_ref, "offer_ref": offer_ref,
+                "producer_subject": owner, "schema_ref": self.schema.schema_ref,
+                "schema_version": self.schema.version, "schema_digest": self.schema.digest,
+                "revision": revision, "values": normalized,
+                "payload_digest": payload_digest, "previous_receipt_digest": previous,
+            }
+            receipt = self._hash(body)
+            db.execute(
+                """INSERT INTO domestic_surplus_draft_revision
+                   (action_id,household_ref,offer_ref,producer_subject,schema_ref,
+                    schema_version,schema_digest,revision,values_json,command_digest,
+                    payload_digest,previous_receipt_digest,receipt_digest)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (action_id, household_ref, offer_ref, owner, self.schema.schema_ref,
+                 self.schema.version, self.schema.digest, revision, values_json,
+                 command_digest, payload_digest, previous, receipt),
+            )
+            row = db.execute(
+                "SELECT * FROM domestic_surplus_draft_revision WHERE action_id=?",
+                (action_id,),
+            ).fetchone()
+            db.commit()
+            return self._decode(row)
+
+    def read_owned(
+        self, principal: Any, household_ref: str, offer_ref: str,
+    ) -> SurplusDraftRevision:
+        owner = self._owner(principal, household_ref, offer_ref)
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT * FROM domestic_surplus_draft_revision
+                   WHERE household_ref=? AND offer_ref=? ORDER BY revision DESC LIMIT 1""",
+                (household_ref, offer_ref),
+            ).fetchone()
+        if row is None or row["producer_subject"] != owner:
+            raise LookupError("draft unavailable")
+        return self._decode(row)
+
+    @staticmethod
+    def _decode(row: sqlite3.Row) -> SurplusDraftRevision:
+        return SurplusDraftRevision(
+            household_ref=row["household_ref"], offer_ref=row["offer_ref"],
+            producer_subject=row["producer_subject"], schema_ref=row["schema_ref"],
+            schema_version=row["schema_version"], schema_digest=row["schema_digest"],
+            revision=row["revision"], values=json.loads(row["values_json"]),
+            payload_digest=row["payload_digest"],
+            previous_receipt_digest=row["previous_receipt_digest"],
+            receipt_digest=row["receipt_digest"],
+        )

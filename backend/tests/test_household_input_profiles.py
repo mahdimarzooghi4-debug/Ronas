@@ -1325,7 +1325,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         client.cookies.set("__Host-ronas_session", sid)
         profile = client.get(PAGE)
         self.assertEqual(profile.status_code, 200, profile.text)
-        self.assertIn("ثبت یا اصلاح پیش‌نویس مازاد", profile.text)
+        self.assertIn("فهرست و شروع پیش‌نویس مازاد", profile.text)
         draft_path = f"/my-drafts/{REF}/surplus-offers"
         page = client.get(draft_path, params={"offer_ref": "DEMO-OFFER-UI-1"})
         self.assertEqual(page.status_code, 200, page.text)
@@ -1345,6 +1345,10 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             follow_redirects=False,
         )
         self.assertEqual(saved.status_code, 303, saved.text)
+        self.assertEqual(saved.headers["location"], draft_path)
+        listing_after_save = client.get(saved.headers["location"])
+        self.assertIn("DEMO-OFFER-UI-1", listing_after_save.text)
+        self.assertIn("نسخه 1", listing_after_save.text)
         shown = client.get(draft_path, params={"offer_ref": "DEMO-OFFER-UI-1"})
         self.assertIn("گوجه &lt;b&gt;آزمایشی&lt;/b&gt;", shown.text)
         self.assertNotIn("گوجه <b>آزمایشی</b>", shown.text)

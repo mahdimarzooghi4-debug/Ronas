@@ -2657,8 +2657,8 @@ def build_authenticated_ui_router(
             except ValueError as exc:
                 raise HTTPException(422, detail="INVALID_SURPLUS_DRAFT") from exc
             return RedirectResponse(
-                "/my-drafts/" + quote(ref) + "/surplus-offers?offer_ref="
-                + quote(form["offer_ref"]), status_code=303,
+                "/my-drafts/" + quote(ref) + "/surplus-offers",
+                status_code=303,
             )
 
     if household_surplus_publication_authority is not None:

@@ -278,7 +278,7 @@ class BrowserLoginTests(unittest.TestCase):
         self.assertEqual(response.status_code, 303, response.text)
         location = urlsplit(response.headers["location"])
         self.assertEqual(location.scheme, "https")
-        self.assertEqual(location.netloc, "identity.example.test")
+        self.assertEqual(location.netloc, "keycloak.example.test")
         self.assertEqual(location.path, "/realms/ronas/protocol/openid-connect/logout")
         query = parse_qs(location.query)
         self.assertEqual(query["client_id"], [WEB])

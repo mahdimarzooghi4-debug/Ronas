@@ -20,6 +20,10 @@ class SurplusDraftConflict(ValueError):
     """The draft revision or idempotency command no longer matches."""
 
 
+class SurplusDraftIntegrityError(RuntimeError):
+    """Stored surplus history no longer matches its immutable receipt chain."""
+
+
 @dataclass(frozen=True, slots=True)
 class SurplusDraftRevision:
     household_ref: str
@@ -117,6 +121,69 @@ class SqliteSyntheticSurplusDraftLedger:
             raise LookupError("draft unavailable")
         return owner
 
+    @classmethod
+    def _verify_chain(cls, rows: list[sqlite3.Row]) -> None:
+        previous = "0" * 64
+        owner = household = offer = None
+        for expected_revision, row in enumerate(rows, start=1):
+            try:
+                values = json.loads(row["values_json"])
+                if (not isinstance(values, dict)
+                        or any(not isinstance(key, str) or not isinstance(value, str)
+                               for key, value in values.items())
+                        or row["revision"] != expected_revision
+                        or row["previous_receipt_digest"] != previous):
+                    raise ValueError
+                if owner is None:
+                    owner = row["producer_subject"]
+                    household = row["household_ref"]
+                    offer = row["offer_ref"]
+                elif (row["producer_subject"] != owner
+                      or row["household_ref"] != household
+                      or row["offer_ref"] != offer):
+                    raise ValueError
+                payload_digest = cls._hash({
+                    "schema_digest": row["schema_digest"], "values": values,
+                })
+                command_digest = cls._hash({
+                    "owner": row["producer_subject"],
+                    "household_ref": row["household_ref"],
+                    "offer_ref": row["offer_ref"],
+                    "action_id": row["action_id"],
+                    "expected_revision": row["revision"] - 1,
+                    "schema_digest": row["schema_digest"], "values": values,
+                })
+                body = {
+                    "household_ref": row["household_ref"],
+                    "offer_ref": row["offer_ref"],
+                    "producer_subject": row["producer_subject"],
+                    "schema_ref": row["schema_ref"],
+                    "schema_version": row["schema_version"],
+                    "schema_digest": row["schema_digest"],
+                    "revision": row["revision"], "values": values,
+                    "payload_digest": payload_digest,
+                    "previous_receipt_digest": previous,
+                }
+                receipt_digest = cls._hash(body)
+                if (row["payload_digest"] != payload_digest
+                        or row["command_digest"] != command_digest
+                        or row["receipt_digest"] != receipt_digest):
+                    raise ValueError
+                previous = receipt_digest
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise SurplusDraftIntegrityError(
+                    "surplus draft integrity verification failed"
+                ) from exc
+
+    @staticmethod
+    def _chain_rows(db: sqlite3.Connection, household_ref: str,
+                    offer_ref: str) -> list[sqlite3.Row]:
+        return db.execute(
+            """SELECT * FROM domestic_surplus_draft_revision
+               WHERE household_ref=? AND offer_ref=? ORDER BY revision""",
+            (household_ref, offer_ref),
+        ).fetchall()
+
     def save(
         self, principal: Any, household_ref: str, offer_ref: str, *,
         action_id: str, expected_revision: int, values: dict[str, str],
@@ -144,17 +211,18 @@ class SqliteSyntheticSurplusDraftLedger:
                 (action_id,),
             ).fetchone()
             if replay is not None:
+                replay_rows = self._chain_rows(
+                    db, replay["household_ref"], replay["offer_ref"],
+                )
+                self._verify_chain(replay_rows)
                 if replay["command_digest"] != command_digest:
                     raise SurplusDraftConflict("action reference replay differs")
                 if replay["producer_subject"] != owner:
                     raise LookupError("draft unavailable")
                 return self._decode(replay)
-            latest = db.execute(
-                """SELECT revision,receipt_digest,producer_subject
-                   FROM domestic_surplus_draft_revision
-                   WHERE household_ref=? AND offer_ref=? ORDER BY revision DESC LIMIT 1""",
-                (household_ref, offer_ref),
-            ).fetchone()
+            rows = self._chain_rows(db, household_ref, offer_ref)
+            self._verify_chain(rows)
+            latest = None if not rows else rows[-1]
             current_revision = 0 if latest is None else latest["revision"]
             if latest is not None and latest["producer_subject"] != owner:
                 raise LookupError("draft unavailable")
@@ -192,12 +260,12 @@ class SqliteSyntheticSurplusDraftLedger:
     ) -> SurplusDraftRevision:
         owner = self._authorized_owner(principal, household_ref, offer_ref)
         with self._connect() as db:
-            row = db.execute(
-                """SELECT * FROM domestic_surplus_draft_revision
-                   WHERE household_ref=? AND offer_ref=? ORDER BY revision DESC LIMIT 1""",
-                (household_ref, offer_ref),
-            ).fetchone()
-        if row is None or row["producer_subject"] != owner:
+            rows = self._chain_rows(db, household_ref, offer_ref)
+        if not rows:
+            raise LookupError("draft unavailable")
+        self._verify_chain(rows)
+        row = rows[-1]
+        if row["producer_subject"] != owner:
             raise LookupError("draft unavailable")
         return self._decode(row)
 

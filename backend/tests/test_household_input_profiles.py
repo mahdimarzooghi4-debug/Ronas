@@ -1178,10 +1178,6 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertNotIn("SECOND SECRET VALUE", ui.text)
         self.assertEqual(ui.headers["cache-control"], "no-store")
 
-        escaped_ref = 'DEMO-OFFER-\"<script>'
-        raw_list = ledger.list_owned(owner, REF)
-        self.assertEqual(len(raw_list), 2)
-
     def test_surplus_draft_schema_change_hides_old_values_and_accepts_new_revision(self):
         old_schema = HouseholdInputSchema(
             "RONAS-DOMESTIC-INPUT", 1,

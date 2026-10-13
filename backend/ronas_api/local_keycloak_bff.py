@@ -119,26 +119,6 @@ def _validate_synthetic_composition(
     household_stage_context_authority,
     household_stage_artifact_store,
 ) -> None:
-    _validate_synthetic_composition(
-        case_ledger, agronomy_workspace, household_profile_schema,
-        household_profile_access_authority, household_stage_context_authority,
-        household_stage_artifact_store,
-    )
-
-
-def _compose_local_test_bff(
-    keycloak: KeycloakConfig,
-    callback_url: str,
-    store,
-    *,
-    transport: httpx.AsyncBaseTransport | None = None,
-    case_ledger: SqliteSyntheticExpertQuestionLedger | None = None,
-    agronomy_workspace: SyntheticAgronomyWorkspace | None = None,
-    household_profile_schema: HouseholdInputSchema | None = None,
-    household_profile_access_authority=None,
-    household_stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
-    household_stage_artifact_store: StageArtifactStore | None = None,
-) -> FastAPI:
     if case_ledger is not None and not isinstance(
         case_ledger, SqliteSyntheticExpertQuestionLedger,
     ):
@@ -159,6 +139,25 @@ def _compose_local_test_bff(
         or agronomy_workspace.ledger is not case_ledger
     ):
         raise LocalBFFConfigurationError("agronomy must share exact case ledger")
+
+def _compose_local_test_bff(
+    keycloak: KeycloakConfig,
+    callback_url: str,
+    store,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+    case_ledger: SqliteSyntheticExpertQuestionLedger | None = None,
+    agronomy_workspace: SyntheticAgronomyWorkspace | None = None,
+    household_profile_schema: HouseholdInputSchema | None = None,
+    household_profile_access_authority=None,
+    household_stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
+    household_stage_artifact_store: StageArtifactStore | None = None,
+) -> FastAPI:
+    _validate_synthetic_composition(
+        case_ledger, agronomy_workspace, household_profile_schema,
+        household_profile_access_authority, household_stage_context_authority,
+        household_stage_artifact_store,
+    )
     cfg = BrowserOIDCConfig(keycloak, callback_url)
 
     async def exchange(code: str, verifier: str) -> dict:

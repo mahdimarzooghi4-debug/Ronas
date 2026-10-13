@@ -3125,7 +3125,7 @@ def build_authenticated_ui_router(
             try:
                 result = publication_readiness_snapshot(
                     household_surplus_publication_authority,
-                    identity, ref, offer_ref,
+                    identity, ref, offer_ref, household_surplus_draft_ledger,
                 )
             except HTTPException as exc:
                 if exc.status_code == 404:

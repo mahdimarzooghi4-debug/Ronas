@@ -3341,9 +3341,9 @@ class LocalExpertQuestionTests(unittest.TestCase):
         ).status_code, 200)
         owner_csrf = self.login_browser_demo(OWNER, "household")
         owner_path = "/my-drafts/DEMO-D-1/question-responses"
-        data = {"csrf": owner_csrf, "case_version": "3",
-                "input_revision": "1", "question_revision": "1",
-                "scenario": "DEMO-REPLY-ALPHA"}
+        data = {"csrf": owner_csrf, "action_id": "DEMO-UI-R-STALE-INPUT",
+                "case_version": "3", "input_revision": "1",
+                "question_revision": "1", "scenario": "DEMO-REPLY-ALPHA"}
         self.ledger.append_owned_input_manifest(
             "DEMO-D-1", self.owner, action_id="DEMO-BROWSER-STALE-INPUT",
             expected_case_version=3, expected_input_revision=1,
@@ -3385,9 +3385,9 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertIn("/question-responses#owner-demo-reply", owner.text)
         answer = self.client.post(
             "/my-drafts/DEMO-D-1/question-responses/demo-reply",
-            data={"csrf": owner_csrf, "case_version": "3",
-                  "input_revision": "1", "question_revision": "1",
-                  "scenario": "DEMO-REPLY-ALPHA"},
+            data={"csrf": owner_csrf, "action_id": "DEMO-UI-R-NEXT-STEP",
+                  "case_version": "3", "input_revision": "1",
+                  "question_revision": "1", "scenario": "DEMO-REPLY-ALPHA"},
             headers={"Origin": "https://ronas.example.test"},
             follow_redirects=False,
         )

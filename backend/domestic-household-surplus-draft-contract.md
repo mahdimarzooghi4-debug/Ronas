@@ -16,11 +16,11 @@ Let an authenticated household create and revise a private Domestic surplus draf
 ## Security and state
 
 - New drafts are private and unpublished. The published flag is always false in this lifecycle.
-- An opt-in owner-scoped Bearer API and authenticated household browser form use the same ledger. The browser form enforces Origin and CSRF; the API write requires Bearer authentication.
+- An opt-in owner-scoped Bearer API and authenticated household browser form use the same ledger. The API exposes a summary-only list per household; list projections omit form values and producer identity. The browser form enforces Origin and CSRF; the API write requires Bearer authentication.
 - Injected owner authority is checked on every read and write. Validation errors originate from schema rules and do not echo submitted values.
 - The current surplus publication-readiness gate remains a separate, read-only evaluation. It must bind to the exact current offer revision and payload digest.
 - Local/test persistence is not a production-storage approval.
 
 ## Verification
 
-Tests cover owner isolation, role enforcement, injected-schema validation, stale revision conflicts, immutable history, schema-version binding, idempotent retry, conflicting replay, tampered-chain fail-closed behavior, schema-drift value hiding and re-entry, safe Persian rendering, browser CSRF/Origin, cookie-only API write rejection, and the invariant that no draft transition publishes an offer.
+Tests cover owner isolation, role enforcement, injected-schema validation, stale revision conflicts, immutable history, schema-version binding, idempotent retry, conflicting replay, tampered-chain fail-closed behavior, schema-drift value hiding and re-entry, summary-list redaction and owner isolation, safe Persian rendering, browser CSRF/Origin, cookie-only API write rejection, and the invariant that no draft transition publishes an offer.

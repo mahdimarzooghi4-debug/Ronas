@@ -7,6 +7,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from .auth import Principal
 from .domestic_surplus_drafts import (
     SqliteSyntheticSurplusDraftLedger, SurplusDraftConflict,
+    SurplusDraftIntegrityError,
 )
 
 
@@ -49,6 +50,8 @@ def build_domestic_surplus_drafts_router(
             return project(ledger.read_owned(principal, household_ref, offer_ref))
         except LookupError as exc:
             raise HTTPException(404, detail="DRAFT_NOT_FOUND") from exc
+        except SurplusDraftIntegrityError as exc:
+            raise HTTPException(503, detail="DRAFT_INTEGRITY_FAILURE") from exc
         except RuntimeError as exc:
             raise HTTPException(503, detail="DRAFT_AUTHORITY_UNAVAILABLE") from exc
 
@@ -76,6 +79,8 @@ def build_domestic_surplus_drafts_router(
             raise HTTPException(409, detail="SURPLUS_DRAFT_VERSION_CONFLICT") from exc
         except LookupError as exc:
             raise HTTPException(404, detail="DRAFT_NOT_FOUND") from exc
+        except SurplusDraftIntegrityError as exc:
+            raise HTTPException(503, detail="DRAFT_INTEGRITY_FAILURE") from exc
         except RuntimeError as exc:
             raise HTTPException(503, detail="DRAFT_AUTHORITY_UNAVAILABLE") from exc
         except (TypeError, ValueError) as exc:

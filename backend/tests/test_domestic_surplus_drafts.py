@@ -28,6 +28,10 @@ class SurplusDraftLedgerTests(unittest.TestCase):
         self.other = Principal("other-producer", frozenset({"household"}))
         self.ledger = SqliteSyntheticSurplusDraftLedger(
             str(Path(self.tmp.name) / "drafts.sqlite3"), schema(),
+            lambda principal, ref, schema_ref: (
+                principal.subject == "producer-demo" and ref == "DEMO-H-01"
+                and schema_ref == "demo-surplus-v1"
+            ),
         )
 
     def save(self, action="action-001", expected=0, values=None):
@@ -80,12 +84,25 @@ class SurplusDraftLedgerTests(unittest.TestCase):
                 "DEMO-H-01", "DEMO-OFFER-01",
             )
 
+    def test_create_requires_current_household_owner_authority(self):
+        denied = SqliteSyntheticSurplusDraftLedger(
+            str(Path(self.tmp.name) / "denied.sqlite3"), schema(),
+            lambda *_: False,
+        )
+        with self.assertRaises(LookupError):
+            denied.save(
+                self.owner, "DEMO-H-02", "DEMO-OFFER-02",
+                action_id="action-denied", expected_revision=0,
+                values={"product_ref": "DEMO-PRODUCT-01"},
+            )
+
     def test_injected_schema_controls_validation_and_is_bound_to_revision(self):
         with self.assertRaises(ValueError):
             self.save(values={"unknown": "must not pass"})
         other_schema = schema(version=2)
         other_ledger = SqliteSyntheticSurplusDraftLedger(
             str(Path(self.tmp.name) / "other.sqlite3"), other_schema,
+            lambda principal, ref, schema_ref: principal.subject == "producer-demo",
         )
         record = other_ledger.save(
             self.owner, "DEMO-H-01", "DEMO-OFFER-02",

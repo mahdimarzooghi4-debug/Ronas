@@ -68,8 +68,8 @@ class DomesticSurplusPublicationTests(unittest.TestCase):
         self.assertEqual(len(result.readiness_digest), 64)
 
     def test_revision_or_digest_change_invalidates_both_old_attestations(self):
-        current = offer()
-        producer, quality = approvals(current)
+        original = offer()
+        producer, quality = approvals(original)
         revised = offer(revision=2, digest="9" * 64)
         authorities = PublicationAuthorities(
             current_offer=revised, producer_approval=producer,
@@ -77,11 +77,14 @@ class DomesticSurplusPublicationTests(unittest.TestCase):
             seller_eligibility_verified=True,
             household_permission_active=True, marketplace_gate_open=True,
         )
-        result = evaluate_surplus_publication(current, authorities)
-        self.assertFalse(result.can_publish)
-        self.assertIn("OFFER_VERSION_CHANGED", result.blockers)
-        self.assertIn("PRODUCER_APPROVAL_STALE", result.blockers)
-        self.assertIn("QUALITY_SAFETY_VERIFICATION_STALE", result.blockers)
+        revised_request = evaluate_surplus_publication(revised, authorities)
+        self.assertFalse(revised_request.can_publish)
+        self.assertIn("PRODUCER_APPROVAL_STALE", revised_request.blockers)
+        self.assertIn("QUALITY_SAFETY_VERIFICATION_STALE", revised_request.blockers)
+        stale_request = evaluate_surplus_publication(original, authorities)
+        self.assertFalse(stale_request.can_publish)
+        self.assertIn("OFFER_VERSION_CHANGED", stale_request.blockers)
+
 
     def test_rejects_wrong_producer_or_same_actor_quality_attestation(self):
         current = offer()

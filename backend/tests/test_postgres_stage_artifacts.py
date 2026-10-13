@@ -69,7 +69,7 @@ class PostgresStageArtifactStoreTests(unittest.TestCase):
 
 
     def test_authenticated_http_upload_and_download_use_existing_store_protocol(self):
-        owner = "synthetic-household-001"
+        owner = self.owner
         case_ref = "DEMO-D-001"
         case_version, input_revision = 2, 3
         input_digest, plan_digest, requirements_digest = "a" * 64, "b" * 64, "c" * 64

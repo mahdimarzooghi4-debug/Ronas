@@ -313,7 +313,7 @@ def build_browser_router(flow: BrowserOIDC) -> APIRouter:
             + "/protocol/openid-connect/logout?"
             + urlencode({
                 "id_token_hint": record.id_token,
-                "client_id": flow.config.keycloak.web_client_id,
+                "client_id": flow.config.keycloak.browser_client_id,
                 "post_logout_redirect_uri":
                     flow.config.origin + "/api/auth/logout/callback",
                 "state": state,

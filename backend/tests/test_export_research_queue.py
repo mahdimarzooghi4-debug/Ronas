@@ -867,6 +867,7 @@ class ExportResearchQueueTests(unittest.TestCase):
         self.assertIn("c" * 64, rendered.text)
         self.assertEqual(self.client.post(
             route, data=payload, headers={"Origin": ORIGIN},
+            follow_redirects=False,
         ).status_code, 303)
         self.assertEqual(self.client.post(
             route, data={**payload, "source_snapshot_digest": "d" * 64},
@@ -1155,7 +1156,7 @@ class ExportResearchQueueTests(unittest.TestCase):
         self.assertIn("DEMO-PRODUCT-ALPHA", self.client.get(base).text)
         self.assertEqual(self.client.post(
             base + "/local-test-question", data=payload,
-            headers={"Origin": ORIGIN},
+            headers={"Origin": ORIGIN}, follow_redirects=False,
         ).status_code, 303)
         self.assertEqual(self.client.post(
             base + "/local-test-question",

@@ -715,6 +715,13 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertIn('type="file"', page.text)
         self.assertIn("ronas-stage-observation-upload.js", page.text)
         self.assertNotIn('name="artifact_digest" type="text"', page.text)
+        upload_script = self.client.get(
+            "/assets/ronas-stage-observation-upload.js",
+        )
+        self.assertEqual(upload_script.status_code, 200)
+        self.assertIn("application/pdf", upload_script.text)
+        self.assertIn("اطلاعات پرونده یا طرح تغییر کرده", upload_script.text)
+        self.assertIn("digest.value = ''", upload_script.text)
         upload_path = page_path + "/artifacts"
         image = b"\x89PNG\r\n\x1a\n" + b"synthetic-stage-image"
         upload_headers = {

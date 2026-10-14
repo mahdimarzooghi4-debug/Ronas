@@ -512,6 +512,7 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         session = self.sessions.get_session(sid_cookie)
         return {
             "csrf": session.csrf if csrf is None else csrf,
+            "action_id": "DEMO-UI-D-TEST",
             "case_version": str(case_version),
             "input_revision": str(rev),
             "scenario": choice,
@@ -523,16 +524,32 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         self.assertEqual(before.status_code, 200, before.text)
         self.assertIn('form-action \'self\'', before.headers["content-security-policy"])
         self.assertIn("ثبت نسخه DEMO", before.text)
+        rendered_action = re.search(
+            r'name="action_id" value="(DEMO-UI-D-[A-Z0-9]+)"', before.text,
+        )
+        self.assertIsNotNone(rendered_action)
         form = self.demo_browser_form()
+        form["action_id"] = rendered_action.group(1)
         route = HTML + "/demo-correction"
         first = self.client.post(route, data=form,
                                  headers={"Origin": ORIGIN},
                                  follow_redirects=False)
         self.assertEqual(first.status_code, 303, first.text)
         self.assertEqual(first.headers["location"], HTML)
+        replay = self.client.post(route, data=form, headers={"Origin": ORIGIN},
+                                  follow_redirects=False)
+        self.assertEqual(replay.status_code, 303, replay.text)
+        changed_replay = self.client.post(
+            route, data={**form, "scenario": "DEMO-MANIFEST-BETA"},
+            headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(changed_replay.status_code, 409)
         self.assertEqual(self.client.get(ROOT, headers=self.headers()).json()[
             "input_revisions"], [1])
-        stale = self.client.post(route, data=form, headers={"Origin": ORIGIN})
+        stale = self.client.post(
+            route, data={**form, "action_id": "DEMO-UI-D-STALE"},
+            headers={"Origin": ORIGIN},
+        )
         self.assertEqual(stale.status_code, 409)
         current = self.client.get(HTML)
         self.assertIn("بازنگری آزمایشی 1", current.text)

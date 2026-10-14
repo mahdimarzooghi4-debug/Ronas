@@ -917,6 +917,72 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(self.client.get(
             PAGE + "/compare?before_revision=2&after_revision=1",
         ).status_code, 422)
+        restore_page = self.client.get(PAGE + "/revisions/1")
+        self.assertEqual(restore_page.status_code, 200, restore_page.text)
+        self.assertIn("ثبت این مقادیر به‌عنوان نسخه جدید", restore_page.text)
+        restore_action = re.search(
+            r'name="action_id" value="(DEMO-RESTORE-[A-Z0-9]+)"',
+            restore_page.text,
+        )
+        expected_revision = re.search(
+            r'name="expected_profile_revision" value="(\d+)"',
+            restore_page.text,
+        )
+        self.assertIsNotNone(restore_action)
+        self.assertIsNotNone(expected_revision)
+        restore_form = {
+            "csrf": session.csrf, "action_id": restore_action.group(1),
+            "case_version": "2",
+            "expected_profile_revision": expected_revision.group(1),
+        }
+        restore_path = PAGE + "/revisions/1/restore"
+        restored = self.client.post(
+            restore_path, content=urlencode(restore_form),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(restored.status_code, 303, restored.text)
+        current_profile = self.ledger.read_owned_profile(
+            REF, Principal(OWNER, frozenset({"household"})),
+        )
+        self.assertEqual(current_profile["current_revision"], 3)
+        self.assertEqual(current_profile["current_values"], {
+            "field_alpha": "sample ui value", "field_choice": "sample-a",
+        })
+        replay_restore = self.client.post(
+            restore_path, content=urlencode(restore_form),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(replay_restore.status_code, 303, replay_restore.text)
+        stale_restore_page = self.client.get(PAGE + "/revisions/2")
+        stale_action = re.search(
+            r'name="action_id" value="(DEMO-RESTORE-[A-Z0-9]+)"',
+            stale_restore_page.text,
+        )
+        stale_revision = re.search(
+            r'name="expected_profile_revision" value="(\d+)"',
+            stale_restore_page.text,
+        )
+        self.ledger.append_owned_profile(
+            REF, Principal(OWNER, frozenset({"household"})),
+            action_id="DEMO-PROFILE-RESTORE-CONCURRENT",
+            expected_case_version=2, expected_revision=3,
+            values={"field_alpha": "concurrent update", "field_choice": "sample-b"},
+        )
+        stale_restore = self.client.post(
+            PAGE + "/revisions/2/restore",
+            content=urlencode({
+                "csrf": session.csrf, "action_id": stale_action.group(1),
+                "case_version": "2",
+                "expected_profile_revision": stale_revision.group(1),
+            }),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        self.assertEqual(stale_restore.status_code, 409, stale_restore.text)
         bad = dict(form, csrf="wrong")
         rejected = self.client.post(
             PAGE, content=urlencode(bad),

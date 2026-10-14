@@ -2061,6 +2061,7 @@ def build_authenticated_ui_router(
                         '<p role="status">ساختار فرم پس از ثبت این نسخه تغییر کرده است؛ '
                         'برای جلوگیری از نمایش نادرست، مقادیر قدیمی پنهان شده‌اند.</p>'
                     )
+                    restore_form = ""
                 else:
                     rows = ''.join(
                         '<dt>' + escape(field.label) + '</dt><dd>'
@@ -2068,11 +2069,40 @@ def build_authenticated_ui_router(
                         for field in household_profile_schema.fields
                     )
                     values_html = '<dl>' + rows + '</dl>'
+                    try:
+                        current_profile = household_input_ledger.read_owned_profile(
+                            ref, principal,
+                        )
+                    except (LedgerIntegrityError, sqlite3.Error) as exc:
+                        raise HTTPException(
+                            503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE",
+                        ) from exc
+                    if current_profile is None:
+                        raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                    restore_form = (
+                        '<form method="post" action="/my-drafts/' + quote(ref)
+                        + '/cultivation-inputs/revisions/' + str(revision)
+                        + '/restore"><input type="hidden" name="csrf" value="'
+                        + escape(session.csrf, quote=True) + '">'
+                        '<input type="hidden" name="action_id" value="DEMO-RESTORE-'
+                        + secrets.token_hex(10).upper() + '">'
+                        '<input type="hidden" name="case_version" value="'
+                        + str(result["case_version"]) + '">'
+                        '<input type="hidden" name="expected_profile_revision" value="'
+                        + str(current_profile["current_revision"]) + '">'
+                        '<button type="submit">ثبت این مقادیر به‌عنوان نسخه جدید</button>'
+                        '</form><p>نسخه قبلی حفظ می‌شود؛ بازگردانی، نسخه جاری را '
+                        'بازنویسی نمی‌کند.</p>'
+                        if not current_profile["schema_changed"] else
+                        '<p role="status">شِمای نسخه جاری با این فرم متفاوت است؛ '
+                        'ثبت نسخه از این تاریخچه غیرفعال است.</p>'
+                    )
                 body = (
                     '<article class="panel"><h2>نسخه تاریخی اطلاعات پرونده</h2>'
                     '<p>پرونده ' + escape(ref) + ' · نسخه '
                     + str(result["revision"]) + '</p>'
                     + values_html
+                    + restore_form
                     + '<p>این سابقه فقط برای صاحب پرونده است و به معنی تأیید علمی، '
                     'پذیرش طرح یا رضایت برای مصرف دیگری نیست.</p>'
                     '<p><a href="/my-drafts/' + quote(ref)
@@ -2081,6 +2111,66 @@ def build_authenticated_ui_router(
                 )
                 return page("روناس — نسخه تاریخی اطلاعات",
                             body, logged_in=True, local_test_form=True)
+
+            @router.post(
+                "/my-drafts/{ref}/cultivation-inputs/revisions/{revision}/restore",
+            )
+            async def household_cultivation_inputs_restore(
+                ref: str, revision: int, request: Request,
+                sid: str | None = Cookie(default=None, alias=cookie_name),
+            ) -> RedirectResponse:
+                principal, form = await checked_browser_form(
+                    request, sid, fields=frozenset({
+                        "csrf", "action_id", "case_version",
+                        "expected_profile_revision",
+                    }), max_bytes=2048, max_fields=5, max_value_length=120,
+                )
+                try:
+                    permitted = household_profile_access_authority(
+                        principal, ref, household_profile_schema.schema_ref,
+                    )
+                except Exception as exc:
+                    raise HTTPException(
+                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                    ) from exc
+                if permitted is not True:
+                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                try:
+                    previous = household_input_ledger.read_owned_profile_revision(
+                        ref, principal, revision,
+                    )
+                    if previous is None:
+                        raise HTTPException(404, detail="PROFILE_REVISION_NOT_FOUND")
+                    if previous["schema_changed"]:
+                        raise HTTPException(
+                            409, detail="PROFILE_REVISION_SCHEMA_CHANGED",
+                        )
+                    restored = household_input_ledger.append_owned_profile(
+                        ref, principal, action_id=form["action_id"],
+                        expected_case_version=form_version(
+                            form["case_version"], zero_allowed=False,
+                        ), expected_revision=form_version(
+                            form["expected_profile_revision"],
+                        ), values=previous["values"],
+                    )
+                except InputRevisionConflict as exc:
+                    raise HTTPException(
+                        409, detail="HOUSEHOLD_PROFILE_CHANGED",
+                    ) from exc
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(
+                        503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE",
+                    ) from exc
+                except ValueError as exc:
+                    raise HTTPException(
+                        422, detail="INVALID_HOUSEHOLD_PROFILE_RESTORE",
+                    ) from exc
+                if restored is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                return RedirectResponse(
+                    "/my-drafts/" + quote(ref) + "/cultivation-inputs",
+                    status_code=303,
+                )
 
             @router.get(
                 "/my-drafts/{ref}/cultivation-inputs/compare",

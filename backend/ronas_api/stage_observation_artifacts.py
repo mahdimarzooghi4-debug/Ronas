@@ -44,9 +44,11 @@ def _declared_upload_size(value: str | None) -> int | None:
     """Parse HTTP framing length before reading an upload body."""
     if value is None:
         return None
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]+", value):
+        raise HTTPException(400, detail="INVALID_CONTENT_LENGTH")
     try:
         size = int(value)
-    except (TypeError, ValueError) as exc:
+    except ValueError as exc:
         raise HTTPException(400, detail="INVALID_CONTENT_LENGTH") from exc
     if size < 0:
         raise HTTPException(400, detail="INVALID_CONTENT_LENGTH")

@@ -20,7 +20,9 @@ from .domestic_preparation_preview import domestic_preparation_preview
 from .internal_cultivation_plan_contract import (
     InternalCultivationProposal, _digest, inspect_proposal_structure,
 )
-from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES
+from .human_review_sqlite import (
+    SqliteSyntheticHumanReviewLedger, STATES, review_state_for_steps,
+)
 from .internal_expert_review_preparation import project_expert_review_preparation
 from .internal_expert_evidence_index import project_synthetic_review_evidence_index
 from .internal_expert_provenance_dossier import project_expert_provenance_dossier
@@ -246,7 +248,7 @@ class SyntheticAgronomyWorkspace:
         preparation = domestic_preparation_preview(
             case_version=record.version,
             review_revision=len(steps),
-            technical_review_state=STATES[len(steps)],
+            technical_review_state=review_state_for_steps(steps),
             valid_review_states=STATES,
             observed_review_steps=tuple(
                 item.stage for item in steps
@@ -260,7 +262,7 @@ class SyntheticAgronomyWorkspace:
             "case_status": "DRAFT_ONLY",
             "source": "SYNTHETIC_ONLY",
             "review_revision": len(steps),
-            "technical_review_state": STATES[len(steps)],
+            "technical_review_state": review_state_for_steps(steps),
             "technical_review_steps": [
                 {"revision": item.revision, "stage": item.stage}
                 for item in steps

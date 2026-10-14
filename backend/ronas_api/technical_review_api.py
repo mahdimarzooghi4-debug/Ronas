@@ -15,6 +15,7 @@ from .auth import Principal
 from .grant_ledger_sqlite import LedgerIntegrityError
 from .human_review_sqlite import (
     RECORDED, REQUESTED, STATES, SqliteSyntheticHumanReviewLedger,
+    review_state_for_steps,
 )
 from .scoped_audit import GrantConflict, GrantNotAuthorized
 from .export_research_question import ExportResearchQuestionConflict
@@ -147,7 +148,7 @@ def build_technical_review_read_router(
             "case_version": command.expected_case_version,
             "case_status": "DRAFT_ONLY",
             "review_revision": saved.revision,
-            "technical_review_state": STATES[saved.revision],
+            "technical_review_state": review_state_for_steps(saved.revision),
             "stage": stage,
             "request_ref": saved.request_ref,
             "evidence_ref": saved.evidence_ref,

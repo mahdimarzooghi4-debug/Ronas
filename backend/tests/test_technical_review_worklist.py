@@ -19,6 +19,7 @@ from ronas_api.human_review_sqlite import SqliteSyntheticHumanReviewLedger
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
+from ronas_api.scoped_audit import GrantConflict
 
 ISS = "https://id.example.test/realms/ronas"
 API, WEB = "ronas-api", "ronas-web"
@@ -113,6 +114,49 @@ class TechnicalReviewWorklistTests(unittest.TestCase):
             action_id="DEMO-REQUEST-WORKLIST", request_ref="DEMO-REQUEST-001",
             evidence_ref="DEMO-EVIDENCE-001",
         )
+
+    def test_multiple_review_cycles_preserve_alternation_and_revision_cas(self):
+        self.request()
+        reviewer = Principal(
+            "synthetic-domestic-reviewer", frozenset({"domestic_ops"}),
+        )
+        self.ledger.record_human_response(
+            engine="DOMESTIC", ref="DEMO-D-001", actor=reviewer,
+            expected_case_version=2, expected_review_revision=1,
+            action_id="DEMO-RESPONSE-CYCLE-1", request_ref="DEMO-REQUEST-001",
+            evidence_ref="DEMO-RESPONSE-EVIDENCE-1",
+            decision_ref="DEMO-HUMAN-NOTE-1",
+        )
+        self.ledger.request_evidence_review(
+            engine="DOMESTIC", ref="DEMO-D-001", actor=self.operator,
+            expected_case_version=2, expected_review_revision=2,
+            action_id="DEMO-REQUEST-CYCLE-2", request_ref="DEMO-REQUEST-002",
+            evidence_ref="DEMO-EVIDENCE-002",
+        )
+        with self.assertRaises(GrantConflict):
+            self.ledger.request_evidence_review(
+                engine="DOMESTIC", ref="DEMO-D-001", actor=self.operator,
+                expected_case_version=2, expected_review_revision=2,
+                action_id="DEMO-STALE-REQUEST", request_ref="DEMO-REQUEST-003",
+                evidence_ref="DEMO-EVIDENCE-003",
+            )
+        self.ledger.record_human_response(
+            engine="DOMESTIC", ref="DEMO-D-001", actor=reviewer,
+            expected_case_version=2, expected_review_revision=3,
+            action_id="DEMO-RESPONSE-CYCLE-2", request_ref="DEMO-REQUEST-002",
+            evidence_ref="DEMO-RESPONSE-EVIDENCE-2",
+            decision_ref="DEMO-HUMAN-NOTE-2",
+        )
+        state = self.ledger.review_state("DOMESTIC", "DEMO-D-001")
+        self.assertEqual(state["review_revision"], 4)
+        self.assertEqual(state["technical_review_state"], "HUMAN_RESPONSE_RECORDED")
+        history = self.ledger.review_history("DOMESTIC", "DEMO-D-001")
+        self.assertEqual([item.stage for item in history], [
+            "TECH_REVIEW_REQUESTED", "TECH_HUMAN_RESPONSE_RECORDED",
+            "TECH_REVIEW_REQUESTED", "TECH_HUMAN_RESPONSE_RECORDED",
+        ])
+        self.assertEqual([item.revision for item in history], [1, 2, 3, 4])
+        self.assertTrue(self.ledger.verify_integrity())
 
     def browser_client(self, subject="synthetic-domestic-001",
                        roles=("domestic_ops",), *, inject_review=True):

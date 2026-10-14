@@ -3201,7 +3201,9 @@ def build_authenticated_ui_router(
             ) or '<li>هنوز گام فنی ثبت نشده است.</li>'
             action_id = 'DEMO-UI-REVIEW-' + secrets.token_hex(10).upper()
             form = ''
-            if review["review_revision"] == 0:
+            if (review["technical_review_state"]
+                    in ("UNREQUESTED", "HUMAN_RESPONSE_RECORDED")):
+                review_revision = review["review_revision"]
                 form = (
                     '<form method="post" action="/admin/technical-review/'
                     + engine.lower() + '/' + quote(ref) + '/request">'
@@ -3211,7 +3213,8 @@ def build_authenticated_ui_router(
                     + action_id + '">'
                     '<input type="hidden" name="case_version" value="'
                     + str(review["case_version"]) + '">'
-                    '<input type="hidden" name="review_revision" value="0">'
+                    '<input type="hidden" name="review_revision" value="'
+                    + str(review_revision) + '">'
                     '<label>مرجع درخواست DEMO <input name="request_ref" '
                     'required pattern="DEMO-[A-Za-z0-9._:-]{1,96}" '
                     'maxlength="101"></label>'
@@ -3220,8 +3223,9 @@ def build_authenticated_ui_router(
                     'maxlength="101"></label>'
                     '<button type="submit">ثبت درخواست بررسی شواهد</button></form>'
                 )
-            elif review["review_revision"] == 1:
-                request_ref = review["history"][0]["request_ref"]
+            elif review["technical_review_state"] == "EVIDENCE_REVIEW_REQUESTED":
+                review_revision = review["review_revision"]
+                request_ref = review["history"][-1]["request_ref"]
                 form = (
                     '<form method="post" action="/admin/technical-review/'
                     + engine.lower() + '/' + quote(ref) + '/human-response">'
@@ -3231,7 +3235,8 @@ def build_authenticated_ui_router(
                     + action_id + '">'
                     '<input type="hidden" name="case_version" value="'
                     + str(review["case_version"]) + '">'
-                    '<input type="hidden" name="review_revision" value="1">'
+                    '<input type="hidden" name="review_revision" value="'
+                    + str(review_revision) + '">'
                     '<input type="hidden" name="request_ref" value="'
                     + escape(request_ref, quote=True) + '">'
                     '<label>مرجع شاهد پاسخ DEMO <input name="evidence_ref" '
@@ -3274,24 +3279,26 @@ def build_authenticated_ui_router(
             )
             try:
                 if operation == "request":
-                    if form_version(form["review_revision"]) != 0:
+                    expected_revision = form_version(form["review_revision"])
+                    if expected_revision % 2:
                         raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
                     technical_review_ledger.request_evidence_review(
                         engine=engine_key, ref=ref, actor=principal,
                         expected_case_version=form_version(
                             form["case_version"], zero_allowed=False,
-                        ), expected_review_revision=0,
+                        ), expected_review_revision=expected_revision,
                         action_id=form["action_id"], request_ref=form["request_ref"],
                         evidence_ref=form["evidence_ref"],
                     )
                 else:
-                    if form_version(form["review_revision"]) != 1:
+                    expected_revision = form_version(form["review_revision"])
+                    if expected_revision % 2 != 1:
                         raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
                     technical_review_ledger.record_human_response(
                         engine=engine_key, ref=ref, actor=principal,
                         expected_case_version=form_version(
                             form["case_version"], zero_allowed=False,
-                        ), expected_review_revision=1,
+                        ), expected_review_revision=expected_revision,
                         action_id=form["action_id"], request_ref=form["request_ref"],
                         evidence_ref=form["evidence_ref"],
                         decision_ref=form["decision_ref"],

@@ -4,14 +4,15 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from ronas_api.auth import Principal
 from ronas_api.domestic_stage_observation import CurrentStageContext, StageRequirement
 from ronas_api.stage_observation_artifacts import (
     MAX_ARTIFACT_BYTES, PrivateFilesystemStageArtifactStore,
-    StageArtifactStoreError, build_stage_artifact_router,
+    StageArtifactStoreError, _check_upload_size, _declared_upload_size,
+    build_stage_artifact_router,
 )
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"test-image-bytes"
@@ -166,6 +167,25 @@ class StageArtifactRouterTests(unittest.TestCase):
             headers=self.headers,
         )
         self.assertEqual(oversized.status_code, 413)
+
+    def test_declared_upload_length_is_validated_before_body_read(self):
+        self.assertIsNone(_declared_upload_size(None))
+        self.assertEqual(_declared_upload_size("17"), 17)
+        for value in ("-1", "+1", " 1", "not-a-number", "1.5"):
+            with self.subTest(value=value), self.assertRaises(HTTPException) as raised:
+                _declared_upload_size(value)
+            self.assertEqual(raised.exception.status_code, 400)
+        with self.assertRaises(HTTPException) as raised:
+            _declared_upload_size(str(MAX_ARTIFACT_BYTES + 1))
+        self.assertEqual(raised.exception.status_code, 413)
+
+    def test_declared_upload_length_must_match_streamed_body_size(self):
+        _check_upload_size(None, 17)
+        _check_upload_size(17, 17)
+        with self.assertRaises(HTTPException) as raised:
+            _check_upload_size(18, 17)
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(raised.exception.detail, "CONTENT_LENGTH_MISMATCH")
 
 
 if __name__ == "__main__":

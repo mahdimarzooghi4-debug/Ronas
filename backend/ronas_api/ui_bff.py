@@ -148,8 +148,25 @@ STAGE_UPLOAD_SCRIPT = r"""document.addEventListener('submit', async event => {
   const button = form.querySelector('button[type=submit]');
   const file = fileInput && fileInput.files && fileInput.files[0];
   const say = text => { if (notice) notice.textContent = text; };
+  const safeFailure = async response => {
+    let detail = '';
+    try { detail = (await response.json()).detail || ''; } catch {}
+    if (response.status === 401) return 'نشست شما معتبر نیست؛ دوباره وارد شوید.';
+    if (response.status === 403) return 'درخواست از نظر امنیتی تأیید نشد؛ صفحه را تازه کنید.';
+    if (response.status === 409) return 'اطلاعات پرونده یا طرح تغییر کرده؛ صفحه را تازه کنید.';
+    if (response.status === 413 || detail === 'STAGE_ARTIFACT_TOO_LARGE')
+      return 'حجم فایل از سقف ۸ مگابایت بیشتر است.';
+    if (response.status === 422) return 'نوع یا محتوای فایل پذیرفته نشد.';
+    return 'ثبت انجام نشد؛ وضعیت پرونده را تازه کنید و دوباره تلاش کنید.';
+  };
   if (!file || !digestInput) { say('ابتدا یک فایل تصویر یا PDF انتخاب کنید.'); return; }
   if (file.size < 1 || file.size > 8 * 1024 * 1024) { say('اندازه فایل باید حداکثر ۸ مگابایت باشد.'); return; }
+  if (!['image/jpeg','image/png','image/webp','application/pdf'].includes(file.type)) {
+    digestInput.value = '';
+    say('فقط فایل JPEG، PNG، WebP یا PDF پذیرفته می‌شود.');
+    return;
+  }
+  digestInput.value = '';
   if (button) button.disabled = true;
   say('فایل در حال بارگذاری است…');
   try {
@@ -162,10 +179,11 @@ STAGE_UPLOAD_SCRIPT = r"""document.addEventListener('submit', async event => {
         'X-Ronas-Plan-Digest':get('plan_digest'), 'X-Ronas-Stage-Ref':get('stage_ref'),
         'X-Ronas-Requirements-Digest':get('requirements_digest')}
     });
-    if (!uploaded.ok) throw Error('UPLOAD_REJECTED');
+    if (!uploaded.ok) throw Error(await safeFailure(uploaded));
     const artifact = await uploaded.json();
     if (!/^[0-9a-f]{64}$/.test(artifact.digest) || artifact.byte_length !== file.size
-        || artifact.content_type !== file.type || artifact.stored !== true) throw Error('UPLOAD_INVALID');
+        || artifact.content_type !== file.type || artifact.stored !== true)
+      throw Error('پاسخ امن بارگذاری فایل معتبر نیست؛ دوباره تلاش کنید.');
     digestInput.value = artifact.digest;
     const fields = new URLSearchParams();
     for (const [key, value] of new FormData(form).entries())
@@ -174,12 +192,23 @@ STAGE_UPLOAD_SCRIPT = r"""document.addEventListener('submit', async event => {
       method:'POST', credentials:'same-origin', cache:'no-store',
       headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:fields
     });
-    if (!saved.ok) throw Error('RECEIPT_REJECTED');
+    if (!saved.ok) throw Error(await safeFailure(saved));
     window.location.assign(saved.url);
-  } catch {
-    say('ثبت فایل یا رسید انجام نشد؛ وضعیت را تازه کنید و دوباره تلاش کنید.');
+  } catch (error) {
+    say(error instanceof Error && error.message
+      ? error.message : 'ثبت انجام نشد؛ وضعیت پرونده را تازه کنید و دوباره تلاش کنید.');
     if (button) button.disabled = false;
   }
+});
+document.addEventListener('change', event => {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement) || input.type !== 'file') return;
+  const form = input.form;
+  if (!(form instanceof HTMLFormElement) || !form.hasAttribute('data-stage-upload')) return;
+  const digest = form.querySelector('input[name=artifact_digest]');
+  const notice = form.querySelector('[data-upload-status]');
+  if (digest) digest.value = '';
+  if (notice) notice.textContent = '';
 });"""
 
 def page(title: str, body: str, *, logged_in: bool, code: int = 200,

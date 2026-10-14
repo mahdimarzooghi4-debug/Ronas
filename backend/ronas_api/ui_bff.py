@@ -3621,8 +3621,6 @@ def build_authenticated_ui_router(
                         "evidence_revision", "connector_ref",
                     }),
                 )
-                if form["connector_ref"] not in export_source_connectors.refs():
-                    raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
                 try:
                     result = capture_export_source_reference(
                         technical_review_ledger, export_source_connectors, ref,

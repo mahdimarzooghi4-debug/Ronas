@@ -1205,7 +1205,7 @@ def build_authenticated_ui_router(
                         '<input type="hidden" name="csrf" value="'
                         + escape(session.csrf, quote=True) + '">'
                         '<input type="hidden" name="action_id" value="DEMO-UI-Q-'
-                        + secrets.token_hex(10).upper() + '">
+                        + secrets.token_hex(10).upper() + '>\n'
                         '<input type="hidden" name="case_version" value="'
                         + str(notes["case_version"]) + '">'
                         '<input type="hidden" name="input_revision" value="'
@@ -1232,7 +1232,7 @@ def build_authenticated_ui_router(
                             '<input type="hidden" name="csrf" value="'
                             + escape(session.csrf, quote=True) + '">'
                             '<input type="hidden" name="action_id" value="DEMO-UI-Q-'
-                            + secrets.token_hex(10).upper() + '">
+                            + secrets.token_hex(10).upper() + '>\n'
                             '<input type="hidden" name="case_version" value="'
                             + str(notes["case_version"]) + '">'
                             '<input type="hidden" name="input_revision" value="'
@@ -1272,7 +1272,7 @@ def build_authenticated_ui_router(
                             '<input type="hidden" name="csrf" value="'
                             + escape(session.csrf, quote=True) + '">'
                             '<input type="hidden" name="action_id" value="DEMO-UI-I-'
-                            + secrets.token_hex(10).upper() + '">
+                            + secrets.token_hex(10).upper() + '>\n'
                             '<input type="hidden" name="case_version" value="'
                             + str(notes["case_version"]) + '">'
                             '<input type="hidden" name="input_revision" value="'

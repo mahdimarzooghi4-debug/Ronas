@@ -552,7 +552,8 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
         revised = owner.post(
             "/my-drafts/DEMO-D-1/input-revisions/demo-correction",
             data={
-                "csrf": owner_csrf, "case_version": "3", "input_revision": "1",
+                "csrf": owner_csrf, "action_id": "DEMO-UI-D-KEYCLOAK-3",
+                "case_version": "3", "input_revision": "1",
                 "scenario": "DEMO-MANIFEST-BETA",
             },
             headers={"Origin": ORIGIN},

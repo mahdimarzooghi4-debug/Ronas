@@ -507,12 +507,13 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
 
 
     def demo_browser_form(self, *, rev=0, choice="DEMO-MANIFEST-ALPHA",
-                          case_version=3, csrf=None):
+                          case_version=3, csrf=None,
+                          action_id="DEMO-UI-D-TEST"):
         sid_cookie = self.client.cookies.get("__Host-ronas_session")
         session = self.sessions.get_session(sid_cookie)
         return {
             "csrf": session.csrf if csrf is None else csrf,
-            "action_id": "DEMO-UI-D-TEST",
+            "action_id": action_id,
             "case_version": str(case_version),
             "input_revision": str(rev),
             "scenario": choice,
@@ -557,6 +558,7 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         second = self.client.post(
             route, data=self.demo_browser_form(
                 rev=1, choice="DEMO-MANIFEST-BETA",
+                action_id="DEMO-UI-D-TEST-2",
             ), headers={"Origin": ORIGIN}, follow_redirects=False,
         )
         self.assertEqual(second.status_code, 303, second.text)

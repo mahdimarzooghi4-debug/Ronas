@@ -1736,6 +1736,8 @@ def build_authenticated_ui_router(
                 + '/progress-notes">'
                 '<input type="hidden" name="csrf" value="'
                 + escape(session.csrf, quote=True) + '">'
+                '<input type="hidden" name="action_id" value="DEMO-PROGRESS-'
+                + secrets.token_hex(10).upper() + '">'
                 '<input type="hidden" name="case_version" value="'
                 + str(result["case_version"]) + '">'
                 '<input type="hidden" name="revision" value="'
@@ -1770,13 +1772,13 @@ def build_authenticated_ui_router(
         ) -> RedirectResponse:
             principal, form = await checked_browser_form(
                 request, sid, fields=frozenset({
-                    "csrf", "case_version", "revision", "reported_at", "note",
+                    "csrf", "action_id", "case_version", "revision", "reported_at", "note",
                 }),
             )
             try:
                 saved = household_input_ledger.append_owned_progress_note(
                     ref, principal,
-                    action_id="DEMO-PROGRESS-" + secrets.token_hex(10).upper(),
+                    action_id=form["action_id"],
                     expected_case_version=form_version(
                         form["case_version"], zero_allowed=False,
                     ),

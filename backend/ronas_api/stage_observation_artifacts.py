@@ -40,6 +40,26 @@ class StageArtifactStoreError(RuntimeError):
     """The private artifact adapter could not safely store or read an object."""
 
 
+def _declared_upload_size(value: str | None) -> int | None:
+    """Parse HTTP framing length before reading an upload body."""
+    if value is None:
+        return None
+    try:
+        size = int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, detail="INVALID_CONTENT_LENGTH") from exc
+    if size < 0:
+        raise HTTPException(400, detail="INVALID_CONTENT_LENGTH")
+    if size > MAX_ARTIFACT_BYTES:
+        raise HTTPException(413, detail="STAGE_ARTIFACT_TOO_LARGE")
+    return size
+
+
+def _check_upload_size(declared_size: int | None, actual_size: int) -> None:
+    if declared_size is not None and actual_size != declared_size:
+        raise HTTPException(400, detail="CONTENT_LENGTH_MISMATCH")
+
+
 @dataclass(frozen=True, slots=True)
 class StageArtifact:
     digest: str
@@ -317,19 +337,16 @@ def build_stage_artifact_router(
             raise HTTPException(503, detail="STAGE_CONTEXT_UNAVAILABLE") from exc
         if not _context_matches(context, ref, headers):
             raise HTTPException(409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED")
-        declared = request.headers.get("content-length")
-        if declared:
-            try:
-                if int(declared) > MAX_ARTIFACT_BYTES:
-                    raise HTTPException(413, detail="STAGE_ARTIFACT_TOO_LARGE")
-            except ValueError as exc:
-                raise HTTPException(400, detail="INVALID_CONTENT_LENGTH") from exc
+        declared_size = _declared_upload_size(
+            request.headers.get("content-length"),
+        )
         chunks, size = [], 0
         async for chunk in request.stream():
             size += len(chunk)
             if size > MAX_ARTIFACT_BYTES:
                 raise HTTPException(413, detail="STAGE_ARTIFACT_TOO_LARGE")
             chunks.append(chunk)
+        _check_upload_size(declared_size, size)
         content = b"".join(chunks)
         try:
             artifact = store.put(

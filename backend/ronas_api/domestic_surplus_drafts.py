@@ -7,7 +7,7 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 from .auth import Principal
 from .household_input_profiles import HouseholdInputSchema
@@ -22,6 +22,22 @@ class SurplusDraftConflict(ValueError):
 
 class SurplusDraftIntegrityError(RuntimeError):
     """Stored surplus history no longer matches its immutable receipt chain."""
+
+
+class SurplusDraftStorageError(RuntimeError):
+    """Surplus draft persistence is unavailable."""
+
+
+class SurplusDraftLedger(Protocol):
+    """Storage interface shared by explicit LOCAL/TEST and PostgreSQL adapters."""
+    schema: HouseholdInputSchema
+    _owner_access_authority: Callable[[Principal, str, str], bool]
+
+    def save(self, principal, household_ref, offer_ref, *, action_id,
+             expected_revision, values) -> SurplusDraftRevision: ...
+    def list_owned(self, principal, household_ref) -> tuple[SurplusDraftRevision, ...]: ...
+    def history_owned(self, principal, household_ref, offer_ref) -> tuple[SurplusDraftRevision, ...]: ...
+    def read_owned(self, principal, household_ref, offer_ref) -> SurplusDraftRevision: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,3 +352,15 @@ class SqliteSyntheticSurplusDraftLedger:
             previous_receipt_digest=row["previous_receipt_digest"],
             receipt_digest=row["receipt_digest"],
         )
+
+
+def is_surplus_draft_ledger(value: Any) -> bool:
+    """Check the shared adapter contract used by SQLite and PostgreSQL stores."""
+    return bool(
+        value is not None
+        and isinstance(getattr(value, "schema", None), HouseholdInputSchema)
+        and callable(getattr(value, "_owner_access_authority", None))
+        and all(callable(getattr(value, name, None)) for name in (
+            "save", "list_owned", "history_owned", "read_owned",
+        ))
+    )

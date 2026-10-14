@@ -72,7 +72,8 @@ from .gate_evidence_handoff_sqlite import SqliteSyntheticGateEvidenceHandoff
 from .gate_evidence_authority_enquiry_sqlite import SqliteSyntheticAuthorityEnquiryLedger
 from .domestic_surplus_publication_api import publication_readiness_snapshot
 from .domestic_surplus_drafts import (
-    SurplusDraftConflict, SqliteSyntheticSurplusDraftLedger,
+    SurplusDraftConflict, SurplusDraftLedger,
+    is_surplus_draft_ledger,
 )
 ADMIN_ROLES = {
     "domestic_ops": "عملیات داخلی",
@@ -333,7 +334,7 @@ def build_authenticated_ui_router(
     household_stage_artifact_store: StageArtifactStore | None = None,
     export_source_connectors: ExportSourceConnectorRegistry | None = None,
     household_surplus_publication_authority=None,
-    household_surplus_draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
+    household_surplus_draft_ledger: SurplusDraftLedger | None = None,
 ) -> APIRouter:
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
@@ -350,8 +351,7 @@ def build_authenticated_ui_router(
             "surplus readiness UI requires the same owner-scoped household profile ledger"
         )
     if household_surplus_draft_ledger is not None and (
-            not isinstance(household_surplus_draft_ledger,
-                            SqliteSyntheticSurplusDraftLedger)
+            not is_surplus_draft_ledger(household_surplus_draft_ledger)
             or not isinstance(household_input_ledger,
                               SqliteSyntheticHouseholdProfileLedger)
             or household_input_ledger is not technical_review_ledger

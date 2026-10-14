@@ -7,8 +7,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 
 from .auth import Principal
 from .domestic_surplus_drafts import (
-    SqliteSyntheticSurplusDraftLedger, SurplusDraftConflict,
-    SurplusDraftIntegrityError,
+    SurplusDraftLedger, SurplusDraftConflict,
+    SurplusDraftIntegrityError, SurplusDraftStorageError,
+    is_surplus_draft_ledger,
 )
 
 
@@ -32,10 +33,10 @@ def _revision_diff(current: Any, previous: Any | None, active_schema_digest: str
 
 
 def build_domestic_surplus_drafts_router(
-    ledger: SqliteSyntheticSurplusDraftLedger,
+    ledger: SurplusDraftLedger,
     verified_principal: Callable[..., Principal],
 ) -> APIRouter:
-    if (not isinstance(ledger, SqliteSyntheticSurplusDraftLedger)
+    if (not is_surplus_draft_ledger(ledger)
             or not callable(verified_principal)):
         raise ValueError("explicit draft ledger and verified identity required")
     router = APIRouter()
@@ -81,6 +82,8 @@ def build_domestic_surplus_drafts_router(
             raise HTTPException(404, detail="DRAFT_NOT_FOUND") from exc
         except SurplusDraftIntegrityError as exc:
             raise HTTPException(503, detail="DRAFT_INTEGRITY_FAILURE") from exc
+        except SurplusDraftStorageError as exc:
+            raise HTTPException(503, detail="DRAFT_STORAGE_UNAVAILABLE") from exc
         except RuntimeError as exc:
             raise HTTPException(503, detail="DRAFT_AUTHORITY_UNAVAILABLE") from exc
         except sqlite3.Error as exc:
@@ -118,6 +121,8 @@ def build_domestic_surplus_drafts_router(
             raise HTTPException(404, detail="DRAFT_NOT_FOUND") from exc
         except SurplusDraftIntegrityError as exc:
             raise HTTPException(503, detail="DRAFT_INTEGRITY_FAILURE") from exc
+        except SurplusDraftStorageError as exc:
+            raise HTTPException(503, detail="DRAFT_STORAGE_UNAVAILABLE") from exc
         except RuntimeError as exc:
             raise HTTPException(503, detail="DRAFT_AUTHORITY_UNAVAILABLE") from exc
         except sqlite3.Error as exc:
@@ -160,6 +165,8 @@ def build_domestic_surplus_drafts_router(
             raise HTTPException(404, detail="DRAFT_NOT_FOUND") from exc
         except SurplusDraftIntegrityError as exc:
             raise HTTPException(503, detail="DRAFT_INTEGRITY_FAILURE") from exc
+        except SurplusDraftStorageError as exc:
+            raise HTTPException(503, detail="DRAFT_STORAGE_UNAVAILABLE") from exc
         except RuntimeError as exc:
             raise HTTPException(503, detail="DRAFT_AUTHORITY_UNAVAILABLE") from exc
 
@@ -189,6 +196,8 @@ def build_domestic_surplus_drafts_router(
             raise HTTPException(404, detail="DRAFT_NOT_FOUND") from exc
         except SurplusDraftIntegrityError as exc:
             raise HTTPException(503, detail="DRAFT_INTEGRITY_FAILURE") from exc
+        except SurplusDraftStorageError as exc:
+            raise HTTPException(503, detail="DRAFT_STORAGE_UNAVAILABLE") from exc
         except RuntimeError as exc:
             raise HTTPException(503, detail="DRAFT_AUTHORITY_UNAVAILABLE") from exc
         except (TypeError, ValueError) as exc:

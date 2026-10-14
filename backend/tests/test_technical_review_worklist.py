@@ -156,7 +156,9 @@ class TechnicalReviewWorklistTests(unittest.TestCase):
         self.assertNotIn("DEMO-D-003", result.text)
         self.assertNotIn("DEMO-E-001", result.text)
         self.assertIn("فهرست فنی بررسی شواهد", result.text)
-        self.assertIn("/drafts/DEMO-D-001/technical-review", result.text)
+        self.assertIn(
+            "/admin/technical-review/domestic/DEMO-D-001", result.text,
+        )
         self.assertEqual(result.headers["cache-control"], "no-store")
         self.assertIn("frame-ancestors 'none'", result.headers["content-security-policy"])
         self.assertEqual([e.ref for e in self.audit_worklist()],

@@ -5,6 +5,7 @@ Tests exercise the actual PKCE callback and encrypted SQLite session adapter.
 """
 import json
 from pathlib import Path
+import re
 import secrets
 import sqlite3
 import tempfile
@@ -151,6 +152,72 @@ class BrowserReviewSecurityTests(unittest.TestCase):
         self.assertEqual(self.client2.get(EXP).status_code, 404)
         self.assertEqual([e.kind for e in self.ledger.audit_snapshot()][-3:],
                          ["READ_ALLOWED", "READ_ALLOWED", "READ_DENIED"])
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_admin_review_page_completes_both_steps_with_csrf_and_assigned_human(self):
+        self.login()
+        detail = self.client1.get("/admin/technical-review/domestic/DEMO-D-001")
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertIn("ثبت درخواست بررسی شواهد", detail.text)
+        request_action = re.search(
+            r'name="action_id" value="(DEMO-UI-REVIEW-[A-Z0-9]+)"',
+            detail.text,
+        )
+        self.assertIsNotNone(request_action)
+        csrf = self.client1.get("/api/auth/session").json()["csrf"]
+        request_payload = {
+            "csrf": csrf, "action_id": request_action.group(1),
+            "case_version": "3", "review_revision": "0",
+            "request_ref": "DEMO-BROWSER-REQ",
+            "evidence_ref": "DEMO-BROWSER-EVIDENCE",
+        }
+        submitted = self.client1.post(
+            "/admin/technical-review/domestic/DEMO-D-001/request",
+            data=request_payload, headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(submitted.status_code, 303, submitted.text)
+        replay = self.client1.post(
+            "/admin/technical-review/domestic/DEMO-D-001/request",
+            data=request_payload, headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(replay.status_code, 303, replay.text)
+
+        requested = self.client1.get(detail.url)
+        self.assertIn("ثبت مرجع پاسخ انسانی", requested.text)
+        response_action = re.search(
+            r'name="action_id" value="(DEMO-UI-REVIEW-[A-Z0-9]+)"',
+            requested.text,
+        )
+        self.assertIsNotNone(response_action)
+        self.login(subject="synthetic-domestic-002")
+        reviewer_page = self.client1.get(detail.url)
+        self.assertEqual(reviewer_page.status_code, 200)
+        reviewer_csrf = self.client1.get("/api/auth/session").json()["csrf"]
+        response_payload = {
+            "csrf": reviewer_csrf, "action_id": response_action.group(1),
+            "case_version": "3", "review_revision": "1",
+            "request_ref": "DEMO-BROWSER-REQ",
+            "evidence_ref": "DEMO-BROWSER-RESPONSE-EVIDENCE",
+            "decision_ref": "DEMO-BROWSER-HUMAN-NOTE",
+        }
+        denied_csrf = self.client1.post(
+            "/admin/technical-review/domestic/DEMO-D-001/human-response",
+            data={**response_payload, "csrf": "wrong"},
+            headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(denied_csrf.status_code, 403)
+        saved = self.client1.post(
+            "/admin/technical-review/domestic/DEMO-D-001/human-response",
+            data=response_payload, headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(saved.status_code, 303, saved.text)
+        current = self.client1.get(detail.url)
+        self.assertEqual(current.status_code, 200)
+        self.assertIn("HUMAN_RESPONSE_RECORDED", current.text)
+        self.assertNotIn("ثبت مرجع پاسخ انسانی", current.text)
+        self.assertEqual(self.ledger.review_state(
+            "DOMESTIC", "DEMO-D-001",
+        )["review_revision"], 2)
         self.assertTrue(self.ledger.verify_integrity())
 
     def test_browser_session_and_keycloak_role_alone_do_not_grant_a_case(self):

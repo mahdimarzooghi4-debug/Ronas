@@ -21,6 +21,8 @@ ISS = "https://id.example.test/realms/ronas"
 API, WEB = "ronas-api", "ronas-web"
 DOM = "/api/v1/admin/domestic/household-intake/drafts/DEMO-D-001/technical-review"
 EXP = "/api/v1/admin/export/research/drafts/DEMO-E-001/technical-review"
+DOM_REQUEST = DOM.removesuffix("/technical-review") + "/technical-review/requests"
+DOM_RESPONSE = DOM.removesuffix("/technical-review") + "/technical-review/human-responses"
 
 
 def records():
@@ -133,6 +135,117 @@ class TechnicalReviewHTTPBoundaryTests(unittest.TestCase):
         self.assertNotIn("accepted", data)
         self.assertNotIn("approved", data)
         self.assertEqual(self.client.post(DOM, headers=self.headers(), json={}).status_code, 405)
+
+    def test_signed_http_request_and_independent_human_response_roundtrip(self):
+        request = {
+            "action_id": "DEMO-HTTP-REQUEST-1",
+            "expected_case_version": 3,
+            "expected_review_revision": 0,
+            "request_ref": "DEMO-HTTP-REQ-1",
+            "evidence_ref": "DEMO-HTTP-EVIDENCE-1",
+        }
+        created = self.client.post(
+            DOM_REQUEST, headers=self.headers(), json=request,
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.json()["technical_review_state"],
+                         "EVIDENCE_REVIEW_REQUESTED")
+        self.assertEqual(created.json()["case_status"], "DRAFT_ONLY")
+        self.assertFalse(created.json()["business_approval"])
+        self.assertFalse(created.json()["plan_accepted"])
+        self.assertFalse(created.json()["advice_enabled"])
+        replay = self.client.post(
+            DOM_REQUEST, headers=self.headers(), json=request,
+        )
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertEqual(replay.json(), created.json())
+        changed_replay = self.client.post(
+            DOM_REQUEST, headers=self.headers(),
+            json={**request, "evidence_ref": "DEMO-CHANGED-EVIDENCE"},
+        )
+        self.assertEqual(changed_replay.status_code, 409)
+        stale_request = self.client.post(
+            DOM_REQUEST, headers=self.headers(), json={
+                **request, "action_id": "DEMO-HTTP-REQUEST-STALE",
+            },
+        )
+        self.assertEqual(stale_request.status_code, 409)
+
+        response_command = {
+            "action_id": "DEMO-HTTP-RESPONSE-1",
+            "expected_case_version": 3,
+            "expected_review_revision": 1,
+            "request_ref": "DEMO-HTTP-REQ-1",
+            "evidence_ref": "DEMO-HTTP-EVIDENCE-RESPONSE-1",
+            "decision_ref": "DEMO-HTTP-NOTE-1",
+        }
+        response = self.client.post(
+            DOM_RESPONSE,
+            headers=self.headers("synthetic-domestic-002"),
+            json=response_command,
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["technical_review_state"],
+                         "HUMAN_RESPONSE_RECORDED")
+        self.assertEqual(response.json()["decision_ref"], "DEMO-HTTP-NOTE-1")
+        self.assertFalse(response.json()["business_approval"])
+        state = self.client.get(DOM, headers=self.headers())
+        self.assertEqual(state.status_code, 200)
+        self.assertEqual(state.json()["review_revision"], 2)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_mutation_requires_bearer_and_hides_unassigned_human(self):
+        command = {
+            "action_id": "DEMO-HTTP-REQUEST-2",
+            "expected_case_version": 3,
+            "expected_review_revision": 0,
+            "request_ref": "DEMO-HTTP-REQ-2",
+            "evidence_ref": "DEMO-HTTP-EVIDENCE-2",
+        }
+        self.assertEqual(self.client.post(
+            DOM_REQUEST, cookies={}, json=command,
+        ).status_code, 401)
+        self.assertEqual(self.client.post(
+            DOM_REQUEST, headers=self.headers(), json=command,
+        ).status_code, 201)
+        denied = self.client.post(
+            DOM_RESPONSE,
+            headers=self.headers("synthetic-domestic-001"),
+            json={
+                "action_id": "DEMO-HTTP-RESPONSE-2",
+                "expected_case_version": 3,
+                "expected_review_revision": 1,
+                "request_ref": "DEMO-HTTP-REQ-2",
+                "evidence_ref": "DEMO-HTTP-RESPONSE-EVIDENCE-2",
+                "decision_ref": "DEMO-HTTP-DECISION-2",
+            },
+        )
+        self.assertEqual(denied.status_code, 404)
+        self.assertEqual(denied.json(), {"detail": "DRAFT_NOT_FOUND"})
+        self.assertEqual(self.ledger.review_state("DOMESTIC", "DEMO-D-001")[
+            "review_revision"], 1)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_export_request_mutation_keeps_engine_and_grant_isolation(self):
+        path = "/api/v1/admin/export/research/drafts/DEMO-E-001/technical-review/requests"
+        response = self.client.post(path, headers=self.headers(
+            "synthetic-export-001", ("export_ops",),
+        ), json={
+            "action_id": "DEMO-EXPORT-REQUEST-1",
+            "expected_case_version": 2,
+            "expected_review_revision": 0,
+            "request_ref": "DEMO-EXPORT-REQ-1",
+            "evidence_ref": "DEMO-EXPORT-EVIDENCE-1",
+        })
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["engine"], "EXPORT")
+        self.assertEqual(response.json()["technical_review_state"],
+                         "EVIDENCE_REVIEW_REQUESTED")
+        self.assertIsNone(self.ledger.read_review_for_operator(
+            "DOMESTIC", "DEMO-E-001",
+            Principal("synthetic-export-001", frozenset({"export_ops"})),
+        ))
+        self.assertTrue(self.ledger.verify_integrity())
 
     def test_unsigned_invalid_and_claim_mismatch_tokens_fail_before_ledger(self):
         requests = [

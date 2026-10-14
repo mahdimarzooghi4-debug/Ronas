@@ -23,8 +23,10 @@ and evidence references. Recording a human response requires the exact
 same request reference, revision one, current case version and a distinct
 assigned actor additionally accepted by an independently injected human
 review authorizer. An ordinary governance/finance role cannot bypass it.
-Revoked grants cannot create or complete a review. Neither method has
-an HTTP endpoint. No AI, data ingestion, consent or real decision is run.
+Revoked grants cannot create or complete a review. The request and response
+commands are now exposed only by the explicitly opted-in signed API and
+session-protected management BFF described below. No AI, data ingestion,
+consent or real decision is run.
 
 Both stages are append-only SQLite rows accepted atomically with a linked
 audit event in one BEGIN IMMEDIATE transaction; read-only history and
@@ -65,17 +67,20 @@ helpers**, without authorization checks. They MUST NOT be exposed through an
 HTTP route, used as a session-facing interface or interpreted as an
 operational review decision. Downstream UI/BFF integrations must use an
 authenticated, exact-case-checked facade and must not trust a client-
-supplied `Principal`. Only the explicitly opted-in read-only technical API and the assigned worklist described below may be mounted. This is
-not a Production read/authorization policy and no new user role is granted.
+supplied `Principal`. Only the explicitly opted-in synthetic request,
+response, read API and assigned worklist described below may be mounted. This
+is not a Production read/authorization policy and no new user role is granted.
 
 ## Opt-in signed-Keycloak HTTP read boundary (LOCAL/TEST ONLY)
 
-`backend/ronas_api/technical_review_api.py` provides two **GET-only**
-technical evidence-reference views, each inside the one unified admin
+`backend/ronas_api/technical_review_api.py` provides technical evidence
+history, request and response routes inside the one unified admin
 environment and isolated by engine:
 
 - `GET /api/v1/admin/domestic/household-intake/drafts/{ref}/technical-review`
 - `GET /api/v1/admin/export/research/drafts/{ref}/technical-review`
+- `POST /api/v1/admin/{domestic/household-intake|export/research}/drafts/{ref}/technical-review/requests`
+- `POST /api/v1/admin/{domestic/household-intake|export/research}/drafts/{ref}/technical-review/human-responses`
 
 The default `app = create_app(KeycloakConfig.from_environment())` does **not**
 mount them. Even passing a `scoped_registry` alone does not mount them. Local
@@ -89,14 +94,17 @@ app's existing signed Keycloak client-token verifier (or an independently
 validated browser flow bound to that Keycloak configuration), followed by
 the ledger's exact-case current grant check and a transactional read audit.
 
-Response semantics: `401` for missing/bad JWT; identical `404
-DRAFT_NOT_FOUND` for absent, unassigned, cross-engine or revoked cases;
-`503 TECHNICAL_REVIEW_UNAVAILABLE` for verified audit corruption or
-SQLite failure (no untrusted references in the HTTP response). Authorized
-reads return a bounded DEMO-only history without actor/command digests or
-real note text. `Cache-Control: no-store` is applied globally. No POST,
-workflow decision, consent mutation, external supplier verification or
-Business state transition is exposed, and no new portal is created.
+Mutation commands require signed Bearer authentication, exact current
+case grant/version, stable action ID and expected review revision. Request
+creation is idempotent for an exact replay; response recording additionally
+requires a distinct actor accepted by the independently injected human
+review authorizer. Changed/stale action returns 409, absent/revoked grant
+returns the same 404 as an unknown case, invalid command returns 422, and
+verified audit or SQLite failure returns sanitized 503. The response contains
+only synthetic references and explicit false approval/advice flags. It never
+accepts note content, changes the DRAFT_ONLY case, or creates an agronomy,
+source-rights, export, finance or Business decision. `Cache-Control: no-store`
+is applied globally; no new portal is created.
 
 Existing `review_state()` and `review_history()` are INTERNAL
 diagnostics and MUST NOT be used in an HTTP handler. Keycloak client
@@ -233,14 +241,19 @@ Keycloak-validated `BrowserOIDC` and the **same explicit** synthetic
 human-review ledger as its scoped-case registry, the server-side
 `/admin` view shows only that signed session holder's granted
 technical-review worklist in their existing Domestic and/or Export
-management domain. Rows link to the already-existing authorized
-technical-history GET. Next-page links use a synthetic keyset cursor.
+management domain. Rows link to `/admin/technical-review/{engine}/{ref}`;
+the case page shows the authorized synthetic history and offers the existing
+request command, then the response-reference form. Every mutation rechecks
+the signed session, exact Origin and CSRF token, exact grant, expected case
+version and revision. The independent human authorizer is checked inside the
+same ledger transaction before a response can be recorded. Next-page links
+use a synthetic keyset cursor.
 HTML is escaped, and headers remain `Cache-Control: no-store` and
 CSP `frame-ancestors 'none'`. Finance and governance roles do not
 inherit case listings; session logout or a grant revoke stops subsequent
 disclosure. An invalid audit produces a sanitized 503 without partially
-rendered cards. No new panel, user login path, public registration,
-write/approve endpoint, personal data or automatic decision is created.
+rendered cards. No new portal, user login path, public registration,
+approval endpoint, personal data or automatic decision is created.
 
 The default `app = create_app(KeycloakConfig.from_environment())`
 mounts neither the BFF nor any technical-review worklist. A
@@ -254,8 +267,10 @@ Validation: `backend/tests/test_technical_review_worklist.py` contains
 seed/grant filtering, Domestic/Export isolation, live status,
 revocation, concurrent reads, corrupted history, transactional audit,
 invalid query, default-disabled routes, unified admin rendering,
-session revocation and role-specific display. No real IdP or
-business execution was used.
+session revocation and role-specific display. New regressions exercise the
+complete two-step BrowserOIDC UI flow, CSRF rejection, exact replay and
+independent assigned response actor. No real IdP or business execution was
+used.
 
 ## Tests and exclusions
 

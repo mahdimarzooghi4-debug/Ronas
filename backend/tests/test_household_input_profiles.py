@@ -1,6 +1,7 @@
 """Schema-driven owner profile intake is versioned, private, and guarded."""
 import hashlib
 import json
+import re
 from pathlib import Path
 import secrets
 import sqlite3
@@ -851,8 +852,13 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertIn("اطلاعات ساختاریافته پرونده کشت", page.text)
         self.assertIn("فیلد آزمایشی &lt;الف&gt;", page.text)
         self.assertNotIn("فیلد آزمایشی <الف>", page.text)
+        rendered_action = re.search(
+            r'name="action_id" value="(DEMO-PROFILE-[A-Z0-9]+)"', page.text,
+        )
+        self.assertIsNotNone(rendered_action)
         form = {
-            "csrf": session.csrf, "case_version": "2", "profile_revision": "0",
+            "csrf": session.csrf, "action_id": rendered_action.group(1),
+            "case_version": "2", "profile_revision": "0",
             "field_alpha": "sample ui value", "field_choice": "sample-a",
         }
         saved = self.client.post(
@@ -861,6 +867,17 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             follow_redirects=False,
         )
         self.assertEqual(saved.status_code, 303, saved.text)
+        replay = self.client.post(
+            PAGE, content=urlencode(form),
+            headers={"Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(replay.status_code, 303, replay.text)
+        conflicting_replay = self.client.post(
+            PAGE, content=urlencode({**form, "field_alpha": "changed payload"}),
+            headers={"Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        self.assertEqual(conflicting_replay.status_code, 409, conflicting_replay.text)
         shown = self.client.get(PAGE)
         self.assertIn("sample ui value", shown.text)
         history_path = PAGE + "/revisions/1"

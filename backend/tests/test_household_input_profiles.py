@@ -648,9 +648,15 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         )
         self.assertEqual(question_page.status_code, 200, question_page.text)
         self.assertIn("پرسش درباره رسید جاری DEMO-STAGE-01", question_page.text)
+        self.assertIn(
+            "/agronomy/assigned-drafts/" + REF
+            + "/stage-observations#observation-DEMO-STAGE-01-1",
+            question_page.text,
+        )
         page_path = "/agronomy/assigned-drafts/" + REF + "/stage-observations"
         page = client.get(page_path)
         self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn('id="observation-DEMO-STAGE-01-2"', page.text)
         self.assertIn("DEMO-STAGE-01", page.text)
         self.assertIn("دریافت فایل مشاهده", page.text)
         self.assertIn("ثبت مشاهده رسید (بدون بررسی)", page.text)

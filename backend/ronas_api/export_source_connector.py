@@ -111,6 +111,17 @@ def capture_export_source_reference(
             or question is None
             or question["question_revision"] != expected_question_revision):
         raise ExportEvidenceReferenceConflict("Export question context changed")
+    replayed, previous = ledger.replay_export_evidence_capture(
+        ref, principal,
+        expected_case_version=expected_case_version,
+        expected_question_revision=expected_question_revision,
+        expected_evidence_revision=expected_evidence_revision,
+        action_id=action_id, connector_ref=connector_ref,
+    )
+    if replayed:
+        return previous
+    if connector_ref not in connectors.refs():
+        raise ValueError("unknown Export source connector")
     current_evidence_revision = sum(
         1 for item in workspace["local_test_evidence_references"]
         if item["question_revision"] == expected_question_revision

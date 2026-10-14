@@ -6,6 +6,7 @@ immutable case. Filters are observed technical stages, never study findings.
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import re
 from pathlib import Path
 import secrets
 import sqlite3
@@ -674,8 +675,21 @@ class ExportResearchQueueTests(unittest.TestCase):
                     "DEMO-EVIDENCE-BROWSER", b"browser connector snapshot",
                 )
 
+        class SecondConnector:
+            connector_ref = "DEMO-CONNECTOR-BETA"
+
+            def __init__(self):
+                self.calls = []
+
+            def fetch_snapshot(self, **query):
+                self.calls.append(query)
+                return ExportSourceSnapshot(
+                    "DEMO-EVIDENCE-SECOND", b"second connector snapshot",
+                )
+
         connector = Connector()
-        registry = ExportSourceConnectorRegistry([connector])
+        second_connector = SecondConnector()
+        registry = ExportSourceConnectorRegistry([connector, second_connector])
         self.client = self.client_for(self.ledger, registry)
         self.assertEqual(self.post_question().status_code, 201)
         self.login()
@@ -684,8 +698,14 @@ class ExportResearchQueueTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200, page.text)
         self.assertIn("evidence-reference/capture", page.text)
         self.assertIn(connector.connector_ref, page.text)
+        rendered_action = re.search(
+            r'name="action_id" value="(DEMO-UI-CAPTURE-[A-Z0-9]+)"',
+            page.text,
+        )
+        self.assertIsNotNone(rendered_action)
         payload = {
             "csrf": self.demo_export_evidence_form()["csrf"],
+            "action_id": rendered_action.group(1),
             "case_version": "3", "question_revision": "1",
             "evidence_revision": "0",
             "connector_ref": connector.connector_ref,
@@ -712,11 +732,23 @@ class ExportResearchQueueTests(unittest.TestCase):
         self.assertEqual(connector.calls, [(
             "DEMO-SOURCE-001", "DEMO-PRODUCT-ALPHA", "DEMO-DEST-ALPHA",
         )])
-        stale_replay = self.client.post(
+        replay = self.client.post(
             route, data=payload, headers={"Origin": ORIGIN},
             follow_redirects=False,
         )
-        self.assertEqual(stale_replay.status_code, 409, stale_replay.text)
+        self.assertEqual(replay.status_code, 303, replay.text)
+        conflicting_replay = self.client.post(
+            route, data={**payload, "connector_ref": second_connector.connector_ref},
+            headers={"Origin": ORIGIN}, follow_redirects=False,
+        )
+        self.assertEqual(conflicting_replay.status_code, 409, conflicting_replay.text)
+        self.assertEqual(len(connector.calls), 1)
+        self.assertEqual(second_connector.calls, [])
+        stale = self.client.post(
+            route, data={**payload, "action_id": "DEMO-CAPTURE-STALE"},
+            headers={"Origin": ORIGIN}, follow_redirects=False,
+        )
+        self.assertEqual(stale.status_code, 409, stale.text)
         self.assertEqual(len(connector.calls), 1)
         self.assertTrue(self.reopen().verify_integrity())
 
@@ -752,6 +784,17 @@ class ExportResearchQueueTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         digest = hashlib.sha256(b"opaque external snapshot bytes").hexdigest()
         self.assertEqual(response.json()["source_snapshot_digest"], digest)
+        disconnected_retry_client = self.client_for(
+            self.ledger, ExportSourceConnectorRegistry([]),
+        )
+        replay = disconnected_retry_client.post(
+            "/api/v1/admin/export/research/drafts/DEMO-E-001/"
+            "evidence-references/capture",
+            json=payload, headers=self.headers(),
+        )
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertEqual(replay.json(), response.json())
+        self.assertEqual(len(connector.calls), 1)
         self.assertEqual(response.json()["evidence_ref"],
                          "DEMO-EVIDENCE-CONNECTED")
         self.assertEqual(connector.calls, [(

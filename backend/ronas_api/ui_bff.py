@@ -25,6 +25,7 @@ from .export_source_connector import (
     capture_export_source_reference,
 )
 from .scoped_drafts import _synthetic_ref
+from .scoped_audit import GrantConflict, GrantNotAuthorized
 from .export_research_evidence import valid_evidence_refs, valid_snapshot_digest
 from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
 from .household_input_ledger_sqlite import (
@@ -3145,11 +3146,9 @@ def build_authenticated_ui_router(
         links = []
         for item in result["items"]:
             ref = escape(item["ref"])
-            url = ("/api/v1/admin/domestic/household-intake/drafts/"
-                   if engine == "DOMESTIC" else
-                   "/api/v1/admin/export/research/drafts/")
+            url = "/admin/technical-review/" + engine.lower() + "/"
             links.append(
-                '<li><a href="' + url + ref + '/technical-review">'
+                '<li><a href="' + url + ref + '">'
                 + ref + '</a> — ' + escape(item["technical_review_state"])
                 + ' · DRAFT_ONLY'
                 + (' · <a href="/admin/export/research/drafts/'
@@ -3166,6 +3165,151 @@ def build_authenticated_ui_router(
                      + quote(result["next_cursor"]) + '">پرونده‌های بعدی</a>')
         return ('<section class="section"><h3>فهرست فنی بررسی شواهد'
                 ' (فقط نمونه آزمایشی)</h3>' + body + '</section>')
+
+    if technical_review_ledger is not None:
+        @router.get("/admin/technical-review/{engine}/{ref}")
+        def technical_review_detail(
+            engine: str, ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            engine_key = engine.upper()
+            if engine_key not in ("DOMESTIC", "EXPORT"):
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            principal = Principal(session.subject, session.roles)
+            try:
+                review = technical_review_ledger.read_review_for_operator(
+                    engine_key, ref, principal,
+                )
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+                ) from exc
+            if review is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            history = ''.join(
+                '<li>گام ' + str(item["revision"]) + ': '
+                + escape(item["stage"]) + ' · مرجع درخواست '
+                + escape(item["request_ref"]) + ' · مرجع شاهد '
+                + escape(item["evidence_ref"])
+                + (' · مرجع پاسخ ' + escape(item["decision_ref"])
+                   if item["decision_ref"] else '') + '</li>'
+                for item in review["history"]
+            ) or '<li>هنوز گام فنی ثبت نشده است.</li>'
+            action_id = 'DEMO-UI-REVIEW-' + secrets.token_hex(10).upper()
+            form = ''
+            if review["review_revision"] == 0:
+                form = (
+                    '<form method="post" action="/admin/technical-review/'
+                    + engine.lower() + '/' + quote(ref) + '/request">'
+                    '<input type="hidden" name="csrf" value="'
+                    + escape(session.csrf, quote=True) + '">'
+                    '<input type="hidden" name="action_id" value="'
+                    + action_id + '">'
+                    '<input type="hidden" name="case_version" value="'
+                    + str(review["case_version"]) + '">'
+                    '<input type="hidden" name="review_revision" value="0">'
+                    '<label>مرجع درخواست DEMO <input name="request_ref" '
+                    'required pattern="DEMO-[A-Za-z0-9._:-]{1,96}" '
+                    'maxlength="101"></label>'
+                    '<label>مرجع شاهد DEMO <input name="evidence_ref" '
+                    'required pattern="DEMO-[A-Za-z0-9._:-]{1,96}" '
+                    'maxlength="101"></label>'
+                    '<button type="submit">ثبت درخواست بررسی شواهد</button></form>'
+                )
+            elif review["review_revision"] == 1:
+                request_ref = review["history"][0]["request_ref"]
+                form = (
+                    '<form method="post" action="/admin/technical-review/'
+                    + engine.lower() + '/' + quote(ref) + '/human-response">'
+                    '<input type="hidden" name="csrf" value="'
+                    + escape(session.csrf, quote=True) + '">'
+                    '<input type="hidden" name="action_id" value="'
+                    + action_id + '">'
+                    '<input type="hidden" name="case_version" value="'
+                    + str(review["case_version"]) + '">'
+                    '<input type="hidden" name="review_revision" value="1">'
+                    '<input type="hidden" name="request_ref" value="'
+                    + escape(request_ref, quote=True) + '">'
+                    '<label>مرجع شاهد پاسخ DEMO <input name="evidence_ref" '
+                    'required pattern="DEMO-[A-Za-z0-9._:-]{1,96}" '
+                    'maxlength="101"></label>'
+                    '<label>مرجع یادداشت انسانی DEMO <input name="decision_ref" '
+                    'required pattern="DEMO-[A-Za-z0-9._:-]{1,96}" '
+                    'maxlength="101"></label>'
+                    '<button type="submit">ثبت مرجع پاسخ انسانی</button></form>'
+                )
+            body = (
+                '<section class="section"><h2>' + escape(ref) + '</h2>'
+                '<p>موتור: ' + escape(engine_key) + ' · پرونده DRAFT_ONLY</p>'
+                '<p>وضعیت فنی: ' + escape(review["technical_review_state"])
+                + ' · نسخه پرونده ' + str(review["case_version"]) + '</p>'
+                '<ol>' + history + '</ol>' + form
+                + '<p>مرجع پاسخ انسانی محتوای یادداشت یا تأیید علمی، طرح کشت، '
+                'مجوز منبع یا تصمیم تجاری را ایجاد نمی‌کند.</p>'
+                '<p><a href="/admin">بازگشت به مدیریت</a></p></section>'
+            )
+            return page("روناس — پیگیری فنی بررسی شواهد", body,
+                        logged_in=True, local_test_form=True)
+
+        @router.post("/admin/technical-review/{engine}/{ref}/{operation}")
+        async def technical_review_submit(
+            engine: str, ref: str, operation: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            engine_key = engine.upper()
+            if engine_key not in ("DOMESTIC", "EXPORT") or operation not in (
+                    "request", "human-response"):
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            required = {"csrf", "action_id", "case_version", "review_revision",
+                        "request_ref", "evidence_ref"}
+            if operation == "human-response":
+                required.add("decision_ref")
+            principal, form = await checked_browser_form(
+                request, sid, fields=frozenset(required), max_bytes=1200,
+                max_fields=8, max_value_length=120,
+            )
+            try:
+                if operation == "request":
+                    if form_version(form["review_revision"]) != 0:
+                        raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+                    technical_review_ledger.request_evidence_review(
+                        engine=engine_key, ref=ref, actor=principal,
+                        expected_case_version=form_version(
+                            form["case_version"], zero_allowed=False,
+                        ), expected_review_revision=0,
+                        action_id=form["action_id"], request_ref=form["request_ref"],
+                        evidence_ref=form["evidence_ref"],
+                    )
+                else:
+                    if form_version(form["review_revision"]) != 1:
+                        raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+                    technical_review_ledger.record_human_response(
+                        engine=engine_key, ref=ref, actor=principal,
+                        expected_case_version=form_version(
+                            form["case_version"], zero_allowed=False,
+                        ), expected_review_revision=1,
+                        action_id=form["action_id"], request_ref=form["request_ref"],
+                        evidence_ref=form["evidence_ref"],
+                        decision_ref=form["decision_ref"],
+                    )
+            except GrantNotAuthorized as exc:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND") from exc
+            except GrantConflict as exc:
+                raise HTTPException(409, detail="TECHNICAL_REVIEW_CHANGED") from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
+            return RedirectResponse(
+                "/admin/technical-review/" + engine.lower() + "/" + quote(ref),
+                status_code=303,
+            )
 
     if technical_review_ledger is not None:
         @router.get("/admin/export/research")

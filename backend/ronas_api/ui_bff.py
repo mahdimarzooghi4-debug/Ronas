@@ -3437,6 +3437,8 @@ def build_authenticated_ui_router(
                         + quote(ref) + '/evidence-reference/capture">'
                         '<input type="hidden" name="csrf" value="'
                         + escape(session.csrf, quote=True) + '">'
+                        '<input type="hidden" name="action_id" value="DEMO-UI-CAPTURE-'
+                        + secrets.token_hex(10).upper() + '">'
                         '<input type="hidden" name="case_version" value="'
                         + str(data["case_version"]) + '">'
                         '<input type="hidden" name="question_revision" value="'
@@ -3615,7 +3617,7 @@ def build_authenticated_ui_router(
                 principal, form = await checked_browser_form(
                     request, sid,
                     fields=frozenset({
-                        "csrf", "case_version", "question_revision",
+                        "csrf", "action_id", "case_version", "question_revision",
                         "evidence_revision", "connector_ref",
                     }),
                 )
@@ -3634,8 +3636,7 @@ def build_authenticated_ui_router(
                         expected_evidence_revision=form_version(
                             form["evidence_revision"],
                         ),
-                        action_id="DEMO-UI-CAPTURE-"
-                        + secrets.token_hex(10).upper(),
+                        action_id=form["action_id"],
                         connector_ref=form["connector_ref"],
                     )
                 except ExportEvidenceReferenceConflict as exc:

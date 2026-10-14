@@ -1204,6 +1204,8 @@ def build_authenticated_ui_router(
                         + quote(ref) + '/review-questions/demo-question">'
                         '<input type="hidden" name="csrf" value="'
                         + escape(session.csrf, quote=True) + '">'
+                        '<input type="hidden" name="action_id" value="DEMO-UI-Q-'
+                        + secrets.token_hex(10).upper() + '">
                         '<input type="hidden" name="case_version" value="'
                         + str(notes["case_version"]) + '">'
                         '<input type="hidden" name="input_revision" value="'
@@ -1229,6 +1231,8 @@ def build_authenticated_ui_router(
                             + quote(ref) + '/review-questions/demo-question">'
                             '<input type="hidden" name="csrf" value="'
                             + escape(session.csrf, quote=True) + '">'
+                            '<input type="hidden" name="action_id" value="DEMO-UI-Q-'
+                            + secrets.token_hex(10).upper() + '">
                             '<input type="hidden" name="case_version" value="'
                             + str(notes["case_version"]) + '">'
                             '<input type="hidden" name="input_revision" value="'
@@ -1267,6 +1271,8 @@ def build_authenticated_ui_router(
                             + quote(ref) + '/review-questions/demo-inspection">'
                             '<input type="hidden" name="csrf" value="'
                             + escape(session.csrf, quote=True) + '">'
+                            '<input type="hidden" name="action_id" value="DEMO-UI-I-'
+                            + secrets.token_hex(10).upper() + '">
                             '<input type="hidden" name="case_version" value="'
                             + str(notes["case_version"]) + '">'
                             '<input type="hidden" name="input_revision" value="'
@@ -1335,7 +1341,7 @@ def build_authenticated_ui_router(
         ) -> RedirectResponse:
             principal, form = await checked_browser_form(
                 request, sid, fields=frozenset({
-                    "csrf", "case_version", "input_revision",
+                    "csrf", "action_id", "case_version", "input_revision",
                     "question_revision", "track",
                 }), optional_fields=frozenset({
                     "stage_ref", "stage_observation_revision",
@@ -1358,7 +1364,7 @@ def build_authenticated_ui_router(
             try:
                 created = agronomy_workspace.record_assigned_synthetic_review_question(
                     ref, principal,
-                    action_id="DEMO-UI-Q-" + secrets.token_hex(10).upper(),
+                    action_id=form["action_id"],
                     track=track,
                     expected_case_version=form_version(
                         form["case_version"], zero_allowed=False,
@@ -1407,14 +1413,14 @@ def build_authenticated_ui_router(
         ) -> RedirectResponse:
             principal, form = await checked_browser_form(
                 request, sid, fields=frozenset({
-                    "csrf", "case_version", "input_revision",
+                    "csrf", "action_id", "case_version", "input_revision",
                     "question_revision",
                 }),
             )
             try:
                 checked = agronomy_workspace.inspect_assigned_synthetic_response_receipt(
                     ref, principal,
-                    action_id="DEMO-UI-I-" + secrets.token_hex(10).upper(),
+                    action_id=form["action_id"],
                     expected_case_version=form_version(
                         form["case_version"], zero_allowed=False,
                     ),

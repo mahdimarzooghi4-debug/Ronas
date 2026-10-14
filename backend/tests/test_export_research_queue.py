@@ -784,6 +784,17 @@ class ExportResearchQueueTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         digest = hashlib.sha256(b"opaque external snapshot bytes").hexdigest()
         self.assertEqual(response.json()["source_snapshot_digest"], digest)
+        disconnected_retry_client = self.client_for(
+            self.ledger, ExportSourceConnectorRegistry([]),
+        )
+        replay = disconnected_retry_client.post(
+            "/api/v1/admin/export/research/drafts/DEMO-E-001/"
+            "evidence-references/capture",
+            json=payload, headers=self.headers(),
+        )
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertEqual(replay.json(), response.json())
+        self.assertEqual(len(connector.calls), 1)
         self.assertEqual(response.json()["evidence_ref"],
                          "DEMO-EVIDENCE-CONNECTED")
         self.assertEqual(connector.calls, [(

@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import json
 import re
+import secrets
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -3198,10 +3199,13 @@ class LocalExpertQuestionTests(unittest.TestCase):
         return self.sessions[sid].csrf
 
     @staticmethod
-    def demo_form(csrf, *, qrev=0, irev=1, track=TRACKS[0]):
+    def demo_form(csrf, *, qrev=0, irev=1, track=TRACKS[0], action_id=None):
+        if action_id is None:
+            action_id = "DEMO-UI-Q-" + secrets.token_hex(10).upper()
         return {
-            "csrf": csrf, "case_version": "3", "input_revision": str(irev),
-            "question_revision": str(qrev), "track": track,
+            "csrf": csrf, "action_id": action_id, "case_version": "3",
+            "input_revision": str(irev), "question_revision": str(qrev),
+            "track": track,
         }
 
     def test_browser_complete_expert_owner_inspection_roundtrip(self):
@@ -3212,17 +3216,44 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200, page.text)
         self.assertIn("پرسش درباره کفایت داده", page.text)
         self.assertIn("form-action 'self'", page.headers["content-security-policy"])
+        question_action_ids = re.findall(
+            r'name="action_id" value="(DEMO-UI-Q-[A-Z0-9]+)"',
+            page.text,
+        )
+        self.assertEqual(len(question_action_ids), 3)
+        question_form = self.demo_form(
+            csrf, action_id=question_action_ids[0],
+        )
+        origin = {"Origin": "https://ronas.example.test"}
         posted = self.client.post(
-            base + "/demo-question", data=self.demo_form(csrf),
-            headers={"Origin": "https://ronas.example.test"},
+            base + "/demo-question", data=question_form, headers=origin,
             follow_redirects=False,
         )
         self.assertEqual(posted.status_code, 303, posted.text)
         self.assertEqual(posted.headers["location"], base)
+        replay = self.client.post(
+            base + "/demo-question", data=question_form, headers=origin,
+            follow_redirects=False,
+        )
+        self.assertEqual(replay.status_code, 303, replay.text)
+        conflicting_replay = dict(
+            question_form, track="SCIENTIFIC_BASIS_AND_USE_RIGHTS",
+        )
+        conflict = self.client.post(
+            base + "/demo-question", data=conflicting_replay,
+            headers=origin, follow_redirects=False,
+        )
+        self.assertEqual(conflict.status_code, 409)
+        with self.ledger._transaction() as db:
+            stored_questions = db.execute(
+                "SELECT count(*) FROM expert_review_question "
+                "WHERE ref='DEMO-D-1' AND track='HOUSEHOLD_INPUT_ADEQUACY'",
+            ).fetchone()[0]
+        self.assertEqual(stored_questions, 1)
         self.assertIn("پرسش آزمایشی 1", self.client.get(base).text)
         self.assertEqual(self.client.post(
             base + "/demo-question", data=self.demo_form(csrf),
-            headers={"Origin": "https://ronas.example.test"},
+            headers=origin,
         ).status_code, 409)
 
         csrf = self.login_browser_demo(OWNER, "household")
@@ -3271,24 +3302,40 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertIn("پاسخ ساختاری خانوار دریافت شده", view.text)
         self.assertNotIn("DEMO-REPLY-BETA", view.text)
         self.assertIn("ثبت مشاهده رسید پاسخ DEMO", view.text)
+        inspection_match = re.search(
+            r'name="action_id" value="(DEMO-UI-I-[A-Z0-9]+)"', view.text,
+        )
+        self.assertIsNotNone(inspection_match)
         observed = {
-            "csrf": csrf, "case_version": "3",
-            "input_revision": "1", "question_revision": "1",
+            "csrf": csrf, "action_id": inspection_match.group(1),
+            "case_version": "3", "input_revision": "1",
+            "question_revision": "1",
         }
         res = self.client.post(
             base + "/demo-inspection", data=observed,
-            headers={"Origin": "https://ronas.example.test"},
-            follow_redirects=False,
+            headers=origin, follow_redirects=False,
         )
         self.assertEqual(res.status_code, 303, res.text)
+        replay = self.client.post(
+            base + "/demo-inspection", data=observed,
+            headers=origin, follow_redirects=False,
+        )
+        self.assertEqual(replay.status_code, 303, replay.text)
         final = self.client.get(base)
         self.assertIn("رسید پاسخ مشاهده شد (بدون داوری تخصصی)", final.text)
         self.assertNotIn("DEMO-REPLY-BETA", final.text)
         self.assertNotIn("ثبت مشاهده رسید پاسخ DEMO", final.text)
+        conflicting_inspection = dict(observed, input_revision="2")
         self.assertEqual(self.client.post(
-            base + "/demo-inspection", data=observed,
-            headers={"Origin": "https://ronas.example.test"},
+            base + "/demo-inspection", data=conflicting_inspection,
+            headers=origin,
         ).status_code, 409)
+        with self.ledger._transaction() as db:
+            inspections = db.execute(
+                "SELECT count(*) FROM expert_response_receipt_inspection "
+                "WHERE ref='DEMO-D-1' AND question_revision=1",
+            ).fetchone()[0]
+        self.assertEqual(inspections, 1)
         self.assertTrue(self.reopen().verify_integrity())
 
     def test_browser_expert_question_rejects_csrf_origin_and_wrong_role(self):
@@ -3402,8 +3449,9 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertNotIn("DEMO-REPLY-ALPHA", inspect.text)
         response = self.client.post(
             qpath + "/demo-inspection",
-            data={"csrf": expert_csrf, "case_version": "3",
-                  "input_revision": "1", "question_revision": "1"},
+            data={"csrf": expert_csrf, "action_id": "DEMO-UI-I-NEXT-STEP",
+                  "case_version": "3", "input_revision": "1",
+                  "question_revision": "1"},
             headers={"Origin": "https://ronas.example.test"},
             follow_redirects=False,
         )

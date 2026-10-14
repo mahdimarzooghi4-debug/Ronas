@@ -483,9 +483,9 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
         asked = expert.post(
             "/agronomy/assigned-drafts/DEMO-D-1/review-questions/demo-question",
             data={
-                "csrf": expert_csrf, "case_version": "3",
-                "input_revision": "1", "question_revision": "0",
-                "track": "HOUSEHOLD_INPUT_ADEQUACY",
+                "csrf": expert_csrf, "action_id": "DEMO-UI-Q-KEYCLOAK",
+                "case_version": "3", "input_revision": "1",
+                "question_revision": "0", "track": "HOUSEHOLD_INPUT_ADEQUACY",
             },
             headers={"Origin": ORIGIN},
         )
@@ -521,8 +521,9 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
         inspected = expert.post(
             "/agronomy/assigned-drafts/DEMO-D-1/review-questions/demo-inspection",
             data={
-                "csrf": expert_csrf, "case_version": "3",
-                "input_revision": "1", "question_revision": "1",
+                "csrf": expert_csrf, "action_id": "DEMO-UI-I-KEYCLOAK",
+                "case_version": "3", "input_revision": "1",
+                "question_revision": "1",
             },
             headers={"Origin": ORIGIN},
         )

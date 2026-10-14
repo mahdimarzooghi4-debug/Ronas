@@ -1820,6 +1820,8 @@ def build_authenticated_ui_router(
                 + quote(ref) + '/input-revisions/demo-correction">'
                 '<input type="hidden" name="csrf" value="'
                 + escape(session.csrf, quote=True) + '">'
+                '<input type="hidden" name="action_id" value="DEMO-UI-D-'
+                + secrets.token_hex(10).upper() + '">'
                 '<input type="hidden" name="case_version" value="'
                 + str(result["case_version"]) + '">'
                 '<input type="hidden" name="input_revision" value="'
@@ -1934,6 +1936,8 @@ def build_authenticated_ui_router(
                     + '<form method="post" action="/my-drafts/' + quote(ref)
                     + '/cultivation-inputs"><input type="hidden" name="csrf" value="'
                     + escape(session.csrf, quote=True) + '">'
+                    '<input type="hidden" name="action_id" value="DEMO-PROFILE-'
+                    + secrets.token_hex(10).upper() + '">'
                     '<input type="hidden" name="case_version" value="'
                     + str(result["case_version"]) + '">'
                     '<input type="hidden" name="profile_revision" value="'
@@ -2358,12 +2362,12 @@ def build_authenticated_ui_router(
                 sid: str | None = Cookie(default=None, alias=cookie_name),
             ) -> RedirectResponse:
                 profile_fields = frozenset(
-                    {"csrf", "case_version", "profile_revision"}
+                    {"csrf", "action_id", "case_version", "profile_revision"}
                     | {field.key for field in household_profile_schema.fields}
                 )
                 principal, form = await checked_browser_form(
                     request, sid, fields=profile_fields,
-                    max_bytes=8192, max_fields=9,
+                    max_bytes=8192, max_fields=10,
                     max_value_length=300,
                 )
                 try:
@@ -2383,7 +2387,7 @@ def build_authenticated_ui_router(
                 try:
                     saved = household_input_ledger.append_owned_profile(
                         ref, principal,
-                        action_id="DEMO-PROFILE-" + secrets.token_hex(10).upper(),
+                        action_id=form["action_id"],
                         expected_case_version=form_version(
                             form["case_version"], zero_allowed=False,
                         ),
@@ -2415,7 +2419,7 @@ def build_authenticated_ui_router(
             principal, form = await checked_browser_form(
                 request, sid,
                 fields=frozenset({
-                    "csrf", "case_version", "input_revision", "scenario",
+                    "csrf", "action_id", "case_version", "input_revision", "scenario",
                 }),
             )
             scenario = form["scenario"]
@@ -2431,7 +2435,7 @@ def build_authenticated_ui_router(
             try:
                 updated = household_input_ledger.append_owned_input_manifest(
                     ref, principal,
-                    action_id="DEMO-UI-D-" + secrets.token_hex(10).upper(),
+                    action_id=form["action_id"],
                     expected_case_version=case_version,
                     expected_input_revision=observed,
                     synthetic_manifest_digest=digest,

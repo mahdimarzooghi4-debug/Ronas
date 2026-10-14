@@ -839,6 +839,7 @@ class ExportResearchQueueTests(unittest.TestCase):
         session = self.store.get_session(sid)
         return {
             "csrf": session.csrf if csrf is None else csrf,
+            "action_id": "DEMO-UI-ER-TEST",
             "case_version": str(case_version),
             "question_revision": str(question_rev),
             "evidence_revision": str(evidence_rev),
@@ -866,6 +867,11 @@ class ExportResearchQueueTests(unittest.TestCase):
         self.assertIn("c" * 64, rendered.text)
         self.assertEqual(self.client.post(
             route, data=payload, headers={"Origin": ORIGIN},
+            follow_redirects=False,
+        ).status_code, 303)
+        self.assertEqual(self.client.post(
+            route, data={**payload, "source_snapshot_digest": "d" * 64},
+            headers={"Origin": ORIGIN},
         ).status_code, 409)
         self.assertEqual(self.client.post(
             route, data=payload,
@@ -1127,6 +1133,7 @@ class ExportResearchQueueTests(unittest.TestCase):
         session = self.store.get_session(sid)
         return {
             "csrf": session.csrf if csrf is None else csrf,
+            "action_id": "DEMO-UI-E-TEST" + str(rev + 1),
             "case_version": str(case_version),
             "question_revision": str(rev),
             "product_ref": product,
@@ -1149,6 +1156,11 @@ class ExportResearchQueueTests(unittest.TestCase):
         self.assertIn("DEMO-PRODUCT-ALPHA", self.client.get(base).text)
         self.assertEqual(self.client.post(
             base + "/local-test-question", data=payload,
+            headers={"Origin": ORIGIN}, follow_redirects=False,
+        ).status_code, 303)
+        self.assertEqual(self.client.post(
+            base + "/local-test-question",
+            data={**payload, "destination_ref": "DEMO-DEST-BETA"},
             headers={"Origin": ORIGIN},
         ).status_code, 409)
         second = self.client.post(base + "/local-test-question",

@@ -384,7 +384,12 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
         before = admin.get(base)
         self.assertEqual(before.status_code, 200, before.text)
         self.assertIn("ثبت پرسش آزمایشی", before.text)
-        form = {"csrf": csrf, "case_version": "2", "question_revision": "0",
+        rendered_question_action = re.search(
+            r'name="action_id" value="(DEMO-UI-E-[A-Z0-9]+)"', before.text,
+        )
+        self.assertIsNotNone(rendered_question_action)
+        form = {"csrf": csrf, "action_id": rendered_question_action.group(1),
+                "case_version": "2", "question_revision": "0",
                 "product_ref": "DEMO-PRODUCT-ALPHA",
                 "destination_ref": "DEMO-DEST-BETA"}
         created = admin.post(
@@ -392,11 +397,46 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
             headers={"Origin": ORIGIN},
         )
         self.assertEqual(created.status_code, 303, created.text)
-        self.assertIn("DEMO-PRODUCT-ALPHA", admin.get(base).text)
-        self.assertEqual(admin.post(
+        question_page = admin.get(base)
+        self.assertIn("DEMO-PRODUCT-ALPHA", question_page.text)
+        replayed_question = admin.post(
             base + "/local-test-question", data=form,
             headers={"Origin": ORIGIN},
-        ).status_code, 409)
+        )
+        self.assertEqual(replayed_question.status_code, 303, replayed_question.text)
+        changed_question = admin.post(
+            base + "/local-test-question",
+            data={**form, "destination_ref": "DEMO-DEST-ALPHA"},
+            headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(changed_question.status_code, 409)
+
+        rendered_evidence_action = re.search(
+            r'name="action_id" value="(DEMO-UI-ER-[A-Z0-9]+)"', question_page.text,
+        )
+        self.assertIsNotNone(rendered_evidence_action)
+        evidence_form = {
+            "csrf": csrf, "action_id": rendered_evidence_action.group(1),
+            "case_version": "2", "question_revision": "1",
+            "evidence_revision": "0", "evidence_ref": "DEMO-EVIDENCE-ALPHA",
+            "connector_ref": "DEMO-CONNECTOR-ALPHA",
+            "source_snapshot_digest": "a" * 64,
+        }
+        evidence_route = base + "/evidence-reference"
+        recorded_evidence = admin.post(
+            evidence_route, data=evidence_form, headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(recorded_evidence.status_code, 303, recorded_evidence.text)
+        replayed_evidence = admin.post(
+            evidence_route, data=evidence_form, headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(replayed_evidence.status_code, 303, replayed_evidence.text)
+        changed_evidence = admin.post(
+            evidence_route,
+            data={**evidence_form, "source_snapshot_digest": "b" * 64},
+            headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(changed_evidence.status_code, 409)
         response = admin.get(
             "/api/v1/admin/export/research/drafts/DEMO-E-1/workspace",
         )

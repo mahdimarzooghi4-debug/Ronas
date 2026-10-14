@@ -27,7 +27,9 @@ from .agronomy_workspace import SyntheticAgronomyWorkspace
 from .household_input_profiles import HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger
 from .domestic_stage_observation import CurrentStageContext
 from .stage_observation_artifacts import StageArtifactStore
-from .domestic_surplus_drafts import SqliteSyntheticSurplusDraftLedger
+from .domestic_surplus_drafts import (
+    SurplusDraftLedger, is_surplus_draft_ledger,
+)
 
 
 class LocalBFFConfigurationError(ValueError):
@@ -145,8 +147,7 @@ def _validate_synthetic_composition(
             "surplus readiness requires the shared household profile authority"
         )
     if household_surplus_draft_ledger is not None and (
-            not isinstance(household_surplus_draft_ledger,
-                            SqliteSyntheticSurplusDraftLedger)
+            not is_surplus_draft_ledger(household_surplus_draft_ledger)
             or not isinstance(case_ledger, SqliteSyntheticHouseholdProfileLedger)
             or household_profile_schema is None
             or not callable(household_profile_access_authority)
@@ -175,7 +176,7 @@ def _compose_local_test_bff(
     household_stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
     household_stage_artifact_store: StageArtifactStore | None = None,
     household_surplus_publication_authority=None,
-    household_surplus_draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
+    household_surplus_draft_ledger: SurplusDraftLedger | None = None,
 ) -> FastAPI:
     _validate_synthetic_composition(
         case_ledger, agronomy_workspace, household_profile_schema,
@@ -225,7 +226,7 @@ def create_local_test_bff(
     household_stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
     household_stage_artifact_store: StageArtifactStore | None = None,
     household_surplus_publication_authority=None,
-    household_surplus_draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
+    household_surplus_draft_ledger: SurplusDraftLedger | None = None,
 ) -> FastAPI:
     """Explicit local SQLite BFF composition; default app remains disabled."""
     if not isinstance(settings, LocalBFFSettings):
@@ -321,7 +322,7 @@ def create_postgres_local_test_bff(
     household_stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
     household_stage_artifact_store: StageArtifactStore | None = None,
     household_surplus_publication_authority=None,
-    household_surplus_draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
+    household_surplus_draft_ledger: SurplusDraftLedger | None = None,
 ) -> FastAPI:
     """Opt-in LOCAL/TEST composition using the shared PostgreSQL session adapter."""
     if not isinstance(settings, PostgresLocalBFFSettings):

@@ -40,7 +40,9 @@ from .gate_evidence_handoff_api import build_gate_handoff_read_router
 from .gate_evidence_authority_enquiry_sqlite import SqliteSyntheticAuthorityEnquiryLedger
 from .gate_evidence_authority_enquiry_api import build_authority_enquiry_read_router
 from .domestic_surplus_publication_api import build_domestic_surplus_publication_router
-from .domestic_surplus_drafts import SqliteSyntheticSurplusDraftLedger
+from .domestic_surplus_drafts import (
+    SurplusDraftLedger, is_surplus_draft_ledger,
+)
 from .domestic_surplus_drafts_api import build_domestic_surplus_drafts_router
 
 DOMESTIC_EXAMPLE = {
@@ -69,7 +71,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                household_stage_context_authority=None,
                household_stage_artifact_store: StageArtifactStore | None = None,
                household_surplus_publication_authority=None,
-               household_surplus_draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
+               household_surplus_draft_ledger: SurplusDraftLedger | None = None,
                export_source_connectors: ExportSourceConnectorRegistry | None = None) -> FastAPI:
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
@@ -101,8 +103,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             "surplus publication readiness requires the shared owner-scoped household ledger"
         )
     if household_surplus_draft_ledger is not None and (
-            not isinstance(household_surplus_draft_ledger,
-                            SqliteSyntheticSurplusDraftLedger)
+            not is_surplus_draft_ledger(household_surplus_draft_ledger)
             or not isinstance(config, KeycloakConfig)
             or browser_flow is None
             or not isinstance(scoped_registry, SqliteSyntheticHouseholdProfileLedger)

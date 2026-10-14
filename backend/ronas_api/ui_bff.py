@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 61100)
+Total output lines: 4377
+
 """Two authenticated, strictly role-scoped HTML shells for opt-in Keycloak BFF.
 
 The default production entrypoint never mounts these routes. The HTML is
@@ -72,7 +75,8 @@ from .gate_evidence_handoff_sqlite import SqliteSyntheticGateEvidenceHandoff
 from .gate_evidence_authority_enquiry_sqlite import SqliteSyntheticAuthorityEnquiryLedger
 from .domestic_surplus_publication_api import publication_readiness_snapshot
 from .domestic_surplus_drafts import (
-    SurplusDraftConflict, SqliteSyntheticSurplusDraftLedger,
+    SurplusDraftConflict, SurplusDraftLedger,
+    is_surplus_draft_ledger,
 )
 ADMIN_ROLES = {
     "domestic_ops": "عملیات داخلی",
@@ -333,7 +337,7 @@ def build_authenticated_ui_router(
     household_stage_artifact_store: StageArtifactStore | None = None,
     export_source_connectors: ExportSourceConnectorRegistry | None = None,
     household_surplus_publication_authority=None,
-    household_surplus_draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
+    household_surplus_draft_ledger: SurplusDraftLedger | None = None,
 ) -> APIRouter:
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
@@ -350,8 +354,7 @@ def build_authenticated_ui_router(
             "surplus readiness UI requires the same owner-scoped household profile ledger"
         )
     if household_surplus_draft_ledger is not None and (
-            not isinstance(household_surplus_draft_ledger,
-                            SqliteSyntheticSurplusDraftLedger)
+            not is_surplus_draft_ledger(household_surplus_draft_ledger)
             or not isinstance(household_input_ledger,
                               SqliteSyntheticHouseholdProfileLedger)
             or household_input_ledger is not technical_review_ledger
@@ -2183,79 +2186,7 @@ def build_authenticated_ui_router(
                 try:
                     session = flow.session(sid)
                 except InvalidToken:
-                    raise HTTPException(401, detail="INVALID_SESSION") from None
-                principal = Principal(session.subject, session.roles)
-                try:
-                    permitted = household_profile_access_authority(
-                        principal, ref, household_profile_schema.schema_ref,
-                    )
-                except Exception as exc:
-                    raise HTTPException(
-                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
-                    ) from exc
-                if permitted is not True:
-                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
-                try:
-                    result = household_input_ledger.compare_owned_profile_revisions(
-                        ref, principal, before_revision, after_revision,
-                    )
-                except ValueError as exc:
-                    raise HTTPException(
-                        422, detail="INVALID_HOUSEHOLD_PROFILE_COMPARISON",
-                    ) from exc
-                except (LedgerIntegrityError, sqlite3.Error) as exc:
-                    raise HTTPException(503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE") from exc
-                if result is None:
-                    raise HTTPException(404, detail="PROFILE_COMPARISON_NOT_FOUND")
-                if result["schema_changed"]:
-                    comparison = (
-                        '<p role="status">ساختار فرم بین این نسخه‌ها تغییر کرده؛ '
-                        'برای جلوگیری از مقایسه نادرست، مقادیر نمایش داده نمی‌شوند.</p>'
-                    )
-                elif result["changes"]:
-                    rows = ''.join(
-                        '<tr><th scope="row">' + escape(field.label)
-                        + '</th><td>' + escape(change["before"])
-                        + '</td><td>' + escape(change["after"])
-                        + '</td></tr>'
-                        for change in result["changes"]
-                        for field in household_profile_schema.fields
-                        if field.key == change["key"]
-                    )
-                    comparison = (
-                        '<table><caption>تغییرات بین نسخه '
-                        + str(before_revision) + ' و ' + str(after_revision)
-                        + '</caption><thead><tr><th scope="col">فیلد</th>'
-                        '<th scope="col">مقدار قبلی</th><th scope="col">مقدار جدید</th>'
-                        '</tr></thead><tbody>' + rows + '</tbody></table>'
-                    )
-                else:
-                    comparison = '<p>تغییری بین این دو نسخه ثبت نشده است.</p>'
-                body = (
-                    '<article class="panel"><h2>مقایسه نسخه‌های اطلاعات خانوار</h2>'
-                    '<p>پرونده ' + escape(ref) + ' · نسخه ' + str(before_revision)
-                    + ' ← نسخه ' + str(after_revision) + '</p>' + comparison
-                    + '<p>این مقایسه فقط اختلاف ثبت‌شده را نشان می‌دهد؛ '
-                    'اعتبار علمی یا وضعیت کشت را ارزیابی نمی‌کند.</p>'
-                    '<p><a href="/my-drafts/' + quote(ref)
-                    + '/cultivation-inputs">بازگشت به اطلاعات پرونده</a></p>'
-                    '</article>'
-                )
-                return page("روناس — مقایسه نسخه‌های اطلاعات",
-                            body, logged_in=True, local_test_form=True)
-
-            if household_stage_context_authority is not None:
-                if household_stage_artifact_store is not None:
-                    @router.put("/my-drafts/{ref}/stage-observations/artifacts")
-                    async def household_stage_artifact_upload(
-                        ref: str, request: Request,
-                        sid: str | None = Cookie(default=None, alias=cookie_name),
-                    ) -> JSONResponse:
-                        if request.headers.get("origin") != flow.config.origin:
-                            raise HTTPException(403, detail="ORIGIN_REQUIRED")
-                        try:
-                            session = flow.session(sid)
-                        except InvalidToken:
+                    raise HTTPExcepti…1100 tokens truncated…validToken:
                             raise HTTPException(401, detail="INVALID_SESSION") from None
                         csrf = request.headers.get("x-csrf-token", "")
                         if not hmac.compare_digest(session.csrf, csrf):

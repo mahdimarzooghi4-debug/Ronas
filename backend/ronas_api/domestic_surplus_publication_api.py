@@ -10,7 +10,7 @@ from .scoped_drafts import _synthetic_ref
 from .domestic_surplus_publication import (
     OfferRevision, PublicationAuthorities, evaluate_surplus_publication,
 )
-from .domestic_surplus_drafts import SqliteSyntheticSurplusDraftLedger
+from .domestic_surplus_drafts import SurplusDraftLedger, is_surplus_draft_ledger
 
 PublicationAuthority = Callable[
     [Principal, str, str],
@@ -23,7 +23,7 @@ def publication_readiness_snapshot(
     principal: Principal,
     household_ref: str,
     offer_ref: str,
-    draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
+    draft_ledger: SurplusDraftLedger | None = None,
 ) -> dict:
     """One owner and version check shared by API and authenticated UI."""
     if (not isinstance(principal, Principal)
@@ -100,12 +100,12 @@ def publication_readiness_snapshot(
 def build_domestic_surplus_publication_router(
     authority: PublicationAuthority,
     verified_principal: Callable[..., Principal],
-    draft_ledger: SqliteSyntheticSurplusDraftLedger | None = None,
+    draft_ledger: SurplusDraftLedger | None = None,
 ) -> APIRouter:
     """Mount only with a live, owner-scoped authority resolver."""
     if (not callable(authority) or not callable(verified_principal)
             or (draft_ledger is not None
-                and not isinstance(draft_ledger, SqliteSyntheticSurplusDraftLedger))):
+                and not is_surplus_draft_ledger(draft_ledger))):
         raise ValueError("trusted publication and identity authorities required")
     router = APIRouter()
 

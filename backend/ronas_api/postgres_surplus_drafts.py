@@ -264,7 +264,9 @@ class PostgresSurplusDraftLedger:
                 db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                            ("ronas-surplus-action:" + action_id,))
                 db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                           ("ronas-surplus-offer:" + household_ref + "\x00" + offer_ref,))
+                           ("ronas-surplus-offer:" + json.dumps(
+                               [household_ref, offer_ref], separators=(",", ":"),
+                           ),))
                 replay = db.execute(
                     "SELECT * FROM ronas_domestic_surplus_draft_revision WHERE action_id=%s",
                     (action_id,),

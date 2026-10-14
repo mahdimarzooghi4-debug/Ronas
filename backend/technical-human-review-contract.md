@@ -243,7 +243,9 @@ human-review ledger as its scoped-case registry, the server-side
 technical-review worklist in their existing Domestic and/or Export
 management domain. Rows link to `/admin/technical-review/{engine}/{ref}`;
 the case page shows the authorized synthetic history and offers the existing
-request command, then the response-reference form. Every mutation rechecks
+request command, then the response-reference form. Once a response is
+recorded, another request may be appended at the current revision. Review
+entries alternate request and response in the same immutable history. Every mutation rechecks
 the signed session, exact Origin and CSRF token, exact grant, expected case
 version and revision. The independent human authorizer is checked inside the
 same ledger transaction before a response can be recorded. Next-page links
@@ -268,7 +270,8 @@ seed/grant filtering, Domestic/Export isolation, live status,
 revocation, concurrent reads, corrupted history, transactional audit,
 invalid query, default-disabled routes, unified admin rendering,
 session revocation and role-specific display. New regressions exercise the
-complete two-step BrowserOIDC UI flow, CSRF rejection, exact replay and
+complete BrowserOIDC UI flow, CSRF rejection, exact replay, repeatable
+review cycles and
 independent assigned response actor. No real IdP or business execution was
 used.
 

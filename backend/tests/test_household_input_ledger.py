@@ -1,6 +1,7 @@
 """Signed LOCAL/TEST synthetic household manifest revisions — no real consent."""
 from concurrent.futures import ThreadPoolExecutor
 import json
+import re
 from pathlib import Path
 import secrets
 import sqlite3
@@ -684,22 +685,45 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         before = self.client.get(route)
         self.assertEqual(before.status_code, 200, before.text)
         self.assertIn("یادداشت‌های پیشرفت", before.text)
+        action = re.search(
+            r'name="action_id" value="(DEMO-PROGRESS-[A-Z0-9]+)"',
+            before.text,
+        )
+        self.assertIsNotNone(action)
         form = {
             "csrf": self.sessions.get_session(self.client.cookies.get("__Host-ronas_session")).csrf,
+            "action_id": action.group(1),
             "case_version": "3", "revision": "0",
             "reported_at": "2026-10-12T10:30:00+03:30",
             "note": 'DEMO: <script>alert("x")</script>',
         }
-        good = {**form, "note": 'DEMO: <script>alert("x")</script>'}
-        self.assertEqual(self.client.post(route, data=good, headers={"Origin": "https://evil.test"}).status_code, 403)
-        self.assertEqual(self.client.post(route, data={**good, "csrf": "wrong"},
-                                          headers={"Origin": ORIGIN}).status_code, 403)
-        saved = self.client.post(route, data=good, headers={"Origin": ORIGIN},
-                                 follow_redirects=False)
+        good = dict(form)
+        self.assertEqual(self.client.post(
+            route, data=good, headers={"Origin": "https://evil.test"},
+        ).status_code, 403)
+        self.assertEqual(self.client.post(
+            route, data={**good, "csrf": "wrong"}, headers={"Origin": ORIGIN},
+        ).status_code, 403)
+        saved = self.client.post(
+            route, data=good, headers={"Origin": ORIGIN}, follow_redirects=False,
+        )
         self.assertEqual(saved.status_code, 303, saved.text)
+        replay = self.client.post(
+            route, data=good, headers={"Origin": ORIGIN}, follow_redirects=False,
+        )
+        self.assertEqual(replay.status_code, 303, replay.text)
+        changed_replay = self.client.post(
+            route, data={**good, "note": "DEMO: changed"},
+            headers={"Origin": ORIGIN}, follow_redirects=False,
+        )
+        self.assertEqual(changed_replay.status_code, 409, changed_replay.text)
         view = self.client.get(route)
         self.assertIn("&lt;script&gt;", view.text)
         self.assertNotIn("<script>", view.text)
+        self.assertEqual(view.text.count("<li><time>"), 1)
+        self.assertEqual(self.ledger.read_owned_progress_notes(
+            "DEMO-D-1", Principal(OWNER, frozenset({"household"})),
+        )["current_revision"], 1)
         self.assertEqual(self.client.get("/my-drafts/DEMO-D-1").status_code, 200)
         self.assertIn("/my-drafts/DEMO-D-1/progress-notes",
                       self.client.get("/my-drafts/DEMO-D-1").text)

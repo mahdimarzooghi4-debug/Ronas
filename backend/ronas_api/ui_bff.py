@@ -874,7 +874,10 @@ def build_authenticated_ui_router(
                         '</form>'
                     )
                 items.append(
-                    '<section><h3>' + escape(item["stage_ref"]) + '</h3>'
+                    '<section id="observation-'
+                    + escape(item["stage_ref"], quote=True) + '-'
+                    + str(item["revision"]) + '"><h3>'
+                    + escape(item["stage_ref"]) + '</h3>'
                     '<p>نسخه رسید: ' + str(item["revision"])
                     + ' · ' + escape(state) + '</p>'
                     '<p>زمان ثبت: ' + escape(item["observed_at"]) + '</p>'
@@ -1308,6 +1311,11 @@ def build_authenticated_ui_router(
                 + ' · ارجاع شاهد ' + escape(q["draft_evidence_ref"])
                 + (' · متصل به رسید مرحله ' + escape(q["stage_ref"])
                    + ' · نسخه ' + str(q["stage_observation_revision"])
+                   + ' · <a href="/agronomy/assigned-drafts/' + quote(ref)
+                   + '/stage-observations#observation-'
+                   + quote(q["stage_ref"], safe="") + '-'
+                   + str(q["stage_observation_revision"])
+                   + '">دیدن همان رسید مرحله‌ای</a>'
                    if q.get("stage_ref") else '')
                 + (' · پاسخ ساختاری خانوار دریافت شده (بررسی نشده)'
                    if q["synthetic_household_response_received"]

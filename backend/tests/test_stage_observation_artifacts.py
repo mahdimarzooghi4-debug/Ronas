@@ -171,7 +171,7 @@ class StageArtifactRouterTests(unittest.TestCase):
     def test_declared_upload_length_is_validated_before_body_read(self):
         self.assertIsNone(_declared_upload_size(None))
         self.assertEqual(_declared_upload_size("17"), 17)
-        for value in ("-1", "not-a-number", "1.5"):
+        for value in ("-1", "+1", " 1", "not-a-number", "1.5"):
             with self.subTest(value=value), self.assertRaises(HTTPException) as raised:
                 _declared_upload_size(value)
             self.assertEqual(raised.exception.status_code, 400)

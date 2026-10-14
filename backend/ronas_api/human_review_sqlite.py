@@ -672,6 +672,60 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             for row in rows
         ]
 
+    def replay_export_evidence_capture(
+        self, ref: str, principal: Principal, *,
+        expected_case_version: int, expected_question_revision: int,
+        expected_evidence_revision: int, action_id: str, connector_ref: str,
+    ) -> tuple[bool, dict | None]:
+        """Resolve a committed capture retry before fetching external bytes."""
+        if (not _synthetic_ref(ref)
+                or type(expected_case_version) is not int
+                or type(expected_question_revision) is not int
+                or expected_question_revision < 1
+                or type(expected_evidence_revision) is not int
+                or expected_evidence_revision < 0
+                or not _synthetic_ref(action_id)
+                or not _synthetic_ref(connector_ref)
+                or not connector_ref.startswith("DEMO-CONNECTOR-")):
+            raise ValueError("invalid DEMO Export capture retry")
+        with self._transaction() as db:
+            self._verify(db)
+            record = self._catalogue.get(("EXPORT", ref))
+            if (record is None
+                    or not self._active_operator(db, "EXPORT", ref, principal)):
+                return True, None
+            if record.version != expected_case_version:
+                raise ExportEvidenceReferenceConflict("stale Export case version")
+            question = self._current_export_question(db, ref)
+            if (question is None
+                    or question["question_revision"] != expected_question_revision):
+                raise ExportEvidenceReferenceConflict("stale Export question revision")
+            replay = db.execute(
+                "SELECT ref,case_version,question_revision,revision,actor_digest,"
+                "source_ref,connector_ref FROM export_research_evidence_reference "
+                "WHERE action_id=?", (action_id,),
+            ).fetchone()
+            if replay is None:
+                return False, None
+            current = db.execute(
+                "SELECT COALESCE(MAX(revision),0) "
+                "FROM export_research_evidence_reference "
+                "WHERE ref=? AND question_revision=?",
+                (ref, expected_question_revision),
+            ).fetchone()[0]
+            if (replay != (
+                    ref, record.version, expected_question_revision,
+                    expected_evidence_revision + 1, _hash(principal.subject),
+                    record.source_ref, connector_ref,
+                ) or current != replay[3]):
+                raise ExportEvidenceReferenceConflict(
+                    "stale or conflicting evidence-capture action",
+                )
+            history = self._export_evidence_reference_history(
+                db, ref, expected_question_revision,
+            )
+            return True, history[-1]
+
     def record_export_evidence_reference(
         self, ref: str, principal: Principal, *,
         expected_case_version: int, expected_question_revision: int,

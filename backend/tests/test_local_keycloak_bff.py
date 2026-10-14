@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import stat
@@ -342,7 +343,12 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
         before = owner.get(base)
         self.assertEqual(before.status_code, 200, before.text)
         self.assertIn("ثبت نسخه DEMO", before.text)
-        form = {"csrf": csrf, "case_version": "3", "input_revision": "0",
+        rendered_action = re.search(
+            r'name="action_id" value="(DEMO-UI-D-[A-Z0-9]+)"', before.text,
+        )
+        self.assertIsNotNone(rendered_action)
+        form = {"csrf": csrf, "action_id": rendered_action.group(1),
+                "case_version": "3", "input_revision": "0",
                 "scenario": "DEMO-MANIFEST-ALPHA"}
         written = owner.post(
             base + "/demo-correction", data=form, headers={"Origin": ORIGIN},
@@ -355,9 +361,16 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
             "DEMO-D-1", Principal("synthetic-household-one",
                                  frozenset({"household"})),
         )["input_revisions"], [1])
-        self.assertEqual(owner.post(
+        replay = owner.post(
             base + "/demo-correction", data=form, headers={"Origin": ORIGIN},
-        ).status_code, 409)
+        )
+        self.assertEqual(replay.status_code, 303, replay.text)
+        stale = owner.post(
+            base + "/demo-correction",
+            data={**form, "action_id": "DEMO-UI-D-KEYCLOAK-STALE"},
+            headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(stale.status_code, 409)
         self.assertEqual(owner.get("/admin").status_code, 403)
         self.assertTrue(ledger.verify_integrity())
 
@@ -438,7 +451,8 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
         submitted = owner.post(
             "/my-drafts/DEMO-D-1/input-revisions/demo-correction",
             data={
-                "csrf": owner_csrf, "case_version": "3", "input_revision": "0",
+                "csrf": owner_csrf, "action_id": "DEMO-UI-D-KEYCLOAK-2",
+                "case_version": "3", "input_revision": "0",
                 "scenario": "DEMO-MANIFEST-ALPHA",
             },
             headers={"Origin": ORIGIN},

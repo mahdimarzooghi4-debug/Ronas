@@ -378,6 +378,71 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 "science_validated": False, "plan_accepted": False,
             }
 
+    def compare_owned_profile_revisions(
+        self, ref: str, principal: Principal, before_revision: int,
+        after_revision: int,
+    ) -> dict | None:
+        """Compare two owner revisions only when both share today's schema.
+
+        The read and audit are one transaction. A schema mismatch deliberately
+        returns no values, preventing old fields from being mislabelled under
+        a newer catalogue.
+        """
+        if (type(before_revision) is not int or before_revision < 1
+                or type(after_revision) is not int or after_revision < 1
+                or before_revision >= after_revision):
+            raise ValueError("profile comparison requires ordered revisions")
+        with self._transaction() as db:
+            self._verify(db)
+            if not self._owner(ref, principal):
+                return None
+            record = self._catalogue["DOMESTIC", ref]
+            rows = db.execute(
+                "SELECT revision,schema_ref,schema_version,schema_digest,values_json "
+                "FROM household_profile_revision WHERE ref=? AND revision IN (?,?) "
+                "ORDER BY revision",
+                (ref, before_revision, after_revision),
+            ).fetchall()
+            if len(rows) != 2:
+                self._append(
+                    db, kind="READ_DENIED", engine="DOMESTIC", ref=ref,
+                    actor=principal.subject,
+                    mode=f"HOUSEHOLD_PROFILE_COMPARE:{before_revision}:{after_revision}",
+                )
+                return None
+            expected_schema = (
+                self.profile_schema.schema_ref, self.profile_schema.version,
+                self.profile_schema.digest,
+            )
+            compatible = all(row[1:4] == expected_schema for row in rows)
+            changes = []
+            if compatible:
+                before_values, after_values = (
+                    json.loads(row[4]) for row in rows
+                )
+                changes = [
+                    {"key": field.key, "before": before_values.get(field.key, ""),
+                     "after": after_values.get(field.key, "")}
+                    for field in self.profile_schema.fields
+                    if before_values.get(field.key, "")
+                       != after_values.get(field.key, "")
+                ]
+            self._append(
+                db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
+                actor=principal.subject,
+                mode=f"HOUSEHOLD_PROFILE_COMPARE:{before_revision}:{after_revision}",
+            )
+            return {
+                "engine": "DOMESTIC", "ref": ref,
+                "case_version": record.version,
+                "before_revision": before_revision,
+                "after_revision": after_revision,
+                "schema_changed": not compatible,
+                "changes": changes,
+                "purpose_consent_verified": False,
+                "science_validated": False, "plan_accepted": False,
+            }
+
     def read_owned_profile(self, ref: str, principal: Principal) -> dict | None:
         with self._transaction() as db:
             self._verify(db)

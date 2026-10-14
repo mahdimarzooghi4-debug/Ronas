@@ -906,6 +906,17 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(history.status_code, 200, history.text)
         self.assertIn("sample ui value", history.text)
         self.assertNotIn("newer synthetic value", history.text)
+        self.assertIn("/cultivation-inputs/compare", self.client.get(PAGE).text)
+        comparison = self.client.get(
+            PAGE + "/compare?before_revision=1&after_revision=2",
+        )
+        self.assertEqual(comparison.status_code, 200, comparison.text)
+        self.assertIn("sample ui value", comparison.text)
+        self.assertIn("newer synthetic value", comparison.text)
+        self.assertIn("گزینه", comparison.text)
+        self.assertEqual(self.client.get(
+            PAGE + "/compare?before_revision=2&after_revision=1",
+        ).status_code, 422)
         bad = dict(form, csrf="wrong")
         rejected = self.client.post(
             PAGE, content=urlencode(bad),
@@ -918,6 +929,13 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(default.get(ROOT).status_code, 404)
         self.assertEqual(default.post(ROOT, json=self.command()).status_code, 404)
         self.client.post(ROOT, json=self.command(), headers=self.bearer())
+        self.client.post(
+            ROOT, json=self.command(
+                revision=1, action="DEMO-PROFILE-SCHEMA-CHANGE-2",
+                values={"field_alpha": "second old-schema value",
+                        "field_choice": "sample-b"},
+            ), headers=self.bearer(),
+        )
         changed = HouseholdInputSchema(
             "RONAS-DOMESTIC-INPUT", 2,
             (HouseholdInputField("other_field", "فیلد جدید"),),
@@ -938,6 +956,36 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         )
         self.assertTrue(old_revision["schema_changed"])
         self.assertEqual(old_revision["values"], {})
+        comparison = changed_ledger.compare_owned_profile_revisions(
+            REF, Principal(OWNER, frozenset({"household"})), 1, 2,
+        )
+        self.assertTrue(comparison["schema_changed"])
+        self.assertEqual(comparison["changes"], [])
+
+    def test_profile_revision_comparison_is_owner_scoped_ordered_and_audited(self):
+        owner = Principal(OWNER, frozenset({"household"}))
+        first = self.ledger.append_owned_profile(
+            REF, owner, action_id="DEMO-PROFILE-COMPARE-1",
+            expected_case_version=2, expected_revision=0,
+            values={"field_alpha": "private before", "field_choice": "sample-a"},
+        )
+        self.ledger.append_owned_profile(
+            REF, owner, action_id="DEMO-PROFILE-COMPARE-2",
+            expected_case_version=2, expected_revision=1,
+            values={"field_alpha": "private after", "field_choice": "sample-a"},
+        )
+        result = self.ledger.compare_owned_profile_revisions(REF, owner, 1, 2)
+        self.assertEqual(first["profile_revision"], 1)
+        self.assertEqual(result["changes"], [{
+            "key": "field_alpha", "before": "private before", "after": "private after",
+        }])
+        self.assertIsNone(self.ledger.compare_owned_profile_revisions(
+            REF, Principal("synthetic-other", frozenset({"household"})), 1, 2,
+        ))
+        self.assertIsNone(self.ledger.compare_owned_profile_revisions(REF, owner, 1, 3))
+        with self.assertRaises(ValueError):
+            self.ledger.compare_owned_profile_revisions(REF, owner, 2, 1)
+        self.assertTrue(self.ledger.verify_integrity())
 
     def test_tampered_profile_history_fails_closed(self):
         self.client.post(ROOT, json=self.command(), headers=self.bearer())

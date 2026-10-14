@@ -1958,6 +1958,11 @@ def build_authenticated_ui_router(
                     + str(item["revision"]) + '</a></li>'
                     for item in result["revisions"]
                 )
+                revision_options = ''.join(
+                    '<option value="' + str(item["revision"]) + '">نسخه '
+                    + str(item["revision"]) + '</option>'
+                    for item in result["revisions"]
+                )
                 fields = frozenset(
                     {"csrf", "case_version", "profile_revision"}
                     | {field.key for field in household_profile_schema.fields}
@@ -1995,6 +2000,16 @@ def build_authenticated_ui_router(
                      + '<h3>تاریخچه اصلاح</h3>'
                     + ('<ol>' + history + '</ol>' if history else
                        '<p>هنوز نسخه‌ای ثبت نشده است.</p>')
+                    + ('<form method="get" action="/my-drafts/' + quote(ref)
+                       + '/cultivation-inputs/compare">'
+                       '<label for="profile-before">نسخه مبنا</label>'
+                       '<select id="profile-before" name="before_revision">'
+                       + revision_options + '</select>'
+                       '<label for="profile-after">نسخه جدیدتر</label>'
+                       '<select id="profile-after" name="after_revision">'
+                       + revision_options + '</select>'
+                       '<button type="submit">مقایسه نسخه‌ها</button></form>'
+                       if len(result["revisions"]) > 1 else '')
                     + '<p>مقادیر فقط برای صاحب پرونده قابل مشاهده‌اند. '
                     'ثبت آن‌ها به معنی رضایت، تأیید متخصص یا پذیرش طرح نیست.</p>'
                     '<p><a href="/my-drafts/' + quote(ref) + '">بازگشت به پرونده</a></p>'
@@ -2065,6 +2080,78 @@ def build_authenticated_ui_router(
                     '</article>'
                 )
                 return page("روناس — نسخه تاریخی اطلاعات",
+                            body, logged_in=True, local_test_form=True)
+
+            @router.get(
+                "/my-drafts/{ref}/cultivation-inputs/compare",
+                response_class=HTMLResponse,
+            )
+            def household_cultivation_inputs_compare_page(
+                ref: str, before_revision: int, after_revision: int,
+                sid: str | None = Cookie(default=None, alias=cookie_name),
+            ) -> HTMLResponse:
+                try:
+                    session = flow.session(sid)
+                except InvalidToken:
+                    raise HTTPException(401, detail="INVALID_SESSION") from None
+                principal = Principal(session.subject, session.roles)
+                try:
+                    permitted = household_profile_access_authority(
+                        principal, ref, household_profile_schema.schema_ref,
+                    )
+                except Exception as exc:
+                    raise HTTPException(
+                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                    ) from exc
+                if permitted is not True:
+                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                try:
+                    result = household_input_ledger.compare_owned_profile_revisions(
+                        ref, principal, before_revision, after_revision,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(
+                        422, detail="INVALID_HOUSEHOLD_PROFILE_COMPARISON",
+                    ) from exc
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE") from exc
+                if result is None:
+                    raise HTTPException(404, detail="PROFILE_COMPARISON_NOT_FOUND")
+                if result["schema_changed"]:
+                    comparison = (
+                        '<p role="status">ساختار فرم بین این نسخه‌ها تغییر کرده؛ '
+                        'برای جلوگیری از مقایسه نادرست، مقادیر نمایش داده نمی‌شوند.</p>'
+                    )
+                elif result["changes"]:
+                    rows = ''.join(
+                        '<tr><th scope="row">' + escape(field.label)
+                        + '</th><td>' + escape(change["before"])
+                        + '</td><td>' + escape(change["after"])
+                        + '</td></tr>'
+                        for change in result["changes"]
+                        for field in household_profile_schema.fields
+                        if field.key == change["key"]
+                    )
+                    comparison = (
+                        '<table><caption>تغییرات بین نسخه '
+                        + str(before_revision) + ' و ' + str(after_revision)
+                        + '</caption><thead><tr><th scope="col">فیلد</th>'
+                        '<th scope="col">مقدار قبلی</th><th scope="col">مقدار جدید</th>'
+                        '</tr></thead><tbody>' + rows + '</tbody></table>'
+                    )
+                else:
+                    comparison = '<p>تغییری بین این دو نسخه ثبت نشده است.</p>'
+                body = (
+                    '<article class="panel"><h2>مقایسه نسخه‌های اطلاعات خانوار</h2>'
+                    '<p>پرونده ' + escape(ref) + ' · نسخه ' + str(before_revision)
+                    + ' ← نسخه ' + str(after_revision) + '</p>' + comparison
+                    + '<p>این مقایسه فقط اختلاف ثبت‌شده را نشان می‌دهد؛ '
+                    'اعتبار علمی یا وضعیت کشت را ارزیابی نمی‌کند.</p>'
+                    '<p><a href="/my-drafts/' + quote(ref)
+                    + '/cultivation-inputs">بازگشت به اطلاعات پرونده</a></p>'
+                    '</article>'
+                )
+                return page("روناس — مقایسه نسخه‌های اطلاعات",
                             body, logged_in=True, local_test_form=True)
 
             if household_stage_context_authority is not None:

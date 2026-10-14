@@ -65,8 +65,8 @@ class BrowserReviewSecurityTests(unittest.TestCase):
             root / "review.db", synthetic_records(),
             trusted_revoke_authorizer=lambda actor, engine, ref: actor == "synthetic-authority",
             trusted_human_review_authorizer=lambda actor, engine, ref: (
-                actor == "synthetic-domestic-002" and engine == "DOMESTIC"
-                and ref == "DEMO-D-001"
+                actor in ("synthetic-domestic-001", "synthetic-domestic-002")
+                and engine == "DOMESTIC" and ref == "DEMO-D-001"
             ),
         )
         self.subject = "synthetic-domestic-001"
@@ -218,6 +218,47 @@ class BrowserReviewSecurityTests(unittest.TestCase):
         self.assertEqual(self.ledger.review_state(
             "DOMESTIC", "DEMO-D-001",
         )["review_revision"], 2)
+        self.assertIn("ثبت درخواست بررسی شواهد", current.text)
+        next_request_action = re.search(
+            r'name="action_id" value="(DEMO-UI-REVIEW-[A-Z0-9]+)"',
+            current.text,
+        )
+        self.assertIsNotNone(next_request_action)
+        next_request = self.client1.post(
+            "/admin/technical-review/domestic/DEMO-D-001/request",
+            data={
+                "csrf": self.client1.get("/api/auth/session").json()["csrf"],
+                "action_id": next_request_action.group(1),
+                "case_version": "3", "review_revision": "2",
+                "request_ref": "DEMO-BROWSER-REQ-2",
+                "evidence_ref": "DEMO-BROWSER-EVIDENCE-2",
+            }, headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(next_request.status_code, 303, next_request.text)
+        self.login(subject="synthetic-domestic-001")
+        second_review_page = self.client1.get(detail.url)
+        self.assertIn("ثبت مرجع پاسخ انسانی", second_review_page.text)
+        self.assertIn('name="review_revision" value="3"', second_review_page.text)
+        second_response_action = re.search(
+            r'name="action_id" value="(DEMO-UI-REVIEW-[A-Z0-9]+)"',
+            second_review_page.text,
+        )
+        self.assertIsNotNone(second_response_action)
+        second_response = self.client1.post(
+            "/admin/technical-review/domestic/DEMO-D-001/human-response",
+            data={
+                "csrf": self.client1.get("/api/auth/session").json()["csrf"],
+                "action_id": second_response_action.group(1),
+                "case_version": "3", "review_revision": "3",
+                "request_ref": "DEMO-BROWSER-REQ-2",
+                "evidence_ref": "DEMO-BROWSER-RESPONSE-EVIDENCE-2",
+                "decision_ref": "DEMO-BROWSER-HUMAN-NOTE-2",
+            }, headers={"Origin": ORIGIN},
+        )
+        self.assertEqual(second_response.status_code, 303, second_response.text)
+        self.assertEqual(self.ledger.review_state(
+            "DOMESTIC", "DEMO-D-001",
+        )["review_revision"], 4)
         self.assertTrue(self.ledger.verify_integrity())
 
     def test_browser_session_and_keycloak_role_alone_do_not_grant_a_case(self):

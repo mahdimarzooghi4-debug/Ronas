@@ -3449,8 +3449,9 @@ class LocalExpertQuestionTests(unittest.TestCase):
         self.assertNotIn("DEMO-REPLY-ALPHA", inspect.text)
         response = self.client.post(
             qpath + "/demo-inspection",
-            data={"csrf": expert_csrf, "case_version": "3",
-                  "input_revision": "1", "question_revision": "1"},
+            data={"csrf": expert_csrf, "action_id": "DEMO-UI-I-NEXT-STEP",
+                  "case_version": "3", "input_revision": "1",
+                  "question_revision": "1"},
             headers={"Origin": "https://ronas.example.test"},
             follow_redirects=False,
         )

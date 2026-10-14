@@ -1,6 +1,6 @@
 """Persistent technical review evidence ONLY, never a Business case decision.
 
-This opt-in, LOCAL/TEST SQLite subclass stores a two-step *technical*
+This opt-in, LOCAL/TEST SQLite subclass stores repeatable *technical*
 human-evidence review workflow next to the existing transactional grant
 ledger. It NEVER changes ScopedDraft.status (DRAFT_ONLY), issues agronomy
 advice, accepts licensed Export sources, or authorizes production records.
@@ -34,6 +34,20 @@ RECORDED = "TECH_HUMAN_RESPONSE_RECORDED"
 STATES = ("UNREQUESTED", "EVIDENCE_REVIEW_REQUESTED", "HUMAN_RESPONSE_RECORDED")
 
 
+def review_state_for_steps(steps: Iterable["TechnicalReviewStep"] | int) -> str:
+    """Return the current technical state for an append-only review history."""
+    if type(steps) is int:
+        count = steps
+        last_stage = None
+    else:
+        history = tuple(steps)
+        count = len(history)
+        last_stage = history[-1].stage if history else None
+    if count == 0:
+        return STATES[0]
+    return STATES[1] if last_stage == REQUESTED or count % 2 else STATES[2]
+
+
 def _review_binding(*, action: str, engine: str, ref: str, revision: int,
                     stage: str, actor_digest: str, request_ref: str,
                     evidence_ref: str, decision_ref: str | None,
@@ -63,7 +77,7 @@ class TechnicalReviewStep:
 
 
 class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
-    """One synthetic request + one independently authorized human reference.
+    """Repeatable synthetic requests + independent human response references.
 
     This is not the formal D1 agronomy or E0 source-rights approval workflow.
     No public HTTP decision/transition endpoints are defined.
@@ -171,7 +185,7 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             audit = expected_events.get(sequence)
             if (audit is None or sequence in linked
                     or (engine, ref) not in self._catalogue
-                    or type(revision) is not int or revision not in (1, 2)
+                    or type(revision) is not int or revision < 1
                     or stage not in (REQUESTED, RECORDED)
                     or not all(_synthetic_ref(x) for x in
                                (action, request_ref, evidence_ref))
@@ -205,15 +219,15 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
         if linked != set(expected_events):
             raise LedgerIntegrityError("unpaired review audit event")
         for steps in by_case.values():
-            if len(steps) > 2:
-                raise LedgerIntegrityError("review cycle cannot be repeated")
-            if steps[0].stage != REQUESTED or steps[0].revision != 1:
-                raise LedgerIntegrityError("human response without request")
-            if len(steps) == 2:
-                if (steps[1].stage != RECORDED or steps[1].revision != 2
-                        or steps[1].request_ref != steps[0].request_ref
-                        or steps[1].actor_digest == steps[0].actor_digest):
-                    raise LedgerIntegrityError("inconsistent human response lineage")
+            for index, step in enumerate(steps):
+                expected_stage = REQUESTED if index % 2 == 0 else RECORDED
+                if step.revision != index + 1 or step.stage != expected_stage:
+                    raise LedgerIntegrityError("invalid technical review cycle sequence")
+                if index % 2 == 1:
+                    request = steps[index - 1]
+                    if (step.request_ref != request.request_ref
+                            or step.actor_digest == request.actor_digest):
+                        raise LedgerIntegrityError("inconsistent human response lineage")
 
         question_triggers = {r[0] for r in db.execute(
             "SELECT name FROM sqlite_master WHERE type='trigger' "
@@ -378,7 +392,7 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                 "case_version": self._catalogue[(engine, ref)].version,
                 "case_status": "DRAFT_ONLY",
                 "review_revision": len(steps),
-                "technical_review_state": STATES[len(steps)],
+                "technical_review_state": review_state_for_steps(steps),
             }
 
     def review_history(self, engine: str, ref: str) -> tuple[TechnicalReviewStep, ...]:
@@ -418,14 +432,14 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                 for ref in owned:
                     steps = self._steps(db, "DOMESTIC", ref)
                     if (technical_state == "ALL"
-                            or STATES[len(steps)] == technical_state):
+                            or review_state_for_steps(steps) == technical_state):
                         matching.append((ref, steps))
                 for ref, steps in matching[:limit]:
                     record = self._catalogue[("DOMESTIC", ref)]
                     item = record.public_view()
                     item.update({
                         "review_revision": len(steps),
-                        "technical_review_state": STATES[len(steps)],
+                        "technical_review_state": review_state_for_steps(steps),
                     })
                     items.append(item)
                     # Disclosure and event insertion are in one transaction:
@@ -469,11 +483,11 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                 result = record.public_view()
                 result.update({
                     "review_revision": len(steps),
-                    "technical_review_state": STATES[len(steps)],
+                    "technical_review_state": review_state_for_steps(steps),
                     "cultivation_preparation": domestic_preparation_preview(
                         case_version=record.version,
                         review_revision=len(steps),
-                        technical_review_state=STATES[len(steps)],
+                        technical_review_state=review_state_for_steps(steps),
                         valid_review_states=STATES,
                         observed_review_steps=tuple(
                             step.stage for step in steps
@@ -518,7 +532,7 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                             or not self._active_operator(db, "EXPORT", ref, principal)):
                         continue
                     steps = self._steps(db, "EXPORT", ref)
-                    observed = STATES[len(steps)]
+                    observed = review_state_for_steps(steps)
                     if technical_state == "ALL" or observed == technical_state:
                         selected.append((ref, record.version, observed, len(steps)))
             items = []
@@ -872,7 +886,7 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                         )
                     ),
                     "review_revision": len(steps),
-                    "technical_review_state": STATES[len(steps)],
+                    "technical_review_state": review_state_for_steps(steps),
                     "technical_review_steps": [
                         {"revision": step.revision, "stage": step.stage}
                         for step in steps
@@ -983,7 +997,7 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                     "case_version": self._catalogue[(engine, ref)].version,
                     "case_status": "DRAFT_ONLY",
                     "review_revision": len(steps),
-                    "technical_review_state": STATES[len(steps)],
+                    "technical_review_state": review_state_for_steps(steps),
                     "history": tuple({
                         "revision": step.revision,
                         "stage": step.stage,
@@ -1040,7 +1054,7 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                         "case_version": self._catalogue[(engine, ref)].version,
                         "case_status": "DRAFT_ONLY",
                         "review_revision": len(steps),
-                        "technical_review_state": STATES[len(steps)],
+                        "technical_review_state": review_state_for_steps(steps),
                     })
                     # Audit only disclosed items, not hidden/other-engine
                     # cases. If any append fails the entire page fails.
@@ -1070,7 +1084,7 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                 or stage == RECORDED and not _synthetic_ref(decision_ref)
                 or type(expected_case_version) is not int
                 or type(expected_review_revision) is not int
-                or expected_review_revision != (0 if stage == REQUESTED else 1)):
+                or expected_review_revision < 0):
             raise ValueError("invalid synthetic human-evidence command")
         if not isinstance(actor, Principal) or not _synthetic_subject(actor.subject):
             raise GrantNotAuthorized("a verified synthetic principal is necessary")
@@ -1108,12 +1122,13 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             if len(steps) != expected_review_revision:
                 raise GrantConflict("stale technical review revision")
             if stage == RECORDED and (
-                len(steps) != 1 or steps[0].request_ref != request_ref
-                or steps[0].actor_digest == _hash(actor.subject)
+                not steps or steps[-1].stage != REQUESTED
+                or steps[-1].request_ref != request_ref
+                or steps[-1].actor_digest == _hash(actor.subject)
             ):
                 raise GrantConflict("human response lacks independent matching request")
-            if stage == REQUESTED and steps:
-                raise GrantConflict("review already requested")
+            if stage == REQUESTED and steps and steps[-1].stage != RECORDED:
+                raise GrantConflict("current review request needs a human response")
             event = self._append(
                 db, kind=stage, engine=engine, ref=ref, actor=actor.subject,
                 action_id=action_id, reason_ref=evidence_ref,

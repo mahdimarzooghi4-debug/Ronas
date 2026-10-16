@@ -11,6 +11,7 @@ import time
 import unittest
 from urllib.parse import parse_qs, urlencode, urlsplit
 
+import httpx
 import jwt
 import psycopg
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -26,6 +27,9 @@ from ronas_api.household_input_profiles import (
 from ronas_api.stage_observation_artifacts import PrivateFilesystemStageArtifactStore
 from ronas_api.postgres_stage_artifacts import PostgresStageArtifactStore
 from ronas_api.keycloak import KeycloakConfig
+from ronas_api.local_keycloak_bff import (
+    PostgresLocalBFFSettings, create_postgres_local_test_bff,
+)
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
 from ronas_api.agronomy_workspace import (
@@ -997,6 +1001,173 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             self.assertEqual(revoked.status_code, 404, revoked.text)
             self.assertTrue(self.ledger.verify_integrity())
         finally:
+            with psycopg.connect(POSTGRES_DSN) as db:
+                db.execute(
+                    "DELETE FROM ronas_stage_artifact "
+                    "WHERE owner_hash=%s AND case_hash=%s",
+                    (owner_hash, case_hash),
+                )
+
+    @unittest.skipUnless(POSTGRES_DSN, "RONAS_TEST_POSTGRES_DSN is not configured")
+    def test_postgres_pkce_session_and_stage_artifact_cross_bff_instances(self):
+        """Join PostgreSQL sessions and encrypted artifacts in the real BFF flow."""
+        callback_origin = "https://127.0.0.1:8765"
+        callback = callback_origin + "/api/auth/callback"
+        realm = KeycloakConfig(
+            ISS, API, WEB, self.config.jwks_json,
+        )
+        key_file = self.path.parent / "postgres-bff-session.key"
+        key_file.write_bytes(secrets.token_bytes(32))
+        key_file.chmod(0o600)
+        settings = PostgresLocalBFFSettings(
+            realm, callback, POSTGRES_DSN, key_file,
+        )
+        store = PostgresStageArtifactStore(
+            POSTGRES_DSN, secrets.token_bytes(32), scope_key=b"q" * 32,
+        )
+        image = b"\x89PNG\r\n\x1a\n" + b"ronas-cross-instance-pg-flow"
+        case_artifact_ref = REF + ":DEMO-STAGE-01"
+        owner_hash, case_hash = store._scope(OWNER, case_artifact_ref)
+        with psycopg.connect(POSTGRES_DSN) as db:
+            db.execute(
+                "DELETE FROM ronas_stage_artifact WHERE owner_hash=%s AND case_hash=%s",
+                (owner_hash, case_hash),
+            )
+
+        nonce_holder = {}
+
+        def token_response(req):
+            self.assertEqual(req.method, "POST")
+            self.assertEqual(
+                str(req.url), ISS + "/protocol/openid-connect/token",
+            )
+            self.assertIn(b"code_verifier=", req.content)
+            now = int(time.time())
+            common = {
+                "iss": ISS, "sub": OWNER, "iat": now - 5, "exp": now + 450,
+            }
+            access = jwt.encode(
+                {**common, "aud": API, "azp": WEB, "typ": "Bearer",
+                 "nbf": now - 5,
+                 "resource_access": {API: {"roles": ["household"]}}},
+                self.key, algorithm="RS256", headers={"kid": "profile-test"},
+            )
+            identity = jwt.encode(
+                {**common, "aud": WEB, "azp": WEB,
+                 "nonce": nonce_holder["nonce"]},
+                self.key, algorithm="RS256", headers={"kid": "profile-test"},
+            )
+            return httpx.Response(200, json={
+                "token_type": "Bearer", "access_token": access,
+                "id_token": identity,
+            })
+
+        workspace = SyntheticAgronomyWorkspace(
+            self.ledger,
+            (SyntheticAgronomyAssignment(REF, "synthetic-pg-flow-specialist", 2),),
+            trusted_assignment_active=lambda *_: True,
+        )
+        def build_app():
+            return create_postgres_local_test_bff(
+                settings, transport=httpx.MockTransport(token_response),
+                case_ledger=self.ledger, agronomy_workspace=workspace,
+                household_profile_schema=self.schema,
+                household_profile_access_authority=self.allowed,
+                household_stage_context_authority=self.stage_context,
+                household_stage_artifact_store=store,
+            )
+
+        first_app, second_app = build_app(), build_app()
+        browser_a = TestClient(first_app, base_url=callback_origin,
+                               follow_redirects=False)
+        browser_b = TestClient(second_app, base_url=callback_origin,
+                               follow_redirects=False)
+        try:
+            profile = self.client.post(
+                ROOT, json=self.command(), headers=self.bearer(),
+            )
+            self.assertEqual(profile.status_code, 201, profile.text)
+            start = browser_a.get("/api/auth/start")
+            self.assertEqual(start.status_code, 303, start.text)
+            query = parse_qs(urlsplit(start.headers["location"]).query)
+            self.assertEqual(query["code_challenge_method"], ["S256"])
+            self.assertEqual(query["redirect_uri"], [callback])
+            nonce_holder["nonce"] = query["nonce"][0]
+            browser_b.cookies.update(browser_a.cookies)
+            callback_response = browser_b.get(
+                "/api/auth/callback", params={
+                    "code": "cross-instance-code", "state": query["state"][0],
+                },
+            )
+            self.assertEqual(callback_response.status_code, 303,
+                             callback_response.text)
+            session = browser_b.get("/api/auth/session")
+            self.assertEqual(session.status_code, 200, session.text)
+            self.assertNotIn("access_token", session.text)
+
+            page = "/my-drafts/" + REF + "/stage-observations"
+            upload = browser_b.put(
+                page + "/artifacts", content=image, headers={
+                    "Origin": callback_origin,
+                    "X-CSRF-Token": session.json()["csrf"],
+                    "Content-Type": "image/png",
+                    "X-Ronas-Case-Version": "2",
+                    "X-Ronas-Input-Revision": "1",
+                    "X-Ronas-Plan-Digest": self.stage_plan_digest,
+                    "X-Ronas-Stage-Ref": "DEMO-STAGE-01",
+                    "X-Ronas-Requirements-Digest": "a" * 64,
+                },
+            )
+            self.assertEqual(upload.status_code, 201, upload.text)
+            digest = upload.json()["digest"]
+            command = self.stage_command(action="DEMO-PG-CROSS-BFF-RECEIPT")
+            form = {
+                "csrf": session.json()["csrf"], "action_id": command["action_id"],
+                "case_version": str(command["expected_case_version"]),
+                "input_revision": str(command["expected_input_revision"]),
+                "input_snapshot_digest": command["expected_input_snapshot_digest"],
+                "plan_digest": command["expected_plan_digest"],
+                "stage_ref": command["stage_ref"],
+                "requirements_digest": command[
+                    "expected_observation_requirements_digest"],
+                "observation_revision": "0", "corrects_revision": "0",
+                "artifact_digest": digest,
+            }
+            saved = browser_b.post(
+                page, content=urlencode(form), headers={
+                    "Origin": callback_origin,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            self.assertEqual(saved.status_code, 303, saved.text)
+
+            # App A resolves App B's PostgreSQL-backed cookie session, then
+            # authorizes and serves the exact artifact linked by the shared ledger.
+            browser_a.cookies.update(browser_b.cookies)
+            history = browser_a.get(page)
+            self.assertEqual(history.status_code, 200, history.text)
+            self.assertIn(digest, history.text)
+            downloaded = browser_a.get(
+                page + "/artifacts/DEMO-STAGE-01/" + digest,
+            )
+            self.assertEqual(downloaded.status_code, 200, downloaded.text)
+            self.assertEqual(downloaded.content, image)
+            self.assertEqual(downloaded.headers["cache-control"], "no-store")
+            self.assertEqual(first_app.state.ronas_local_bff_session_backend,
+                             "postgresql")
+            self.assertEqual(second_app.state.ronas_local_bff_session_backend,
+                             "postgresql")
+            with psycopg.connect(POSTGRES_DSN) as db:
+                ciphertext = db.execute(
+                    "SELECT ciphertext FROM ronas_stage_artifact "
+                    "WHERE owner_hash=%s AND case_hash=%s AND digest=%s",
+                    (owner_hash, case_hash, digest),
+                ).fetchone()[0]
+            self.assertNotIn(image, bytes(ciphertext))
+            self.assertTrue(self.ledger.verify_integrity())
+        finally:
+            browser_a.close()
+            browser_b.close()
             with psycopg.connect(POSTGRES_DSN) as db:
                 db.execute(
                     "DELETE FROM ronas_stage_artifact "

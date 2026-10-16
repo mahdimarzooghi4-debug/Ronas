@@ -29,8 +29,9 @@ class PostgresExportFindingLedgerTests(unittest.TestCase):
                            "source_ref": "DEMO-SOURCE-1", "connector_ref": "DEMO-CONNECTOR-1",
                            "source_snapshot_digest": "b" * 64},
                       ]}
+        self.key = secrets.token_bytes(32)
         self.ledger = PostgresExportResearchFindingLedger(
-            DSN, self.workspace, secrets.token_bytes(32),
+            DSN, self.workspace, self.key,
         )
 
     def workspace(self, ref, principal):

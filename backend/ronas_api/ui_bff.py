@@ -21,6 +21,7 @@ from .auth import InvalidToken, Principal
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES as TECHNICAL_STATES
 from .export_research_evidence import ExportEvidenceReferenceConflict
 from .export_research_findings import ExportResearchFindingConflict
+from .postgres_export_findings import ExportFindingStorageError
 from .export_source_connector import (
     ExportSourceConnectorRegistry, ExportSourceConnectorUnavailable,
     capture_export_source_reference,
@@ -343,11 +344,15 @@ def build_authenticated_ui_router(
     household_surplus_publication_authority=None,
     household_surplus_draft_ledger: SurplusDraftLedger | None = None,
     household_surplus_producer_consent_ledger: ProducerConsentLedger | None = None,
+    export_research_finding_ledger=None,
 ) -> APIRouter:
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
             or technical_review_ledger is None):
         raise ValueError("Export connector UI requires the explicit review ledger")
+    if (export_research_finding_ledger is not None and
+            getattr(getattr(export_research_finding_ledger, "_workspace_reader", None), "__self__", None) is not technical_review_ledger):
+        raise ValueError("Export finding storage must authorize through the shared case ledger")
     if household_surplus_publication_authority is not None and (
             not callable(household_surplus_publication_authority)
             or not isinstance(household_input_ledger,
@@ -4023,6 +4028,16 @@ def build_authenticated_ui_router(
             )
             if data is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            if export_research_finding_ledger is not None:
+                try:
+                    findings = export_research_finding_ledger.read_history(
+                        ref, Principal(session.subject, session.roles),
+                    )
+                except ExportFindingStorageError as exc:
+                    raise HTTPException(503, detail="TECHNICAL_REVIEW_UNAVAILABLE") from exc
+                if findings is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                data["local_test_findings"] = findings
             question = data["local_test_draft_question"]
             try:
                 export_step = export_next_action(data)
@@ -4393,7 +4408,8 @@ def build_authenticated_ui_router(
             except (ValueError, TypeError) as exc:
                 raise HTTPException(422, detail="INVALID_EXPORT_RESEARCH_FINDING") from exc
             try:
-                result = technical_review_ledger.record_export_research_finding(
+                finding_ledger = export_research_finding_ledger or technical_review_ledger
+                result = finding_ledger.record_export_research_finding(
                     ref, principal,
                     expected_case_version=form_version(
                         form["case_version"], zero_allowed=False,
@@ -4416,6 +4432,8 @@ def build_authenticated_ui_router(
                 raise HTTPException(
                     503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
                 ) from exc
+            except ExportFindingStorageError as exc:
+                raise HTTPException(503, detail="TECHNICAL_REVIEW_UNAVAILABLE") from exc
             except ValueError as exc:
                 raise HTTPException(
                     422, detail="INVALID_EXPORT_RESEARCH_FINDING",

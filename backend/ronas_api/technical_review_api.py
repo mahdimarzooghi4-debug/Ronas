@@ -22,6 +22,10 @@ from .export_research_question import ExportResearchQuestionConflict
 from .export_research_evidence import ExportEvidenceReferenceConflict
 from .export_research_findings import ExportResearchFindingConflict
 from .postgres_export_findings import ExportFindingStorageError
+from .export_research_packet import (
+    ExportResearchPacketConflict, ExportResearchPacketIntegrityError,
+    build_export_research_packet,
+)
 from .export_source_connector import (
     ExportSourceConnectorRegistry, ExportSourceConnectorUnavailable,
     capture_export_source_reference,
@@ -470,5 +474,25 @@ def build_technical_review_read_router(
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
             return {"engine": "EXPORT", "ref": ref, "items": result,
                     "draft_only": True, "report_approved": False}
+
+        @router.get("/api/v1/admin/export/research/drafts/{ref}/research-packet")
+        def read_export_research_packet(
+            ref: str, p: Principal = Depends(verified_principal),
+        ) -> dict:
+            try:
+                before = ledger.read_export_research_workspace(ref, p)
+                findings = export_research_finding_ledger.read_history(ref, p)
+                after = ledger.read_export_research_workspace(ref, p)
+                if before is None or findings is None or after is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                return build_export_research_packet(before, findings, after)
+            except HTTPException:
+                raise
+            except ExportResearchPacketConflict as exc:
+                raise HTTPException(409, detail="EXPORT_RESEARCH_CONTEXT_CHANGED") from exc
+            except ExportResearchPacketIntegrityError as exc:
+                raise HTTPException(503, detail="TECHNICAL_REVIEW_UNAVAILABLE") from exc
+            except (LedgerIntegrityError, sqlite3.Error, ExportFindingStorageError) as exc:
+                raise HTTPException(503, detail="TECHNICAL_REVIEW_UNAVAILABLE") from exc
 
     return router

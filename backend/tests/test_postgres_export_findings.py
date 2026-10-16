@@ -92,12 +92,23 @@ class PostgresExportFindingLedgerTests(unittest.TestCase):
     def test_database_row_tampering_is_detected(self):
         self.record("DEMO-PG-EXPORT-FINDING-TAMPER")
         with psycopg.connect(DSN) as db:
+            original_digest = db.execute(
+                "SELECT note_digest FROM ronas_export_research_finding WHERE ref=%s",
+                (self.ref,),
+            ).fetchone()[0]
             db.execute("ALTER TABLE ronas_export_research_finding DISABLE TRIGGER ronas_export_finding_no_update_delete")
             db.execute("UPDATE ronas_export_research_finding SET note_digest=%s WHERE ref=%s",
                        ("b" * 64, self.ref))
             db.execute("ALTER TABLE ronas_export_research_finding ENABLE TRIGGER ronas_export_finding_no_update_delete")
         with self.assertRaises(ExportFindingStorageError):
             self.ledger.read_history(self.ref, self.principal)
+        # Restore this intentionally corrupted shared-test row so later tests
+        # can verify that key rotation rejects real integrity failures.
+        with psycopg.connect(DSN) as db:
+            db.execute("ALTER TABLE ronas_export_research_finding DISABLE TRIGGER ronas_export_finding_no_update_delete")
+            db.execute("UPDATE ronas_export_research_finding SET note_digest=%s WHERE ref=%s",
+                       (original_digest, self.ref))
+            db.execute("ALTER TABLE ronas_export_research_finding ENABLE TRIGGER ronas_export_finding_no_update_delete")
 
     def test_key_rotation_reencrypts_rows_without_mutating_finding_history(self):
         first = self.record("DEMO-PG-EXPORT-KEY-OLD-1")

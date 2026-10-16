@@ -1,6 +1,7 @@
 """Schema-driven owner profile intake is versioned, private, and guarded."""
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 import secrets
@@ -11,6 +12,7 @@ import unittest
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import jwt
+import psycopg
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
@@ -22,6 +24,7 @@ from ronas_api.household_input_profiles import (
     SqliteSyntheticHouseholdProfileLedger,
 )
 from ronas_api.stage_observation_artifacts import PrivateFilesystemStageArtifactStore
+from ronas_api.postgres_stage_artifacts import PostgresStageArtifactStore
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
@@ -46,6 +49,7 @@ ISS = "https://identity.example.test/realms/ronas"
 API, WEB, ORIGIN = "ronas-api", "ronas-web", "https://ronas.example.test"
 OWNER = "synthetic-household-profile-owner"
 REF = "DEMO-D-PROFILE"
+POSTGRES_DSN = os.environ.get("RONAS_TEST_POSTGRES_DSN")
 ROOT = f"/api/v1/domestic/household-intake/my-drafts/{REF}/cultivation-inputs"
 PAGE = f"/my-drafts/{REF}/cultivation-inputs"
 
@@ -879,6 +883,126 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.browser_session(subject="synthetic-other")
         self.assertEqual(self.client.get(download_path).status_code, 404)
         self.assertTrue(self.ledger.verify_integrity())
+
+    @unittest.skipUnless(POSTGRES_DSN, "RONAS_TEST_POSTGRES_DSN is not configured")
+    def test_postgres_artifact_store_completes_household_and_specialist_bff_flow(self):
+        image = b"\x89PNG\r\n\x1a\n" + b"postgres-backed-browser-flow"
+        store = PostgresStageArtifactStore(
+            POSTGRES_DSN, secrets.token_bytes(32), scope_key=b"p" * 32,
+        )
+        case_artifact_ref = REF + ":DEMO-STAGE-01"
+        owner_hash, case_hash = store._scope(OWNER, case_artifact_ref)
+        with psycopg.connect(POSTGRES_DSN) as db:
+            db.execute(
+                "DELETE FROM ronas_stage_artifact WHERE owner_hash=%s AND case_hash=%s",
+                (owner_hash, case_hash),
+            )
+        try:
+            profile = self.client.post(ROOT, json=self.command(), headers=self.bearer())
+            self.assertEqual(profile.status_code, 201, profile.text)
+            specialist = "synthetic-agronomy-postgres-stage-reviewer"
+            active = {True}
+            workspace = SyntheticAgronomyWorkspace(
+                self.ledger,
+                (SyntheticAgronomyAssignment(REF, specialist, 2),),
+                trusted_assignment_active=lambda actor, ref, version: (
+                    actor == specialist and ref == REF and version == 2 and bool(active)
+                ),
+            )
+            self.client = TestClient(create_app(
+                self.config, self.flow,
+                scoped_registry=self.ledger,
+                technical_review_ledger=self.ledger,
+                household_profile_schema=self.schema,
+                household_profile_access_authority=self.allowed,
+                household_stage_context_authority=self.stage_context,
+                household_stage_artifact_store=store,
+                agronomy_workspace=workspace,
+            ), base_url=ORIGIN)
+
+            session = self.browser_session()
+            page_path = PAGE.replace("/cultivation-inputs", "/stage-observations")
+            upload_headers = {
+                "Origin": ORIGIN, "X-CSRF-Token": session.csrf,
+                "Content-Type": "image/png", "X-Ronas-Case-Version": "2",
+                "X-Ronas-Input-Revision": "1",
+                "X-Ronas-Plan-Digest": self.stage_plan_digest,
+                "X-Ronas-Stage-Ref": "DEMO-STAGE-01",
+                "X-Ronas-Requirements-Digest": "a" * 64,
+            }
+            uploaded = self.client.put(
+                page_path + "/artifacts", content=image, headers=upload_headers,
+            )
+            self.assertEqual(uploaded.status_code, 201, uploaded.text)
+            digest = uploaded.json()["digest"]
+            command = self.stage_command(action="DEMO-POSTGRES-STAGE-RECEIPT")
+            form = {
+                "csrf": session.csrf, "action_id": command["action_id"],
+                "case_version": str(command["expected_case_version"]),
+                "input_revision": str(command["expected_input_revision"]),
+                "input_snapshot_digest": command["expected_input_snapshot_digest"],
+                "plan_digest": command["expected_plan_digest"],
+                "stage_ref": command["stage_ref"],
+                "requirements_digest": command[
+                    "expected_observation_requirements_digest"
+                ],
+                "observation_revision": "0", "corrects_revision": "0",
+                "artifact_digest": digest,
+            }
+            saved = self.client.post(
+                page_path, content=urlencode(form),
+                headers={"Origin": ORIGIN,
+                         "Content-Type": "application/x-www-form-urlencoded"},
+                follow_redirects=False,
+            )
+            self.assertEqual(saved.status_code, 303, saved.text)
+            owner_download = self.client.get(
+                f"/my-drafts/{REF}/stage-observations/artifacts/"
+                f"DEMO-STAGE-01/{digest}",
+            )
+            self.assertEqual(owner_download.status_code, 200, owner_download.text)
+            self.assertEqual(owner_download.content, image)
+            self.assertEqual(owner_download.headers["cache-control"], "no-store")
+
+            with psycopg.connect(POSTGRES_DSN) as db:
+                row = db.execute(
+                    "SELECT ciphertext FROM ronas_stage_artifact "
+                    "WHERE owner_hash=%s AND case_hash=%s AND digest=%s",
+                    (owner_hash, case_hash, digest),
+                ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertNotIn(image, bytes(row[0]))
+
+            self.browser_session(specialist, ("agronomy_expert",))
+            specialist_download = self.client.get(
+                f"/agronomy/assigned-drafts/{REF}/stage-observations/artifacts/"
+                f"DEMO-STAGE-01/{digest}",
+            )
+            self.assertEqual(specialist_download.status_code, 200,
+                             specialist_download.text)
+            self.assertEqual(specialist_download.content, image)
+            api_download = self.client.get(
+                f"/api/v1/agronomy/assigned-drafts/{REF}/stage-observations/"
+                f"artifacts/DEMO-STAGE-01/{digest}",
+                headers=self.bearer(specialist, ("agronomy_expert",)),
+            )
+            self.assertEqual(api_download.status_code, 200, api_download.text)
+            self.assertEqual(api_download.content, image)
+
+            active.clear()
+            revoked = self.client.get(
+                f"/agronomy/assigned-drafts/{REF}/stage-observations/artifacts/"
+                f"DEMO-STAGE-01/{digest}",
+            )
+            self.assertEqual(revoked.status_code, 404, revoked.text)
+            self.assertTrue(self.ledger.verify_integrity())
+        finally:
+            with psycopg.connect(POSTGRES_DSN) as db:
+                db.execute(
+                    "DELETE FROM ronas_stage_artifact "
+                    "WHERE owner_hash=%s AND case_hash=%s",
+                    (owner_hash, case_hash),
+                )
 
     def test_stage_observation_is_not_offered_without_current_plan(self):
         self.assertEqual(self.client.post(

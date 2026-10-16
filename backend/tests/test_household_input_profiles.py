@@ -1618,6 +1618,11 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             str(self.path.parent / "surplus-drafts.sqlite3"),
             self.schema, self.allowed,
         )
+        self.ledger.append_owned_input_manifest(
+            REF, Principal(OWNER, frozenset({"household"})),
+            action_id="DEMO-SURPLUS-API-INPUT-1", expected_case_version=2,
+            expected_input_revision=0, synthetic_manifest_digest="f" * 64,
+        )
         client = TestClient(
             self.make_app(surplus_draft_ledger=ledger), base_url=ORIGIN,
         )
@@ -1631,6 +1636,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         command = {
             "action_id": "DEMO-OFFER-API-A1",
             "expected_revision": 0,
+            "input_revision": 1,
             "values": {"field_alpha": "synthetic product", "field_choice": "sample-a"},
         }
         created = client.put(path, json=command, headers=self.bearer())
@@ -1639,6 +1645,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertFalse(created.json()["real_data"])
         self.assertNotIn("producer_subject", created.json())
         self.assertEqual(created.json()["revision"], 1)
+        self.assertEqual(created.json()["input_revision"], 1)
         read = client.get(path, headers=self.bearer())
         self.assertEqual(read.status_code, 200, read.text)
         self.assertEqual(read.json()["values"], command["values"])
@@ -1646,9 +1653,16 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             path, headers=self.bearer("synthetic-other", ("household",)),
         )
         self.assertEqual(other.status_code, 404)
+        self.ledger.append_owned_input_manifest(
+            REF, Principal(OWNER, frozenset({"household"})),
+            action_id="DEMO-SURPLUS-API-INPUT-2", expected_case_version=2,
+            expected_input_revision=1, synthetic_manifest_digest="1" * 64,
+        )
         stale = dict(command, action_id="DEMO-OFFER-API-A2")
+        stale_response = client.put(path, json=stale, headers=self.bearer())
+        self.assertEqual(stale_response.status_code, 409)
         self.assertEqual(
-            client.put(path, json=stale, headers=self.bearer()).status_code, 409,
+            stale_response.json()["detail"], "HOUSEHOLD_INPUT_REVISION_CHANGED",
         )
         session = self.browser_session()
         sid = next(key for key, value in self.sessions.sessions.items()
@@ -1686,7 +1700,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         history = response.json()
         self.assertEqual(
-            history["contract_version"], "ronas.domestic.surplus-draft-history.v2",
+            history["contract_version"], "ronas.domestic.surplus-draft-history.v3",
         )
         revisions = history["revisions"]
         self.assertTrue(revisions[0]["diff_available"])
@@ -2034,6 +2048,12 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         client = TestClient(
             self.make_app(surplus_draft_ledger=ledger), base_url=ORIGIN,
         )
+        owner = Principal(OWNER, frozenset({"household"}))
+        self.ledger.append_owned_input_manifest(
+            REF, owner, action_id="DEMO-SURPLUS-INPUT-INITIAL",
+            expected_case_version=2, expected_input_revision=0,
+            synthetic_manifest_digest="d" * 64,
+        )
         session = self.browser_session()
         sid = next(key for key, value in self.sessions.sessions.items()
                    if value is session)
@@ -2050,6 +2070,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             "offer_ref": "DEMO-OFFER-UI-1",
             "action_id": "DEMO-OFFER-UI-TEST-1",
             "expected_revision": "0",
+            "input_revision": "1",
             "field_alpha": "گوجه <b>آزمایشی</b>",
             "field_choice": "sample-a",
         }
@@ -2068,6 +2089,26 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertIn("گوجه &lt;b&gt;آزمایشی&lt;/b&gt;", shown.text)
         self.assertNotIn("گوجه <b>آزمایشی</b>", shown.text)
         self.assertIn("نسخه 1", shown.text)
+        self.assertEqual(ledger.read_owned(
+            owner, REF, "DEMO-OFFER-UI-1",
+        ).input_revision, 1)
+        self.ledger.append_owned_input_manifest(
+            REF, owner, action_id="DEMO-SURPLUS-INPUT-CORRECTED",
+            expected_case_version=2, expected_input_revision=1,
+            synthetic_manifest_digest="e" * 64,
+        )
+        stale_list = client.get(draft_path)
+        self.assertIn("اطلاعات خانوار تغییر کرده", stale_list.text)
+        stale_form = client.post(
+            f"/my-drafts/{REF}/surplus-offers", content=urlencode(form),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        self.assertEqual(stale_form.status_code, 409)
+        self.assertIn("HOUSEHOLD_INPUT_REVISION_CHANGED", stale_form.text)
+        self.assertEqual(ledger.read_owned(
+            owner, REF, "DEMO-OFFER-UI-1",
+        ).revision, 1)
         bad_csrf = dict(form, action_id="DEMO-OFFER-UI-BAD-CSRF", csrf="wrong")
         denied = client.post(
             f"/my-drafts/{REF}/surplus-offers", content=urlencode(bad_csrf),
@@ -2216,10 +2257,15 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             path, self.schema, self.allowed,
         )
         owner = Principal(OWNER, frozenset({"household"}))
+        self.ledger.append_owned_input_manifest(
+            REF, owner, action_id="DEMO-BOUND-INPUT-1",
+            expected_case_version=2, expected_input_revision=0,
+            synthetic_manifest_digest="7" * 64,
+        )
         offer_ref = "DEMO-OFFER-BOUND-1"
         ledger.save(
             owner, REF, offer_ref, action_id="DEMO-BOUND-A1",
-            expected_revision=0,
+            expected_revision=0, input_revision=1,
             values={"field_alpha": "first value", "field_choice": "sample-a"},
         )
         old = OfferRevision(
@@ -2254,13 +2300,13 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         first = client.get(readiness_path, headers=self.bearer())
         self.assertEqual(first.status_code, 200, first.text)
         self.assertEqual(first.json()["contract_version"],
-                         "ronas.domestic.surplus-publication-gate.v2")
+                         "ronas.domestic.surplus-publication-gate.v3")
         self.assertTrue(first.json()["can_publish"])
         self.assertEqual(first.json()["revision"], 1)
 
         ledger.save(
             owner, REF, offer_ref, action_id="DEMO-BOUND-A2",
-            expected_revision=1,
+            expected_revision=1, input_revision=1,
             values={"field_alpha": "second value", "field_choice": "sample-a"},
         )
         changed = client.get(readiness_path, headers=self.bearer())
@@ -2271,6 +2317,17 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             set(changed.json()["blockers"]),
             {"OFFER_VERSION_CHANGED", "PRODUCER_APPROVAL_STALE",
              "QUALITY_SAFETY_VERIFICATION_STALE"},
+        )
+        self.ledger.append_owned_input_manifest(
+            REF, owner, action_id="DEMO-BOUND-INPUT-2",
+            expected_case_version=2, expected_input_revision=1,
+            synthetic_manifest_digest="8" * 64,
+        )
+        stale_household_input = client.get(readiness_path, headers=self.bearer())
+        self.assertEqual(stale_household_input.status_code, 200)
+        self.assertIn(
+            "HOUSEHOLD_INPUT_REVISION_CHANGED",
+            stale_household_input.json()["blockers"],
         )
 
         session = self.browser_session()

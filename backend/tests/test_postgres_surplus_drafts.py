@@ -53,11 +53,22 @@ class PostgresSurplusDraftLedgerTests(unittest.TestCase):
         )
         self.principal = Principal(self.owner, frozenset({"household"}))
 
-    def _save(self, action_id, expected, product="Tomato", price="owner-set"):
+    def _save(self, action_id, expected, product="Tomato", price="owner-set",
+              input_revision=None):
         return self.ledger.save(
             self.principal, self.household, self.offer, action_id=action_id,
             expected_revision=expected, values={"product": product, "price": price},
+            input_revision=input_revision,
         )
+
+    def test_receipt_binds_household_input_revision_and_replay(self):
+        first = self._save("PG-SURPLUS-INPUT-LINEAGE", 0, input_revision=4)
+        self.assertEqual(first.input_revision, 4)
+        self.assertEqual(self._save(
+            "PG-SURPLUS-INPUT-LINEAGE", 0, input_revision=4,
+        ), first)
+        with self.assertRaises(ValueError):
+            self._save("PG-SURPLUS-INPUT-LINEAGE", 0, input_revision=5)
 
     def test_encrypted_immutable_history_api_and_owner_scope(self):
         first = self._save("PG-SURPLUS-1", 0)
@@ -161,6 +172,11 @@ class PostgresSurplusDraftLedgerTests(unittest.TestCase):
                 trusted_revoke_authorizer=lambda *_: False,
                 trusted_human_review_authorizer=lambda *_: False,
             )
+            cases.append_owned_input_manifest(
+                self.household, self.principal,
+                action_id="DEMO-PG-INPUT-INITIAL", expected_case_version=1,
+                expected_input_revision=0, synthetic_manifest_digest="a" * 64,
+            )
             app = create_app(
                 config, browser_flow=flow, scoped_registry=cases,
                 technical_review_ledger=cases,
@@ -187,6 +203,7 @@ class PostgresSurplusDraftLedgerTests(unittest.TestCase):
                 data={
                     "csrf": session.csrf, "offer_ref": offer_ref,
                     "action_id": action_id, "expected_revision": "0",
+                    "input_revision": "1",
                     "product": "Tomato", "price": "producer-owned",
                 },
                 headers={"Origin": origin},
@@ -204,6 +221,29 @@ class PostgresSurplusDraftLedgerTests(unittest.TestCase):
             history = client.get(history_path)
             self.assertEqual(history.status_code, 200, history.text)
             self.assertIn("producer-owned", history.text)
+            saved = self.ledger.read_owned(
+                self.principal, self.household, offer_ref,
+            )
+            self.assertEqual((saved.revision, saved.input_revision), (1, 1))
+            cases.append_owned_input_manifest(
+                self.household, self.principal,
+                action_id="DEMO-PG-INPUT-CORRECTED", expected_case_version=1,
+                expected_input_revision=1, synthetic_manifest_digest="b" * 64,
+            )
+            stale_listing = client.get(listing_path)
+            self.assertIn("اطلاعات خانوار تغییر کرده", stale_listing.text)
+            self.assertNotIn("producer-owned", stale_listing.text)
+            stale_post = client.post(
+                listing_path,
+                data={
+                    "csrf": session.csrf, "offer_ref": offer_ref,
+                    "action_id": action_id + "-STALE", "expected_revision": "1",
+                    "input_revision": "1", "product": "Tomato",
+                    "price": "producer-owned",
+                },
+                headers={"Origin": origin},
+            )
+            self.assertEqual(stale_post.status_code, 409, stale_post.text)
             self.assertEqual(self.ledger.read_owned(
                 self.principal, self.household, offer_ref,
             ).revision, 1)

@@ -34,12 +34,30 @@ class SurplusDraftLedgerTests(unittest.TestCase):
             ),
         )
 
-    def save(self, action="action-001", expected=0, values=None):
+    def save(self, action="action-001", expected=0, values=None, input_revision=None):
         return self.ledger.save(
             self.owner, "DEMO-H-01", "DEMO-OFFER-01",
             action_id=action, expected_revision=expected,
+            input_revision=input_revision,
             values=values or {"product_ref": "DEMO-PRODUCT-01", "availability_note": ""},
         )
+
+    def test_receipt_binds_household_input_revision_and_replay(self):
+        record = self.save(input_revision=3)
+        self.assertEqual(record.input_revision, 3)
+        self.assertEqual(self.save(input_revision=3), record)
+        with self.assertRaises(SurplusDraftConflict):
+            self.save(input_revision=4)
+
+    def test_receipt_verifier_detects_input_lineage_tampering(self):
+        from ronas_api.domestic_surplus_drafts import SurplusDraftIntegrityError
+        import sqlite3
+        self.save(input_revision=3)
+        with sqlite3.connect(str(Path(self.tmp.name) / "drafts.sqlite3")) as db:
+            db.execute("DROP TRIGGER surplus_draft_revision_no_update")
+            db.execute("UPDATE domestic_surplus_draft_revision SET input_revision=4")
+        with self.assertRaises(SurplusDraftIntegrityError):
+            self.ledger.read_owned(self.owner, "DEMO-H-01", "DEMO-OFFER-01")
 
     def test_create_and_update_are_private_immutable_versioned_receipts(self):
         first = self.save()

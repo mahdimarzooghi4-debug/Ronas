@@ -68,6 +68,7 @@ class PostgresSurplusDraftLedger:
                         schema_version INTEGER NOT NULL CHECK (schema_version > 0),
                         schema_digest CHAR(64) NOT NULL CHECK (schema_digest ~ '^[0-9a-f]{64}$'),
                         revision INTEGER NOT NULL CHECK (revision > 0),
+                        input_revision INTEGER CHECK (input_revision IS NULL OR input_revision > 0),
                         values_ciphertext BYTEA NOT NULL
                             CHECK (octet_length(values_ciphertext) BETWEEN 29 AND 65564),
                         command_digest CHAR(64) NOT NULL CHECK (command_digest ~ '^[0-9a-f]{64}$'),
@@ -80,6 +81,11 @@ class PostgresSurplusDraftLedger:
                 db.execute("""
                     CREATE INDEX IF NOT EXISTS ronas_surplus_draft_lookup
                     ON ronas_domestic_surplus_draft_revision(household_ref, offer_ref, revision)
+                """)
+                db.execute("""
+                    ALTER TABLE ronas_domestic_surplus_draft_revision
+                    ADD COLUMN IF NOT EXISTS input_revision INTEGER
+                    CHECK (input_revision IS NULL OR input_revision > 0)
                 """)
                 db.execute("""
                     CREATE OR REPLACE FUNCTION ronas_reject_surplus_draft_mutation()
@@ -211,6 +217,8 @@ class PostgresSurplusDraftLedger:
                 "owner": owner, "household_ref": household, "offer_ref": offer,
                 "action_id": row["action_id"], "expected_revision": index - 1,
                 "schema_digest": schema_digest, "values": values,
+                **({"input_revision": row["input_revision"]}
+                   if row.get("input_revision") is not None else {}),
             })
             receipt = self._hash({
                 "household_ref": household, "offer_ref": offer,
@@ -218,6 +226,8 @@ class PostgresSurplusDraftLedger:
                 "schema_version": row["schema_version"], "schema_digest": schema_digest,
                 "revision": index, "values": values, "payload_digest": payload,
                 "previous_receipt_digest": previous,
+                **({"input_revision": row["input_revision"]}
+                   if row.get("input_revision") is not None else {}),
             })
             if (payload != row["payload_digest"].strip()
                     or command != row["command_digest"].strip()
@@ -234,6 +244,7 @@ class PostgresSurplusDraftLedger:
             payload_digest=row["payload_digest"].strip(),
             previous_receipt_digest=row["previous_receipt_digest"].strip(),
             receipt_digest=row["receipt_digest"].strip(),
+            input_revision=row.get("input_revision"),
         )
 
     def _decode_rows(self, rows):
@@ -246,10 +257,12 @@ class PostgresSurplusDraftLedger:
         return tuple(records)
 
     def save(self, principal, household_ref, offer_ref, *, action_id,
-             expected_revision, values):
+             expected_revision, values, input_revision=None):
         owner = self._owner(principal, household_ref, offer_ref)
         if (not isinstance(action_id, str) or not _ACTION.fullmatch(action_id)
-                or type(expected_revision) is not int or expected_revision < 0):
+                or type(expected_revision) is not int or expected_revision < 0
+                or (input_revision is not None and
+                    (type(input_revision) is not int or input_revision < 1))):
             raise ValueError("invalid surplus draft command")
         normalized = self.schema.validate(values)
         payload_digest = self._hash({"schema_digest": self.schema.digest, "values": normalized})
@@ -257,6 +270,8 @@ class PostgresSurplusDraftLedger:
             "owner": owner, "household_ref": household_ref, "offer_ref": offer_ref,
             "action_id": action_id, "expected_revision": expected_revision,
             "schema_digest": self.schema.digest, "values": normalized,
+            **({"input_revision": input_revision}
+               if input_revision is not None else {}),
         })
         owner_hash = self._owner_hash(owner)
         try:
@@ -301,15 +316,17 @@ class PostgresSurplusDraftLedger:
                     "schema_version": self.schema.version, "schema_digest": self.schema.digest,
                     "revision": revision, "values": normalized,
                     "payload_digest": payload_digest, "previous_receipt_digest": previous,
+                    **({"input_revision": input_revision}
+                       if input_revision is not None else {}),
                 })
                 inserted = db.execute("""INSERT INTO ronas_domestic_surplus_draft_revision
                     (action_id,household_ref,offer_ref,owner_hash,owner_ciphertext,
-                     schema_ref,schema_version,schema_digest,revision,values_ciphertext,
+                     schema_ref,schema_version,schema_digest,revision,input_revision,values_ciphertext,
                      command_digest,payload_digest,previous_receipt_digest,receipt_digest)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
                     (action_id, household_ref, offer_ref, owner_hash,
                      self._encrypt_owner(owner, action_id), self.schema.schema_ref,
-                     self.schema.version, self.schema.digest, revision,
+                     self.schema.version, self.schema.digest, revision, input_revision,
                      self._encrypt_values(
                          owner_hash, household_ref, offer_ref, revision, normalized,
                      ),

@@ -2823,6 +2823,25 @@ def build_authenticated_ui_router(
 
 
     if household_surplus_draft_ledger is not None:
+        def current_household_input_revision(ref: str, identity: Principal):
+            if household_input_ledger is None:
+                return None
+            try:
+                snapshot = household_input_ledger.read_owned_input_revisions(
+                    ref, identity,
+                )
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="HOUSEHOLD_INPUT_HISTORY_UNAVAILABLE",
+                ) from exc
+            except (sqlite3.Error, RuntimeError) as exc:
+                raise HTTPException(
+                    503, detail="HOUSEHOLD_INPUT_HISTORY_UNAVAILABLE",
+                ) from exc
+            if snapshot is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return snapshot["current_input_revision"]
+
         @router.get("/my-drafts/{ref}/surplus-offers/new")
         def household_start_surplus_draft(
             ref: str,
@@ -2913,6 +2932,7 @@ def build_authenticated_ui_router(
                 ) from exc
             entries = []
             active_digest = household_surplus_draft_ledger.schema.digest
+            current_input_revision = current_household_input_revision(ref, identity)
             for index, record in enumerate(revisions):
                 schema_matches = record.schema_digest == active_digest
                 previous = revisions[index - 1] if index else None
@@ -2963,7 +2983,15 @@ def build_authenticated_ui_router(
                 entries.append(
                     '<section><h3>نسخه ' + str(record.revision)
                     + ' · طرح‌واره ' + str(record.schema_version) + '</h3>'
-                    + '<p>' + state + '</p>' + values + diff_block + '</section>'
+                    + '<p>' + state + '</p>'
+                    + ('<p>' + ('به نسخه اطلاعات خانوار جاری متصل است'
+                       if record.input_revision is not None
+                       and record.input_revision == current_input_revision else
+                       'نسخه اطلاعات خانوار قدیمی یا ثبت‌نشده؛ این پیش‌نویس جاری نیست')
+                       + (" · نسخه ورودی " + str(record.input_revision)
+                          if record.input_revision is not None else '')
+                       + '</p>' if household_input_ledger is not None else '')
+                    + values + diff_block + '</section>'
                 )
             body = (
                 '<article class="panel"><h2>تاریخچهٔ پیش‌نویس مازاد</h2>'
@@ -3003,6 +3031,7 @@ def build_authenticated_ui_router(
                 ) from exc
             if permitted is not True:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            current_input_revision = current_household_input_revision(ref, identity)
             if offer_ref is None:
                 try:
                     records = household_surplus_draft_ledger.list_owned(identity, ref)
@@ -3020,9 +3049,19 @@ def build_authenticated_ui_router(
                     raise HTTPException(503, detail="SURPLUS_DRAFT_UNAVAILABLE") from exc
                 items = []
                 for record in records:
+                    input_matches = (
+                        record.input_revision is not None
+                        and record.input_revision == current_input_revision
+                    )
                     state = (
                         "طرح‌واره تغییر کرده؛ بازبینی لازم است"
                         if record.schema_digest != household_surplus_draft_ledger.schema.digest
+                        else "نسخه " + str(record.revision)
+                        + " · متصل به نسخه اطلاعات خانوار جاری"
+                        if household_input_ledger is not None and input_matches
+                        else "نسخه " + str(record.revision)
+                        + " · اطلاعات خانوار تغییر کرده یا نسخه ثبت نشده؛ بازبینی لازم است"
+                        if household_input_ledger is not None
                         else "نسخه " + str(record.revision) + " · خصوصی و منتشرنشده"
                     )
                     href = ("/my-drafts/" + quote(ref)
@@ -3077,6 +3116,10 @@ def build_authenticated_ui_router(
                 current is not None
                 and current.schema_digest == household_surplus_draft_ledger.schema.digest
             )
+            input_matches = (
+                current is not None and current.input_revision is not None
+                and current.input_revision == current_input_revision
+            )
             values = current.values if schema_matches else {}
             controls = []
             for field in household_surplus_draft_ledger.schema.fields:
@@ -3107,6 +3150,13 @@ def build_authenticated_ui_router(
                 "نسخه " + str(current.revision)
                 + " · طرح‌واره تغییر کرده؛ مقادیر نسخه قبلی نمایش داده نمی‌شود"
             )
+            if current is not None and household_input_ledger is not None:
+                state += (
+                    " · متصل به نسخه اطلاعات خانوار جاری"
+                    if input_matches else
+                    " · نسخه اطلاعات خانوار قدیمی یا ثبت نشده؛ پس از بازبینی، "
+                    "ذخیره نسخه تازه آن را به ورودی جاری متصل می‌کند"
+                )
             body = (
                 '<article class="panel"><h2>پیش‌نویس مازاد خانوار</h2>'
                 '<p>' + state + '</p>'
@@ -3121,6 +3171,9 @@ def build_authenticated_ui_router(
                 + secrets.token_hex(10).upper() + '">'
                 '<input type="hidden" name="expected_revision" value="'
                 + str(expected_revision) + '">'
+                '<input type="hidden" name="input_revision" value="'
+                + ('' if current_input_revision is None else str(current_input_revision))
+                + '">'
                 + ''.join(controls)
                 + '<button type="submit">ذخیره نسخه خصوصی</button></form>'
                 '<p>ثبت پیش‌نویس به‌معنی تأیید کیفیت، عرضه، قیمت یا معامله نیست.</p>'
@@ -3147,16 +3200,28 @@ def build_authenticated_ui_router(
                 | {field.key for field in household_surplus_draft_ledger.schema.fields}
             )
             principal, form = await checked_browser_form(
-                request, sid, fields=fields, max_bytes=8192, max_fields=10,
+                request, sid, fields=fields,
+                optional_fields=frozenset({"input_revision"}),
+                max_bytes=8192, max_fields=11,
                 max_value_length=300, value_encoding="utf-8",
             )
             if not _synthetic_ref(ref) or not _synthetic_ref(form["offer_ref"]):
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            current_input_revision = current_household_input_revision(ref, principal)
+            submitted_input_revision = (
+                form_version(form.get("input_revision", ""), zero_allowed=False)
+                if form.get("input_revision", "") else None
+            )
+            if submitted_input_revision != current_input_revision:
+                raise HTTPException(
+                    409, detail="HOUSEHOLD_INPUT_REVISION_CHANGED",
+                )
             try:
                 household_surplus_draft_ledger.save(
                     principal, ref, form["offer_ref"],
                     action_id=form["action_id"],
                     expected_revision=form_version(form["expected_revision"]),
+                    input_revision=current_input_revision,
                     values={
                         field.key: form[field.key]
                         for field in household_surplus_draft_ledger.schema.fields
@@ -3205,6 +3270,8 @@ def build_authenticated_ui_router(
                 result = publication_readiness_snapshot(
                     household_surplus_publication_authority,
                     identity, ref, offer_ref, household_surplus_draft_ledger,
+                    (household_input_ledger.read_owned_input_revisions
+                     if household_input_ledger is not None else None),
                 )
             except HTTPException as exc:
                 if exc.status_code == 404:
@@ -3231,6 +3298,12 @@ def build_authenticated_ui_router(
                 "SELLER_ELIGIBILITY_UNVERIFIED": "وضعیت صلاحیت فروشنده احراز نشده است",
                 "HOUSEHOLD_PERMISSION_INACTIVE": "مجوز خانوار فعال نیست",
                 "MARKETPLACE_GATE_CLOSED": "درگاه فنی بازارگاه باز نیست",
+                "HOUSEHOLD_INPUT_REVISION_UNBOUND":
+                    "پیش‌نویس به نسخه اطلاعات خانوار متصل نشده است",
+                "HOUSEHOLD_INPUT_REVISION_CHANGED":
+                    "نسخه اطلاعات خانوار تغییر کرده است",
+                "HOUSEHOLD_INPUT_REVISION_UNAVAILABLE":
+                    "نسخه جاری اطلاعات خانوار در دسترس نیست",
             }
             blockers = result.get("blockers")
             if (not isinstance(blockers, list)

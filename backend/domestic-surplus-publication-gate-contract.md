@@ -30,3 +30,9 @@ resolver must independently return the same version and current attestations; ol
 approvals produce version/staleness blockers. A draft whose schema digest is no
 longer active receives OFFER_SCHEMA_CHANGED and cannot pass the technical gate.
 No field values are returned by the readiness projection.
+
+Readiness also requires the persisted offer to be bound to the current household
+input revision. An unbound offer, a changed household input, or an unavailable
+input-lineage reader adds a dedicated blocker. The input revision is read again
+after resolving external authorities so a concurrent correction cannot leave an
+older household context appearing eligible.

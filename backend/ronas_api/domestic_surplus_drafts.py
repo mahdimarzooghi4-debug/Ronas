@@ -34,7 +34,7 @@ class SurplusDraftLedger(Protocol):
     _owner_access_authority: Callable[[Principal, str, str], bool]
 
     def save(self, principal, household_ref, offer_ref, *, action_id,
-             expected_revision, values) -> SurplusDraftRevision: ...
+             expected_revision, values, input_revision=None) -> SurplusDraftRevision: ...
     def list_owned(self, principal, household_ref) -> tuple[SurplusDraftRevision, ...]: ...
     def history_owned(self, principal, household_ref, offer_ref) -> tuple[SurplusDraftRevision, ...]: ...
     def read_owned(self, principal, household_ref, offer_ref) -> SurplusDraftRevision: ...
@@ -53,6 +53,7 @@ class SurplusDraftRevision:
     payload_digest: str
     previous_receipt_digest: str
     receipt_digest: str
+    input_revision: int | None = None
     published: bool = False
     real_data: bool = False
 
@@ -82,6 +83,10 @@ class SqliteSyntheticSurplusDraftLedger:
                     schema_version INTEGER NOT NULL,
                     schema_digest TEXT NOT NULL,
                     revision INTEGER NOT NULL,
+                    input_revision INTEGER CHECK (
+                        input_revision IS NULL OR
+                        (typeof(input_revision)='integer' AND input_revision > 0)
+                    ),
                     values_json TEXT NOT NULL,
                     command_digest TEXT NOT NULL,
                     payload_digest TEXT NOT NULL,
@@ -98,6 +103,14 @@ class SqliteSyntheticSurplusDraftLedger:
                 CREATE INDEX IF NOT EXISTS surplus_draft_owner_lookup
                 ON domestic_surplus_draft_revision(household_ref, offer_ref, revision);
             """)
+            columns = {row[1] for row in db.execute(
+                "PRAGMA table_info(domestic_surplus_draft_revision)"
+            )}
+            if "input_revision" not in columns:
+                db.execute(
+                    "ALTER TABLE domestic_surplus_draft_revision "
+                    "ADD COLUMN input_revision INTEGER"
+                )
 
     def _connect(self):
         db = sqlite3.connect(self._database_path, timeout=5, isolation_level=None)
@@ -153,6 +166,9 @@ class SqliteSyntheticSurplusDraftLedger:
                 if (not isinstance(values, dict)
                         or any(not isinstance(key, str) or not isinstance(value, str)
                                for key, value in values.items())
+                        or row["input_revision"] is not None and
+                        (type(row["input_revision"]) is not int
+                         or row["input_revision"] < 1)
                         or row["revision"] != expected_revision
                         or row["previous_receipt_digest"] != previous):
                     raise ValueError
@@ -174,6 +190,8 @@ class SqliteSyntheticSurplusDraftLedger:
                     "action_id": row["action_id"],
                     "expected_revision": row["revision"] - 1,
                     "schema_digest": row["schema_digest"], "values": values,
+                    **({"input_revision": row["input_revision"]}
+                       if row["input_revision"] is not None else {}),
                 })
                 body = {
                     "household_ref": row["household_ref"],
@@ -185,6 +203,8 @@ class SqliteSyntheticSurplusDraftLedger:
                     "revision": row["revision"], "values": values,
                     "payload_digest": payload_digest,
                     "previous_receipt_digest": previous,
+                    **({"input_revision": row["input_revision"]}
+                       if row["input_revision"] is not None else {}),
                 }
                 receipt_digest = cls._hash(body)
                 if (row["payload_digest"] != payload_digest
@@ -209,10 +229,13 @@ class SqliteSyntheticSurplusDraftLedger:
     def save(
         self, principal: Any, household_ref: str, offer_ref: str, *,
         action_id: str, expected_revision: int, values: dict[str, str],
+        input_revision: int | None = None,
     ) -> SurplusDraftRevision:
         owner = self._authorized_owner(principal, household_ref, offer_ref)
         if (not isinstance(action_id, str) or not _ACTION.fullmatch(action_id)
-                or type(expected_revision) is not int or expected_revision < 0):
+                or type(expected_revision) is not int or expected_revision < 0
+                or (input_revision is not None and
+                    (type(input_revision) is not int or input_revision < 1))):
             raise ValueError("invalid surplus draft command")
         normalized = self.schema.validate(values)
         values_json = json.dumps(
@@ -225,6 +248,8 @@ class SqliteSyntheticSurplusDraftLedger:
             "owner": owner, "household_ref": household_ref, "offer_ref": offer_ref,
             "action_id": action_id, "expected_revision": expected_revision,
             "schema_digest": self.schema.digest, "values": normalized,
+            **({"input_revision": input_revision}
+               if input_revision is not None else {}),
         })
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -258,16 +283,18 @@ class SqliteSyntheticSurplusDraftLedger:
                 "schema_version": self.schema.version, "schema_digest": self.schema.digest,
                 "revision": revision, "values": normalized,
                 "payload_digest": payload_digest, "previous_receipt_digest": previous,
+                **({"input_revision": input_revision}
+                   if input_revision is not None else {}),
             }
             receipt = self._hash(body)
             db.execute(
                 """INSERT INTO domestic_surplus_draft_revision
                    (action_id,household_ref,offer_ref,producer_subject,schema_ref,
-                    schema_version,schema_digest,revision,values_json,command_digest,
+                    schema_version,schema_digest,revision,input_revision,values_json,command_digest,
                     payload_digest,previous_receipt_digest,receipt_digest)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (action_id, household_ref, offer_ref, owner, self.schema.schema_ref,
-                 self.schema.version, self.schema.digest, revision, values_json,
+                 self.schema.version, self.schema.digest, revision, input_revision, values_json,
                  command_digest, payload_digest, previous, receipt),
             )
             row = db.execute(
@@ -351,6 +378,7 @@ class SqliteSyntheticSurplusDraftLedger:
             payload_digest=row["payload_digest"],
             previous_receipt_digest=row["previous_receipt_digest"],
             receipt_digest=row["receipt_digest"],
+            input_revision=row["input_revision"],
         )
 
 

@@ -2,6 +2,7 @@
 import os
 import secrets
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
 import psycopg
 
@@ -73,6 +74,17 @@ class PostgresExportFindingLedgerTests(unittest.TestCase):
         self.state["question_revision"] = 2
         with self.assertRaises(ExportResearchFindingConflict):
             self.record("PG-EXPORT-OLD-QUESTION")
+
+    def test_concurrent_appends_use_compare_and_swap(self):
+        def append(action):
+            try:
+                return self.record(action, expected=0)
+            except ExportResearchFindingConflict:
+                return None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(append, ("PG-EXPORT-RACE-1", "PG-EXPORT-RACE-2")))
+        self.assertEqual(sum(result is not None for result in results), 1)
+        self.assertEqual(len(self.ledger.read_history(self.ref, self.principal)), 1)
 
     def test_database_row_tampering_is_detected(self):
         self.record("PG-EXPORT-FINDING-TAMPER")

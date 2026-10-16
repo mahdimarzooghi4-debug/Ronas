@@ -111,6 +111,8 @@ class PostgresExportResearchFindingLedger:
         try:
             with self._connect() as db:
                 db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                           ("ronas-export-finding-action:" + action_id,))
+                db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                            ("ronas-export-finding:" + ref + ":" + str(expected_question_revision),))
                 # Authorization and current question/evidence are rechecked under the append lock.
                 workspace = self._workspace(ref, principal)

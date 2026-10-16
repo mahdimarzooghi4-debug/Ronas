@@ -22,6 +22,10 @@ from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES as TEC
 from .export_research_evidence import ExportEvidenceReferenceConflict
 from .export_research_findings import ExportResearchFindingConflict
 from .postgres_export_findings import ExportFindingStorageError
+from .export_research_packet import (
+    ExportResearchPacketConflict, ExportResearchPacketIntegrityError,
+    build_export_research_packet,
+)
 from .export_source_connector import (
     ExportSourceConnectorRegistry, ExportSourceConnectorUnavailable,
     capture_export_source_reference,
@@ -3968,6 +3972,49 @@ def build_authenticated_ui_router(
                         content, logged_in=True)
 
     if technical_review_ledger is not None:
+        @router.get("/admin/export/research/drafts/{ref}/packet.json")
+        def export_research_packet_download(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> JSONResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            principal = Principal(session.subject, session.roles)
+            try:
+                before = technical_review_ledger.read_export_research_workspace(
+                    ref, principal,
+                )
+                if before is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                if export_research_finding_ledger is not None:
+                    findings = export_research_finding_ledger.read_history(ref, principal)
+                else:
+                    findings = before.get("local_test_findings")
+                after = technical_review_ledger.read_export_research_workspace(
+                    ref, principal,
+                )
+                if findings is None or after is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                packet = build_export_research_packet(before, findings, after)
+            except HTTPException:
+                raise
+            except ExportResearchPacketConflict as exc:
+                raise HTTPException(409, detail="EXPORT_RESEARCH_CONTEXT_CHANGED") from exc
+            except ExportResearchPacketIntegrityError as exc:
+                raise HTTPException(503, detail="TECHNICAL_REVIEW_UNAVAILABLE") from exc
+            except (LedgerIntegrityError, sqlite3.Error, ExportFindingStorageError) as exc:
+                raise HTTPException(503, detail="TECHNICAL_REVIEW_UNAVAILABLE") from exc
+            return JSONResponse(
+                packet,
+                headers={
+                    "Cache-Control": "no-store",
+                    "Content-Disposition": 'attachment; filename="ronas-export-demo-packet.json"',
+                },
+            )
+
+    if technical_review_ledger is not None:
         @router.get("/admin/export/research/drafts/{ref}/versions")
         def export_research_versions_page(
             ref: str,
@@ -4140,6 +4187,9 @@ def build_authenticated_ui_router(
                 '<p><a href="/admin/export/research/drafts/'
                 + quote(data["ref"]) + '/versions?' + navigation
                 + '">تاریخچه نسخه‌های این پرونده</a></p>'
+                '<p><a href="/admin/export/research/drafts/'
+                + quote(data["ref"]) + '/packet.json">دریافت بسته پژوهش DEMO به‌صورت JSON</a></p>'
+                '<p>بسته فقط شناسه‌ها، fingerprint و یادداشت DEMO دارد؛ مجوز منبع یا گزارش معتبر ایجاد نمی‌کند.</p>'
                 '<h3>تعریف مسئله پژوهش</h3>'
                 '<p>محصول: تعیین نشده · مقصد: تعیین نشده '
                 '· HS: تعیین نشده</p>'

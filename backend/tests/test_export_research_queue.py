@@ -29,6 +29,10 @@ from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
 from ronas_api.postgres_export_findings import PostgresExportResearchFindingLedger
+from ronas_api.export_research_packet import (
+    ExportResearchPacketConflict, ExportResearchPacketIntegrityError,
+    build_export_research_packet,
+)
 
 ISS = "https://id.example.test/realms/ronas"
 API, WEB, ORIGIN = "ronas-api", "ronas-web", "https://ronas.example.test"
@@ -955,6 +959,79 @@ class ExportResearchQueueTests(unittest.TestCase):
         self.assertEqual(client.get(
             path, headers=self.headers("synthetic-export-other"),
         ).status_code, 404)
+
+    def test_research_packet_api_and_browser_download_are_scoped_and_stable(self):
+        self.assertEqual(self.post_question().status_code, 201)
+        self.assertEqual(self.post_evidence().status_code, 201)
+        finding = self.post_finding()
+        self.assertEqual(finding.status_code, 201, finding.text)
+        expected = self.ledger.read_export_research_workspace(
+            "DEMO-E-001", Principal("synthetic-export-001", ("export_ops",)),
+        )["local_test_findings"]
+        finding_ledger = PostgresExportResearchFindingLedger.__new__(
+            PostgresExportResearchFindingLedger,
+        )
+        finding_ledger._workspace_reader = self.ledger.read_export_research_workspace
+        finding_ledger.read_history = lambda ref, principal: (
+            expected if ref == "DEMO-E-001"
+            and principal.subject == "synthetic-export-001" else None
+        )
+        client = self.client_for(
+            self.ledger, export_research_finding_ledger=finding_ledger,
+        )
+        path = "/api/v1/admin/export/research/drafts/DEMO-E-001/research-packet"
+        self.assertEqual(client.get(path).status_code, 401)
+        response = client.get(path, headers=self.headers())
+        self.assertEqual(response.status_code, 200, response.text)
+        packet = response.json()
+        self.assertEqual(packet["case_ref"], "DEMO-E-001")
+        self.assertEqual(packet["question"]["question_revision"], 1)
+        self.assertEqual(len(packet["evidence_references"]), 1)
+        self.assertEqual(len(packet["findings"]), 1)
+        self.assertFalse(packet["limitations"]["source_rights_verified"])
+        self.assertFalse(packet["limitations"]["source_data_ingested"])
+        self.assertFalse(packet["report_approved"])
+        self.assertNotIn("browser connector snapshot", response.text)
+        digest_payload = dict(packet)
+        digest = digest_payload.pop("packet_digest")
+        self.assertEqual(digest, hashlib.sha256(json.dumps(
+            digest_payload, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")).hexdigest())
+        workspace = self.ledger.read_export_research_workspace(
+            "DEMO-E-001", Principal("synthetic-export-001", ("export_ops",)),
+        )
+        changed = json.loads(json.dumps(workspace))
+        changed["case_version"] += 1
+        with self.assertRaises(ExportResearchPacketConflict):
+            build_export_research_packet(workspace, expected, changed)
+        prohibited = json.loads(json.dumps(workspace))
+        prohibited["source_rights_verified"] = True
+        with self.assertRaises(ExportResearchPacketIntegrityError):
+            build_export_research_packet(prohibited, expected, prohibited)
+        self.assertEqual(client.get(
+            path, headers=self.headers("synthetic-export-other"),
+        ).status_code, 404)
+
+        self.client = self.client_for(
+            self.ledger, export_research_finding_ledger=finding_ledger,
+        )
+        self.login()
+        page = self.client.get("/admin/export/research/drafts/DEMO-E-001")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("/admin/export/research/drafts/DEMO-E-001/packet.json", page.text)
+        download = self.client.get(
+            "/admin/export/research/drafts/DEMO-E-001/packet.json",
+        )
+        self.assertEqual(download.status_code, 200, download.text)
+        self.assertIn("attachment; filename=\"ronas-export-demo-packet.json\"",
+                      download.headers["content-disposition"])
+        self.assertEqual(download.headers["cache-control"], "no-store")
+        self.assertEqual(download.json()["packet_digest"], packet["packet_digest"])
+        self.assertEqual(self.client.get(
+            "/admin/export/research/drafts/DEMO-E-001/packet.json",
+            headers={"Cookie": "__Host-ronas_session=invalid"},
+        ).status_code, 401)
 
     def test_export_finding_browser_form_uses_current_evidence_and_csrf(self):
         self.assertEqual(self.post_question().status_code, 201)

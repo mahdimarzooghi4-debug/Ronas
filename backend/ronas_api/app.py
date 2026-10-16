@@ -24,6 +24,7 @@ from .stage_observation_artifacts import StageArtifactStore, build_stage_artifac
 
 from .household_input_api import build_household_input_router
 from .technical_review_api import build_technical_review_read_router
+from .postgres_export_findings import PostgresExportResearchFindingLedger
 from .export_source_connector import ExportSourceConnectorRegistry
 from .shared_workspaces import build_user_workspaces_router
 from .agronomy_workspace import SyntheticAgronomyWorkspace
@@ -76,13 +77,22 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                household_surplus_publication_authority=None,
                household_surplus_draft_ledger: SurplusDraftLedger | None = None,
                household_surplus_producer_consent_ledger: ProducerConsentLedger | None = None,
-               export_source_connectors: ExportSourceConnectorRegistry | None = None) -> FastAPI:
+               export_source_connectors: ExportSourceConnectorRegistry | None = None,
+               export_research_finding_ledger: PostgresExportResearchFindingLedger | None = None) -> FastAPI:
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
             or not isinstance(config, KeycloakConfig)
             or not isinstance(technical_review_ledger,
                               SqliteSyntheticHumanReviewLedger)):
         raise ValueError("Export source connector requires Keycloak and the scoped review ledger")
+    if export_research_finding_ledger is not None and (
+            not isinstance(export_research_finding_ledger, PostgresExportResearchFindingLedger)
+            or not isinstance(config, KeycloakConfig)
+            or not isinstance(technical_review_ledger, SqliteSyntheticHumanReviewLedger)
+            or scoped_registry is not technical_review_ledger
+            or getattr(getattr(export_research_finding_ledger, "_workspace_reader", None), "__self__", None)
+                is not technical_review_ledger):
+        raise ValueError("Export finding storage requires the exact Keycloak-scoped case ledger")
     if (household_stage_context_authority is not None
             and (household_profile_schema is None
                  or not callable(household_stage_context_authority))):
@@ -198,6 +208,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             household_surplus_publication_authority=household_surplus_publication_authority,
             household_surplus_draft_ledger=household_surplus_draft_ledger,
             household_surplus_producer_consent_ledger=household_surplus_producer_consent_ledger,
+            export_research_finding_ledger=export_research_finding_ledger,
         ))
 
     @app.middleware("http")
@@ -396,6 +407,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         app.include_router(build_technical_review_read_router(
             technical_review_ledger, principal,
             export_source_connectors=export_source_connectors,
+            export_research_finding_ledger=export_research_finding_ledger,
         ))
 
     def grant(name: str):

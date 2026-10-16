@@ -21,6 +21,7 @@ from .scoped_audit import GrantConflict, GrantNotAuthorized
 from .export_research_question import ExportResearchQuestionConflict
 from .export_research_evidence import ExportEvidenceReferenceConflict
 from .export_research_findings import ExportResearchFindingConflict
+from .postgres_export_findings import ExportFindingStorageError
 from .export_source_connector import (
     ExportSourceConnectorRegistry, ExportSourceConnectorUnavailable,
     capture_export_source_reference,
@@ -81,6 +82,7 @@ def build_technical_review_read_router(
     ledger: SqliteSyntheticHumanReviewLedger,
     verified_principal: Callable[..., Principal],
     export_source_connectors: ExportSourceConnectorRegistry | None = None,
+    export_research_finding_ledger=None,
 ) -> APIRouter:
     """This router is safe only when mounted with real Keycloak verification.
 
@@ -89,6 +91,9 @@ def build_technical_review_read_router(
     """
     if not isinstance(ledger, SqliteSyntheticHumanReviewLedger):
         raise ValueError("an explicit synthetic human review ledger is required")
+    if (export_research_finding_ledger is not None and
+            getattr(getattr(export_research_finding_ledger, "_workspace_reader", None), "__self__", None) is not ledger):
+        raise ValueError("Export finding storage must authorize through the shared case ledger")
     router = APIRouter()
 
     def lookup(engine: str, ref: str, principal: Principal) -> dict:
@@ -424,7 +429,8 @@ def build_technical_review_read_router(
     ) -> dict:
         require_bearer(authorization)
         try:
-            result = ledger.record_export_research_finding(
+            finding_ledger = export_research_finding_ledger or ledger
+            result = finding_ledger.record_export_research_finding(
                 ref, p, expected_case_version=command.expected_case_version,
                 expected_question_revision=command.expected_question_revision,
                 expected_finding_revision=command.expected_finding_revision,
@@ -440,6 +446,8 @@ def build_technical_review_read_router(
             raise HTTPException(
                 503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
             ) from exc
+        except ExportFindingStorageError as exc:
+            raise HTTPException(503, detail="TECHNICAL_REVIEW_UNAVAILABLE") from exc
         except ValueError as exc:
             raise HTTPException(422, detail="INVALID_EXPORT_RESEARCH_FINDING") from exc
         if result is None:

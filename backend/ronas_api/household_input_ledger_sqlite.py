@@ -230,7 +230,8 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
                 return None
             record = self._catalogue[("DOMESTIC", ref)]
             rows = list(db.execute(
-                "SELECT revision,reported_at,note FROM household_progress_note "
+                "SELECT case_version,revision,reported_at,note "
+                "FROM household_progress_note "
                 "WHERE ref=? ORDER BY revision", (ref,),
             ))
             self._append(db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
@@ -238,9 +239,12 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
             return {
                 "contract_version": PROGRESS_CONTRACT, "engine": "DOMESTIC",
                 "ref": ref, "case_version": record.version,
-                "notes": [{"revision": r, "reported_at": ts, "note": text}
-                          for r, ts, text in rows],
-                "current_revision": rows[-1][0] if rows else 0,
+                "notes": [{
+                    "case_version": version, "revision": revision,
+                    "reported_at": reported_at, "note": text,
+                    "current_case_version": version == record.version,
+                } for version, revision, reported_at, text in rows],
+                "current_revision": rows[-1][1] if rows else 0,
                 "real_data": False, "scientific_review": False,
                 "expert_inspection": False, "plan_accepted": False,
             }

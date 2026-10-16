@@ -49,9 +49,9 @@ class PostgresExportFindingLedgerTests(unittest.TestCase):
         )
 
     def test_encrypted_append_only_history_and_replay(self):
-        first = self.record("PG-EXPORT-FINDING-1")
+        first = self.record("DEMO-PG-EXPORT-FINDING-1")
         self.assertEqual(first["revision"], 1)
-        self.assertEqual(self.record("PG-EXPORT-FINDING-1"), first)
+        self.assertEqual(self.record("DEMO-PG-EXPORT-FINDING-1"), first)
         with psycopg.connect(DSN) as db:
             row = db.execute("SELECT note_ciphertext FROM ronas_export_research_finding WHERE ref=%s", (self.ref,)).fetchone()
             self.assertNotIn(b"sample market signal", bytes(row[0]))
@@ -68,12 +68,12 @@ class PostgresExportFindingLedgerTests(unittest.TestCase):
             self.ledger.record_export_research_finding(
                 self.ref, self.principal, expected_case_version=1,
                 expected_question_revision=1, expected_finding_revision=0,
-                evidence_revision=1, action_id="PG-EXPORT-STALE",
+                evidence_revision=1, action_id="DEMO-PG-EXPORT-STALE",
                 evidence_ref="DEMO-EVIDENCE-1", note="DEMO: sample market signal")
         self.assertIsNone(self.ledger.read_history(self.ref, Principal("other", frozenset({"export_ops"}))))
         self.state["question_revision"] = 2
         with self.assertRaises(ExportResearchFindingConflict):
-            self.record("PG-EXPORT-OLD-QUESTION")
+            self.record("DEMO-PG-EXPORT-OLD-QUESTION")
 
     def test_concurrent_appends_use_compare_and_swap(self):
         def append(action):
@@ -82,12 +82,12 @@ class PostgresExportFindingLedgerTests(unittest.TestCase):
             except ExportResearchFindingConflict:
                 return None
         with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(append, ("PG-EXPORT-RACE-1", "PG-EXPORT-RACE-2")))
+            results = list(pool.map(append, ("DEMO-PG-EXPORT-RACE-1", "DEMO-PG-EXPORT-RACE-2")))
         self.assertEqual(sum(result is not None for result in results), 1)
         self.assertEqual(len(self.ledger.read_history(self.ref, self.principal)), 1)
 
     def test_database_row_tampering_is_detected(self):
-        self.record("PG-EXPORT-FINDING-TAMPER")
+        self.record("DEMO-PG-EXPORT-FINDING-TAMPER")
         with psycopg.connect(DSN) as db:
             db.execute("ALTER TABLE ronas_export_research_finding DISABLE TRIGGER ronas_export_finding_no_update_delete")
             db.execute("UPDATE ronas_export_research_finding SET note_digest=%s WHERE ref=%s",

@@ -921,7 +921,9 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
     def _export_finding_history(self, db, ref: str,
                                 current_question_revision: int) -> list[dict]:
         rows = db.execute(
-            "SELECT question_revision,evidence_revision,revision,evidence_ref,note, "
+            "SELECT f.question_revision,f.evidence_revision,f.revision,"
+            "f.evidence_ref,f.note,e.source_ref,e.connector_ref,"
+            "e.source_snapshot_digest, "
             "(SELECT e.revision FROM export_research_evidence_reference e "
             "WHERE e.ref=f.ref AND e.question_revision=f.question_revision "
             "ORDER BY e.revision DESC LIMIT 1), "
@@ -929,11 +931,16 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             "WHERE e.ref=f.ref AND e.question_revision=f.question_revision "
             "ORDER BY e.revision DESC LIMIT 1) "
             "FROM export_research_finding_draft f "
-            "WHERE f.ref=? ORDER BY question_revision,revision", (ref,),
+            "JOIN export_research_evidence_reference e "
+            "ON e.ref=f.ref AND e.question_revision=f.question_revision "
+            "AND e.revision=f.evidence_revision AND e.evidence_ref=f.evidence_ref "
+            "WHERE f.ref=? ORDER BY f.question_revision,f.revision", (ref,),
         )
         return [{
             "question_revision": qrev, "evidence_revision": erev,
             "revision": revision, "evidence_ref": evidence_ref,
+            "source_ref": source_ref, "connector_ref": connector_ref,
+            "source_snapshot_digest": snapshot_digest,
             "note": note, "question_binding": (
                 "CURRENT" if qrev == current_question_revision else "HISTORICAL"
             ), "evidence_binding": (
@@ -941,7 +948,8 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                               and latest_evidence_ref == evidence_ref)
                 else "HISTORICAL"
             ), "draft_only": True, "report_approved": False,
-        } for (qrev, erev, revision, evidence_ref, note,
+        } for (qrev, erev, revision, evidence_ref, note, source_ref,
+               connector_ref, snapshot_digest,
                latest_evidence_revision, latest_evidence_ref) in rows]
 
     def record_export_research_finding(

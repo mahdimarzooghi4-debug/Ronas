@@ -961,6 +961,8 @@ class ExportResearchQueueTests(unittest.TestCase):
         created = self.post_finding()
         self.assertEqual(created.status_code, 201, created.text)
         self.assertEqual(created.json()["evidence_binding"], "CURRENT")
+        self.assertEqual(created.json()["connector_ref"], "DEMO-CONNECTOR-ALPHA")
+        self.assertEqual(created.json()["source_snapshot_digest"], "a" * 64)
 
         advanced = self.post_evidence(payload=self.evidence_payload(
             action="DEMO-EVIDENCE-ACTION-2", evidence_rev=1,
@@ -974,11 +976,15 @@ class ExportResearchQueueTests(unittest.TestCase):
         finding = workspace["local_test_findings"][0]
         self.assertEqual(finding["question_binding"], "CURRENT")
         self.assertEqual(finding["evidence_binding"], "HISTORICAL")
+        self.assertEqual(finding["evidence_ref"], "DEMO-EVIDENCE-ALPHA")
+        self.assertEqual(finding["source_snapshot_digest"], "a" * 64)
         self.login()
         page = self.client.get(
             "/admin/export/research/drafts/DEMO-E-001"
         )
         self.assertIn("شواهد: HISTORICAL", page.text)
+        self.assertIn("fingerprint snapshot: " + "a" * 64, page.text)
+        self.assertIn("DEMO-CONNECTOR-ALPHA", page.text)
         self.assertTrue(self.reopen().verify_integrity())
 
     def test_export_finding_audit_failure_rolls_back_note(self):

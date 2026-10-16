@@ -209,6 +209,14 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 BEFORE DELETE ON expert_stage_question_binding
                 BEGIN SELECT RAISE(ABORT, 'stage question bindings immutable'); END;
             """)
+            columns = {row[1] for row in db.execute(
+                "PRAGMA table_info(household_stage_observation)"
+            )}
+            if "corrects_revision" not in columns:
+                db.execute("ALTER TABLE household_stage_observation ADD COLUMN corrects_revision INTEGER")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS stage_observation_one_correction "
+                       "ON household_stage_observation(ref,corrects_revision) "
+                       "WHERE corrects_revision IS NOT NULL")
         self._profile_ready = True
         with self._transaction() as db:
             self._verify(db)
@@ -557,6 +565,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
             "observed_at": receipt.observed_at,
             "observation_artifact_digest": receipt.observation_artifact_digest,
             "revision": receipt.revision,
+            "corrects_revision": receipt.corrects_revision,
             "previous_receipt_digest": receipt.previous_receipt_digest,
             "receipt_digest": receipt.receipt_digest,
             "status": receipt.status,
@@ -581,13 +590,15 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
         rows = db.execute(
             "SELECT action_id,ref,case_version,input_revision,input_snapshot_digest,"
             "plan_digest,stage_ref,requirements_digest,observed_at,artifact_digest,"
-            "revision,owner_digest,previous_receipt_digest,receipt_digest,audit_sequence "
+            "revision,owner_digest,previous_receipt_digest,receipt_digest,audit_sequence,"
+            "corrects_revision "
             "FROM household_stage_observation ORDER BY audit_sequence"
         )
         for row in rows:
             (action, ref, case_version, input_revision, input_digest, plan_digest,
              stage_ref, requirements_digest, observed_at, artifact_digest,
-             revision, owner_digest, previous, receipt, sequence) = row
+             revision, owner_digest, previous, receipt, sequence,
+             corrects_revision) = row
             record = self._catalogue.get(("DOMESTIC", ref))
             expected_previous = prior_by_ref.get(ref, GENESIS)
             expected_revision = revision_by_ref.get(ref, 0) + 1
@@ -601,6 +612,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                     expected_observation_requirements_digest=requirements_digest,
                     observed_at=observed_at,
                     observation_artifact_digest=artifact_digest,
+                    corrects_revision=corrects_revision,
                 )
                 current = CurrentStageContext(
                     case_ref=ref, case_version=case_version,
@@ -616,10 +628,25 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 raise LedgerIntegrityError(
                     "invalid Domestic stage observation receipt"
                 ) from exc
+            correction_target = (db.execute(
+                "SELECT stage_ref FROM household_stage_observation "
+                "WHERE ref=? AND revision=?", (ref, corrects_revision),
+            ).fetchone() if corrects_revision is not None else None)
+            correction_already_used = (db.execute(
+                "SELECT 1 FROM household_stage_observation "
+                "WHERE ref=? AND corrects_revision=? AND action_id<>?",
+                (ref, corrects_revision, action),
+            ).fetchone() if corrects_revision is not None else None)
             if (record is None or case_version != record.version
                     or not _synthetic_ref(action)
                     or type(input_revision) is not int or input_revision < 1
                     or not _digest(input_digest) or not _digest(plan_digest)
+                    or (corrects_revision is not None and (
+                        type(corrects_revision) is not int or corrects_revision < 1
+                        or correction_target != (stage_ref,)
+                        or correction_already_used is not None
+                        or corrects_revision >= revision
+                    ))
                     or type(revision) is not int or revision != expected_revision
                     or owner_digest != _hash(record.owner_subject)
                     or previous != expected_previous
@@ -991,7 +1018,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
         rows = db.execute(
             "SELECT action_id,case_version,input_revision,input_snapshot_digest,"
             "plan_digest,stage_ref,requirements_digest,observed_at,artifact_digest,"
-            "revision,previous_receipt_digest,receipt_digest "
+            "revision,previous_receipt_digest,receipt_digest,corrects_revision "
             "FROM household_stage_observation WHERE ref=? ORDER BY revision",
             (ref,),
         ).fetchall()
@@ -1006,7 +1033,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
         for row in rows:
             (action, version, input_revision, input_digest, plan_digest,
              stage_ref, requirements_digest, observed_at, artifact_digest,
-             revision, previous, digest) = row
+             revision, previous, digest, corrects_revision) = row
             receipt = StageObservationReceipt(
                 contract_version="ronas.domestic.stage-observation-receipt.v0",
                 case_ref=ref, case_version=version,
@@ -1017,19 +1044,28 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 observed_at=observed_at,
                 observation_artifact_digest=artifact_digest,
                 revision=revision, previous_receipt_digest=previous,
-                receipt_digest=digest,
+                receipt_digest=digest, corrects_revision=corrects_revision,
             )
             items.append({
                 "revision": revision, "stage_ref": stage_ref,
                 "observed_at": observed_at,
                 "observation_artifact_digest": artifact_digest,
                 "receipt_digest": digest,
+                "corrects_revision": corrects_revision,
+                "is_superseded": False,
+                "superseded_by_revision": None,
                 "receipt_inspected": (stage_ref, revision) in inspected,
                 "inspection_is_review": False,
                 "current": bool(context and receipt_is_current(receipt, context)),
                 "status": "OBSERVATION_REFERENCE_RECORDED",
                 "stage_completed": False,
             })
+        by_revision = {item["revision"]: item for item in items}
+        for item in items:
+            target_revision = item["corrects_revision"]
+            if target_revision is not None and target_revision in by_revision:
+                by_revision[target_revision]["is_superseded"] = True
+                by_revision[target_revision]["superseded_by_revision"] = item["revision"]
         latest_by_stage = {}
         for observation in items:
             latest_by_stage[observation["stage_ref"]] = observation
@@ -1119,7 +1155,8 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
             existing = db.execute(
                 "SELECT ref,case_version,input_revision,input_snapshot_digest,"
                 "plan_digest,stage_ref,requirements_digest,observed_at,artifact_digest,"
-                "revision,owner_digest,previous_receipt_digest,receipt_digest "
+                "revision,owner_digest,previous_receipt_digest,receipt_digest,"
+                "corrects_revision "
                 "FROM household_stage_observation WHERE action_id=?",
                 (command.action_id,),
             ).fetchone()
@@ -1129,6 +1166,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 command.expected_input_snapshot_digest, command.expected_plan_digest,
                 command.stage_ref, command.expected_observation_requirements_digest,
                 command.observed_at, command.observation_artifact_digest,
+                command.corrects_revision,
             )
             if existing is not None:
                 # observed_at is generated when the browser submits. A retry with
@@ -1137,6 +1175,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 same_command = (
                     existing[:7] == expected_existing[:7]
                     and existing[8:9] == expected_existing[8:9]
+                    and existing[13] == expected_existing[9]
                 )
                 if same_command and existing[10] == actor:
                     return {
@@ -1152,6 +1191,28 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
             current_revision = previous_row[0] if previous_row else 0
             if current_revision != expected_observation_revision:
                 raise StageObservationConflict("observation history changed")
+            if command.corrects_revision is not None:
+                target = db.execute(
+                    "SELECT case_version,input_revision,input_snapshot_digest,"
+                    "plan_digest,stage_ref,requirements_digest "
+                    "FROM household_stage_observation "
+                    "WHERE ref=? AND revision=?", (ref, command.corrects_revision),
+                ).fetchone()
+                already_corrected = db.execute(
+                    "SELECT 1 FROM household_stage_observation "
+                    "WHERE ref=? AND corrects_revision=?",
+                    (ref, command.corrects_revision),
+                ).fetchone()
+                if (target != (
+                        context.case_version, context.input_revision,
+                        context.input_snapshot_digest, context.plan_digest,
+                        command.stage_ref,
+                        command.expected_observation_requirements_digest,
+                    ) or already_corrected is not None
+                        or command.corrects_revision >= current_revision + 1):
+                    raise StageObservationConflict(
+                        "stage observation correction target changed"
+                    )
             previous = previous_row[1] if previous_row else GENESIS
             receipt = record_stage_observation(
                 command, current=context, revision=current_revision + 1,
@@ -1167,14 +1228,15 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 "INSERT INTO household_stage_observation "
                 "(action_id,ref,case_version,input_revision,input_snapshot_digest,"
                 "plan_digest,stage_ref,requirements_digest,observed_at,artifact_digest,"
-                "revision,owner_digest,previous_receipt_digest,receipt_digest,audit_sequence) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "revision,owner_digest,previous_receipt_digest,receipt_digest,audit_sequence,"
+                "corrects_revision) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (command.action_id, ref, receipt.case_version, receipt.input_revision,
                  receipt.input_snapshot_digest, receipt.plan_digest, receipt.stage_ref,
                  receipt.observation_requirements_digest, receipt.observed_at,
                  receipt.observation_artifact_digest, receipt.revision, actor,
                  receipt.previous_receipt_digest, receipt.receipt_digest,
-                 audit.sequence),
+                 audit.sequence, receipt.corrects_revision),
             )
             return {
                 "ref": ref, "revision": receipt.revision,

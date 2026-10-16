@@ -872,6 +872,10 @@ def build_authenticated_ui_router(
             items = []
             for item in data["observations"]:
                 state = "جاری با زمینه فعلی" if item["current"] else "تاریخی"
+                if item["is_superseded"]:
+                    state += " · اصلاح‌شده با رسید " + str(
+                        item["superseded_by_revision"]
+                    )
                 file_link = ""
                 if household_stage_artifact_store is not None:
                     file_link = (
@@ -2373,7 +2377,7 @@ def build_authenticated_ui_router(
                     response_class=HTMLResponse,
                 )
                 def household_stage_observations_page(
-                    ref: str,
+                    ref: str, corrects_revision: int = 0,
                     sid: str | None = Cookie(default=None, alias=cookie_name),
                 ) -> HTMLResponse:
                     try:
@@ -2406,6 +2410,14 @@ def build_authenticated_ui_router(
                         ) from exc
                     if result is None:
                         raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                    correction_target = None
+                    if corrects_revision:
+                        correction_target = next((item for item in result["observations"]
+                                                  if item["revision"] == corrects_revision
+                                                  and not item["is_superseded"]
+                                                  and item["current"]), None)
+                        if correction_target is None:
+                            raise HTTPException(404, detail="STAGE_OBSERVATION_NOT_CORRECTABLE")
                     current = result["current_context"]
                     progress_labels = {
                         "NOT_REPORTED": "هنوز رسیدی ثبت نشده",
@@ -2474,10 +2486,21 @@ def build_authenticated_ui_router(
                                 + requirements + '">'
                                 '<input type="hidden" name="observation_revision" value="'
                                 + str(result["current_revision"]) + '">'
+                                '<input type="hidden" name="corrects_revision" value="'
+                                + str(corrects_revision if correction_target is not None
+                                      and correction_target["stage_ref"] == stage["stage_ref"]
+                                      else 0) + '">'
                                 '<h3>مرحله ' + str(index) + '</h3>'
                                 '<p>شناسه مرحله: ' + stage_ref + '</p>'
+                                + ('<p>اصلاح رسید شماره '
+                                   + str(correction_target["revision"]) + '</p>'
+                                   if correction_target is not None
+                                   and correction_target["stage_ref"] == stage["stage_ref"] else '')
                                 + artifact_control
-                                + '<button type="submit">ثبت رسید مشاهده</button>'
+                                + '<button type="submit">'
+                                + ('ثبت اصلاح رسید' if correction_target is not None
+                                   and correction_target["stage_ref"] == stage["stage_ref"]
+                                   else 'ثبت رسید مشاهده') + '</button>'
                                 '</form>'
                             )
                             forms.append(form)
@@ -2486,6 +2509,8 @@ def build_authenticated_ui_router(
                         + ' · ' + ('رسید جاری' if item["current"]
                                    else 'رسید قدیمی') + ' · نسخه '
                         + str(item["revision"])
+                        + (' · با رسید ' + str(item["superseded_by_revision"])
+                           + ' اصلاح شد' if item["is_superseded"] else '')
                         + (' · رسید مشاهده شد (بدون داوری)'
                            if item["receipt_inspected"] else '')
                         + (' · <a href="/api/v1/domestic/household-intake/my-drafts/'
@@ -2495,6 +2520,10 @@ def build_authenticated_ui_router(
                            + '">دریافت فایل</a>'
                            if household_stage_artifact_store is not None else
                            ' · مرجع ' + escape(item["observation_artifact_digest"]))
+                        + ('' if item["is_superseded"] or not item["current"] else
+                           ' · <a href="/my-drafts/' + quote(ref)
+                           + '/stage-observations?corrects_revision='
+                           + str(item["revision"]) + '">اصلاح رسید</a>')
                         + '</li>'
                         for item in result["observations"]
                     )
@@ -2533,9 +2562,9 @@ def build_authenticated_ui_router(
                             "csrf", "action_id", "case_version", "input_revision",
                             "input_snapshot_digest", "plan_digest", "stage_ref",
                             "requirements_digest", "observation_revision",
-                            "artifact_digest",
+                            "artifact_digest", "corrects_revision",
                         }),
-                        max_bytes=4096, max_fields=10, max_value_length=128,
+                        max_bytes=4096, max_fields=11, max_value_length=128,
                     )
                     try:
                         permitted = household_profile_access_authority(
@@ -2567,6 +2596,9 @@ def build_authenticated_ui_router(
                                 timespec="seconds",
                             ),
                             observation_artifact_digest=form["artifact_digest"],
+                            corrects_revision=(form_version(
+                                form["corrects_revision"],
+                            ) or None),
                         )
                         if (household_stage_artifact_store is not None
                                 and not household_stage_artifact_store.contains(

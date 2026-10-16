@@ -357,6 +357,36 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(stale.status_code, 409)
         self.assertTrue(self.ledger.verify_integrity())
 
+    def test_stage_observation_correction_appends_and_supersedes_one_current_receipt(self):
+        path = ROOT.replace("/cultivation-inputs", "/stage-observations")
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(), headers=self.bearer(),
+        ).status_code, 201)
+        original = self.stage_command(action="DEMO-STAGE-ORIGINAL")
+        first = self.client.post(path, json=original, headers=self.bearer())
+        self.assertEqual(first.status_code, 201, first.text)
+        correction = self.stage_command(action="DEMO-STAGE-CORRECTION", revision=1)
+        correction["corrects_revision"] = 1
+        correction["observation_artifact_digest"] = "d" * 64
+        saved = self.client.post(path, json=correction, headers=self.bearer())
+        self.assertEqual(saved.status_code, 201, saved.text)
+        self.assertEqual(saved.json()["revision"], 2)
+        replay = self.client.post(path, json=correction, headers=self.bearer())
+        self.assertTrue(replay.json()["idempotent_replay"])
+        conflict = self.stage_command(action="DEMO-STAGE-CORRECTION-2", revision=2)
+        conflict["corrects_revision"] = 1
+        self.assertEqual(self.client.post(
+            path, json=conflict, headers=self.bearer(),
+        ).status_code, 409)
+        history = self.client.get(path, headers=self.bearer()).json()["observations"]
+        self.assertEqual([item["revision"] for item in history], [1, 2])
+        self.assertTrue(history[0]["is_superseded"])
+        self.assertEqual(history[0]["superseded_by_revision"], 2)
+        self.assertEqual(history[1]["corrects_revision"], 1)
+        self.assertTrue(self.ledger.verify_integrity())
+        self.ledger = self.reopen()
+        self.assertTrue(self.ledger.verify_integrity())
+
     def test_stage_observation_ui_uses_current_context_and_marks_old_receipts(self):
         self.assertEqual(self.client.post(
             ROOT, json=self.command(), headers=self.bearer(),
@@ -382,6 +412,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             "requirements_digest":
                 values["expected_observation_requirements_digest"],
             "observation_revision": "0",
+            "corrects_revision": "0",
             "artifact_digest": values["observation_artifact_digest"],
         }
         saved = self.client.post(
@@ -412,6 +443,28 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             headers=self.bearer(),
         )
         self.assertEqual(len(api_history.json()["observations"]), 1)
+        correction_page = self.client.get(path + "?corrects_revision=1")
+        self.assertEqual(correction_page.status_code, 200, correction_page.text)
+        self.assertIn("اصلاح رسید شماره 1", correction_page.text)
+        correction_form = dict(form)
+        correction_form.update({
+            "action_id": "DEMO-STAGE-OBS-BROWSER-CORRECTION",
+            "observation_revision": "1", "corrects_revision": "1",
+            "artifact_digest": "d" * 64,
+        })
+        correction_post = self.client.post(
+            path, content=urlencode(correction_form),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(correction_post.status_code, 303, correction_post.text)
+        corrected_history = self.client.get(path)
+        self.assertIn("با رسید 2 اصلاح شد", corrected_history.text)
+        original_entry = corrected_history.text[
+            corrected_history.text.index("نسخه 1"):
+        ].split("</li>", 1)[0]
+        self.assertNotIn("اصلاح رسید</a>", original_entry)
         current_page = self.client.get(path)
         self.assertIn("رسید جاری", current_page.text)
         self.assertIn("رسید جاری ثبت شده", current_page.text)
@@ -753,6 +806,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             "input_snapshot_digest": self.ledger.internal_proposal_lineage(REF)[2],
             "plan_digest": self.stage_plan_digest, "stage_ref": "DEMO-STAGE-01",
             "requirements_digest": "a" * 64, "observation_revision": "0",
+            "corrects_revision": "0",
             "artifact_digest": digest,
         }
         missing = dict(form, artifact_digest="d" * 64)

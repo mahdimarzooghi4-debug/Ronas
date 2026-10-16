@@ -74,6 +74,7 @@ class StageObservationCommand:
     expected_observation_requirements_digest: str
     observed_at: str
     observation_artifact_digest: str
+    corrects_revision: int | None = None
 
     def __post_init__(self) -> None:
         if (not isinstance(self.action_id, str) or not _ACTION.fullmatch(self.action_id)
@@ -86,7 +87,10 @@ class StageObservationCommand:
                 or not _synthetic_ref(self.stage_ref)
                 or not _digest(self.expected_observation_requirements_digest)
                 or not _aware_timestamp(self.observed_at)
-                or not _digest(self.observation_artifact_digest)):
+                or not _digest(self.observation_artifact_digest)
+                or self.corrects_revision is not None
+                   and (type(self.corrects_revision) is not int
+                        or self.corrects_revision < 1)):
             raise ValueError("invalid stage observation receipt command")
 
 
@@ -107,6 +111,7 @@ class StageObservationReceipt:
     revision: int
     previous_receipt_digest: str
     receipt_digest: str
+    corrects_revision: int | None = None
     status: str = "OBSERVATION_REFERENCE_RECORDED"
     stage_completed: bool = False
     scientific_review_approved: bool = False
@@ -168,6 +173,8 @@ def record_stage_observation(
         "revision": revision,
         "previous_receipt_digest": prior,
     }
+    if command.corrects_revision is not None:
+        body["corrects_revision"] = command.corrects_revision
     digest = hashlib.sha256(json.dumps(
         body, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     ).encode("utf-8")).hexdigest()
@@ -185,6 +192,7 @@ def record_stage_observation(
         revision=revision,
         previous_receipt_digest=prior,
         receipt_digest=digest,
+        corrects_revision=command.corrects_revision,
     )
 
 

@@ -73,7 +73,8 @@ from .gate_evidence_handoff_sqlite import SqliteSyntheticGateEvidenceHandoff
 from .gate_evidence_authority_enquiry_sqlite import SqliteSyntheticAuthorityEnquiryLedger
 from .domestic_surplus_publication_api import publication_readiness_snapshot
 from .domestic_surplus_drafts import (
-    SurplusDraftConflict, SurplusDraftLedger,
+    SurplusDraftConflict, SurplusDraftIntegrityError, SurplusDraftLedger,
+    SurplusDraftStorageError,
     is_surplus_draft_ledger,
 )
 ADMIN_ROLES = {
@@ -2851,6 +2852,14 @@ def build_authenticated_ui_router(
                 }
             except LookupError:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND") from None
+            except SurplusDraftIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
+                ) from exc
+            except SurplusDraftStorageError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                ) from exc
             except (RuntimeError, sqlite3.Error) as exc:
                 raise HTTPException(
                     503, detail="SURPLUS_DRAFT_UNAVAILABLE",
@@ -2890,6 +2899,14 @@ def build_authenticated_ui_router(
                 )
             except LookupError:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND") from None
+            except SurplusDraftIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
+                ) from exc
+            except SurplusDraftStorageError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                ) from exc
             except (RuntimeError, sqlite3.Error) as exc:
                 raise HTTPException(
                     503, detail="SURPLUS_DRAFT_UNAVAILABLE",
@@ -2991,6 +3008,14 @@ def build_authenticated_ui_router(
                     records = household_surplus_draft_ledger.list_owned(identity, ref)
                 except LookupError:
                     raise HTTPException(404, detail="DRAFT_NOT_FOUND") from None
+                except SurplusDraftIntegrityError as exc:
+                    raise HTTPException(
+                        503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
+                    ) from exc
+                except SurplusDraftStorageError as exc:
+                    raise HTTPException(
+                        503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                    ) from exc
                 except (RuntimeError, sqlite3.Error) as exc:
                     raise HTTPException(503, detail="SURPLUS_DRAFT_UNAVAILABLE") from exc
                 items = []
@@ -3034,6 +3059,14 @@ def build_authenticated_ui_router(
                 )
             except LookupError:
                 pass
+            except SurplusDraftIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
+                ) from exc
+            except SurplusDraftStorageError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                ) from exc
             except RuntimeError as exc:
                 raise HTTPException(
                     503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",
@@ -3135,6 +3168,14 @@ def build_authenticated_ui_router(
                 ) from exc
             except LookupError as exc:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND") from exc
+            except SurplusDraftIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
+                ) from exc
+            except SurplusDraftStorageError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                ) from exc
             except RuntimeError as exc:
                 raise HTTPException(
                     503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",

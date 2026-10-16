@@ -39,7 +39,9 @@ from ronas_api.expert_review_questions_sqlite import SqliteSyntheticExpertQuesti
 from ronas_api.domestic_surplus_publication import (
     OfferRevision, PublicationAttestation, PublicationAuthorities,
 )
-from ronas_api.domestic_surplus_drafts import SqliteSyntheticSurplusDraftLedger
+from ronas_api.domestic_surplus_drafts import (
+    SqliteSyntheticSurplusDraftLedger, SurplusDraftStorageError,
+)
 from ronas_api.internal_cultivation_plan_contract import (
     InternalCultivationProposal, ProposedCultivationStage,
 )
@@ -2090,6 +2092,26 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertFalse(ledger.read_owned(
             Principal(OWNER, frozenset({"household"})), REF, "DEMO-OFFER-UI-1",
         ).published)
+
+    def test_surplus_ui_maps_storage_outage_separately_from_authority_failure(self):
+        ledger = SqliteSyntheticSurplusDraftLedger(
+            str(self.path.parent / "surplus-drafts-storage-failure.sqlite3"),
+            self.schema, self.allowed,
+        )
+        def storage_unavailable(*_args):
+            raise SurplusDraftStorageError("database unavailable")
+
+        ledger.list_owned = storage_unavailable
+        client = TestClient(
+            self.make_app(surplus_draft_ledger=ledger), base_url=ORIGIN,
+        )
+        session = self.browser_session()
+        sid = next(key for key, value in self.sessions.sessions.items()
+                   if value is session)
+        client.cookies.set("__Host-ronas_session", sid)
+        response = client.get(f"/my-drafts/{REF}/surplus-offers")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "SURPLUS_DRAFT_UNAVAILABLE")
 
     def test_surplus_readiness_ui_shows_safe_owner_projection(self):
         producer = OWNER

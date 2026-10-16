@@ -41,6 +41,7 @@ class SyntheticProgressNote(BaseModel):
     expected_case_version: StrictInt
     expected_revision: StrictInt
     expected_input_revision: StrictInt
+    corrects_revision: StrictInt = 0
     reported_at: StrictStr
     note: StrictStr
 
@@ -182,6 +183,7 @@ def build_household_input_router(
                 expected_case_version=data.expected_case_version,
                 expected_revision=data.expected_revision,
                 expected_input_revision=data.expected_input_revision,
+                corrects_revision=(data.corrects_revision or None),
                 reported_at=data.reported_at, note=data.note,
             )
         except InputRevisionConflict as exc:

@@ -45,3 +45,6 @@ scientific criteria, actual data intake, expert inspection, plan acceptance,
 consent evidence, or production authority. External identity/service connections
 are represented by existing local contracts and test fixtures during internal
 development; this does not claim that live external services or approvals exist.
+Each history item also returns its recorded case version and whether it matches
+the current case version. The shared-user page labels older entries as
+historical so a past note cannot appear to describe the current case by default.

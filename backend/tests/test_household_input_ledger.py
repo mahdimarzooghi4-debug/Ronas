@@ -657,8 +657,9 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         self.assertTrue(replay.json()["idempotent_replay"])
         history = self.client.get(root, headers=self.headers()).json()
         self.assertEqual(history["notes"], [{
-            "revision": 1, "reported_at": "2026-10-12T10:30:00+03:30",
-            "note": "DEMO: observed leaves",
+            "case_version": 3, "revision": 1,
+            "reported_at": "2026-10-12T10:30:00+03:30",
+            "note": "DEMO: observed leaves", "current_case_version": True,
         }])
         self.assertTrue(self.ledger.verify_integrity())
         self.ledger = self.reopen()
@@ -739,6 +740,7 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         view = self.client.get(route)
         self.assertIn("&lt;script&gt;", view.text)
         self.assertNotIn("<script>", view.text)
+        self.assertIn("نسخه جاری پرونده", view.text)
         self.assertEqual(view.text.count("<li><time>"), 1)
         self.assertEqual(self.ledger.read_owned_progress_notes(
             "DEMO-D-1", Principal(OWNER, frozenset({"household"})),

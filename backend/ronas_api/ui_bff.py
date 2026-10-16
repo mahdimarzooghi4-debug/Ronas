@@ -1766,8 +1766,11 @@ def build_authenticated_ui_router(
             if result is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
             notes = ''.join(
-                '<li><time>' + escape(item["reported_at"]) + '</time> — '
-                + escape(item["note"]) + '</li>' for item in result["notes"]
+                '<li><time>' + escape(item["reported_at"]) + '</time> · '
+                + ('نسخه جاری پرونده' if item["current_case_version"] else
+                   'نسخه تاریخی پرونده ' + str(item["case_version"]))
+                + ' — ' + escape(item["note"]) + '</li>'
+                for item in result["notes"]
             )
             form = (
                 '<form method="post" action="/my-drafts/' + quote(ref)

@@ -44,7 +44,9 @@ from .domestic_surplus_drafts import (
     SurplusDraftLedger, is_surplus_draft_ledger,
 )
 from .domestic_surplus_drafts_api import build_domestic_surplus_drafts_router
-from .domestic_surplus_producer_consent import SqliteSyntheticProducerConsentLedger
+from .domestic_surplus_producer_consent import (
+    ProducerConsentLedger, is_producer_consent_ledger,
+)
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -73,7 +75,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                household_stage_artifact_store: StageArtifactStore | None = None,
                household_surplus_publication_authority=None,
                household_surplus_draft_ledger: SurplusDraftLedger | None = None,
-               household_surplus_producer_consent_ledger: SqliteSyntheticProducerConsentLedger | None = None,
+               household_surplus_producer_consent_ledger: ProducerConsentLedger | None = None,
                export_source_connectors: ExportSourceConnectorRegistry | None = None) -> FastAPI:
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
@@ -118,11 +120,11 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             "surplus drafts require the shared household owner authority and Keycloak BFF"
         )
     if household_surplus_producer_consent_ledger is not None and (
-            not isinstance(household_surplus_producer_consent_ledger,
-                           SqliteSyntheticProducerConsentLedger)
-            or household_surplus_draft_ledger is None
-            or household_surplus_producer_consent_ledger._draft_ledger
-                is not household_surplus_draft_ledger
+            household_surplus_draft_ledger is None
+            or not is_producer_consent_ledger(
+                household_surplus_producer_consent_ledger,
+                household_surplus_draft_ledger,
+            )
             or household_surplus_publication_authority is None):
         raise ValueError(
             "producer consent requires the same household draft ledger and readiness authority"

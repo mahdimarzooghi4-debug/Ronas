@@ -7,6 +7,7 @@ Expose the existing version-bound surplus publication readiness result inside th
 ## Composition
 
 - Propagate the optional `household_surplus_publication_authority` resolver through the SQLite and PostgreSQL LOCAL/TEST Keycloak BFF factory functions to `create_app`.
+- Optionally propagate an exact-ledger-matched producer-consent journal through the same factories; PostgreSQL uses the encrypted append-only adapter and SQLite is limited to local development/test.
 - Reuse the exact household profile ledger, profile schema, browser flow, signed household role, and existing profile access authority already required by `create_app`. Reject a mismatched or incomplete composition before serving routes.
 - Keep the resolver absent by default. When absent, do not mount the readiness route or render a readiness link.
 - Use the existing household workspace and its current session/CSRF protections. The readiness request is GET-only and must not introduce a new write command or cookie-authenticated mutation.
@@ -15,7 +16,7 @@ Expose the existing version-bound surplus publication readiness result inside th
 
 The existing household draft page may link to a Persian RTL readiness view for an explicitly referenced DEMO offer. The view calls the owner-scoped readiness endpoint and displays only its public projection: current state, whether publication requirements are satisfied, and blocker codes translated to fixed Persian labels. It must never display authority subjects, evidence digests, private documents, household profile contents, or resolver errors.
 
-The page must state that `PUBLICATION_AUTHORIZED` is technical readiness only. It must not say that the offer is published, visible to buyers, available for purchase, quality-approved, or financially actionable. `published` remains false. Unknown blocker codes render as a generic unavailable state and are not interpolated into HTML.
+The page must state that `PUBLICATION_AUTHORIZED` is technical readiness only. It must not say that the offer is published, visible to buyers, available for purchase, quality-approved, or financially actionable. `published` remains false. Unknown blocker codes render as a generic unavailable state and are not interpolated into HTML. When the optional consent journal is present, the owner can approve or withdraw approval for the exact current revision through a CSRF/Origin-protected form; the page explicitly states that this action does not publish the offer and cannot replace quality/safety verification.
 
 ## Security and consistency
 
@@ -32,8 +33,10 @@ The page must state that `PUBLICATION_AUTHORIZED` is technical readiness only. I
 3. Valid household owner can see only the safe readiness projection in Persian RTL.
 4. Wrong role and cross-household access do not reveal offer existence or private evidence.
 5. Resolver exception renders a generic unavailable state without leaking its message.
-6. No code path changes `published=false` or creates marketplace records.
+6. Approval and withdrawal are bound to the current revision; stale forms fail without mutation.
+7. Producer approval does not satisfy the independent quality/safety blocker.
+8. No code path changes `published=false` or creates marketplace records.
 
 ## Boundary
 
-This contract defines a LOCAL/TEST integration slice. It does not implement publication, quality rules, seller qualification, consent, trading, pricing, settlement, or Production activation.
+This contract defines a LOCAL/TEST integration slice. It does not implement publication, quality rules, seller qualification, real-data consent, trading, pricing, settlement, or Production activation.

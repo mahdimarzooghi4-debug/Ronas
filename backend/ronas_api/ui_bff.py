@@ -1,4830 +1,2 @@
-"""Two authenticated, strictly role-scoped HTML shells for opt-in Keycloak BFF.
-
-The default production entrypoint never mounts these routes. The HTML is
-rendered from fixed templates, not client-supplied text or arbitrary files.
-No live workflow or personal data exists in this UI foundation.
-"""
-from collections.abc import Callable
-from html import escape
-from urllib.parse import quote, parse_qs
-from pathlib import Path
-from datetime import datetime, timezone
-import hashlib
-import hmac
-import secrets
-import sqlite3
-
-from fastapi import APIRouter, Cookie, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, JSONResponse, Response
-
-from .auth import InvalidToken, Principal
-from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES as TECHNICAL_STATES
-from .export_research_evidence import ExportEvidenceReferenceConflict
-from .export_research_findings import ExportResearchFindingConflict
-from .export_source_connector import (
-    ExportSourceConnectorRegistry, ExportSourceConnectorUnavailable,
-    capture_export_source_reference,
-)
-from .scoped_drafts import _synthetic_ref
-from .scoped_audit import GrantConflict, GrantNotAuthorized
-from .export_research_evidence import valid_evidence_refs, valid_snapshot_digest
-from .grant_ledger_sqlite import LedgerIntegrityError, SqliteSyntheticGrantLedger
-from .household_input_ledger_sqlite import (
-    InputRevisionConflict, SqliteSyntheticHouseholdInputLedger,
-)
-from .household_input_profiles import (
-    HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
-)
-from .export_research_question import (
-    ExportResearchQuestionConflict, valid_question_refs,
-)
-from .oidc_browser import BrowserOIDC
-from .financial_source_arithmetic import source_arithmetic
-from .operational_readiness import readiness, verify_decision_sources
-from .case_journey_guidance import (
-    JourneyEvidenceMismatch, owner_next_action, expert_next_action,
-    export_next_action,
-)
-from .business_gate_evidence import (BUSINESS_SOURCE_SHA, dossier_detail,
-                                     visible_dossiers, verify_pinned_business_sources,
-                                     BusinessSourceSnapshotError, SOURCE_INTEGRITY_STATE)
-from .shared_workspaces import USER_ROLES, visible_user_workspaces
-from .agronomy_workspace import SyntheticAgronomyWorkspace
-from .expert_review_questions_sqlite import (
-    ReviewQuestionConflict, SqliteSyntheticExpertQuestionLedger,
-)
-from .export_supplier_workspace import (
-    SyntheticSupplierUnavailable, SyntheticSupplierWorkspace,
-)
-from .domestic_partner_workspace import (
-    FIELDS as DOMESTIC_PARTNER_FIELDS, SyntheticDomesticPartnerUnavailable,
-    SyntheticDomesticPartnerWorkspace,
-)
-from .domestic_stage_observation import (
-    CurrentStageContext, StageObservationCommand, StageObservationConflict,
-)
-from .stage_observation_artifacts import (
-    MAX_ARTIFACT_BYTES, StageArtifactStore, StageArtifactStoreError,
-    _check_upload_size, _declared_upload_size,
-)
-from .domestic_preparation_preview import (
-    REVIEW_STATES, domestic_preparation_preview,
-)
-from .gate_evidence_handoff_sqlite import SqliteSyntheticGateEvidenceHandoff
-from .gate_evidence_authority_enquiry_sqlite import SqliteSyntheticAuthorityEnquiryLedger
-from .domestic_surplus_publication_api import publication_readiness_snapshot
-from .domestic_surplus_drafts import (
-    SurplusDraftConflict, SurplusDraftIntegrityError, SurplusDraftLedger,
-    SurplusDraftStorageError,
-    is_surplus_draft_ledger,
-)
-from .domestic_surplus_producer_consent import (
-    ProducerConsentConflict, ProducerConsentIntegrityError,
-    SqliteSyntheticProducerConsentLedger,
-)
-ADMIN_ROLES = {
-    "domestic_ops": "Ø¹Ù…Ù„ÛŒØ§Øª Ø¯Ø§Ø®Ù„ÛŒ",
-    "export_ops": "Ø¹Ù…Ù„ÛŒØ§Øª ØµØ§Ø¯Ø±Ø§Øª",
-    "finance": "Ù…Ø§Ù„ÛŒ",
-    "governance": "Ø±Ø§Ù‡Ø¨Ø±ÛŒ",
-}
-STYLE = Path(__file__).resolve().parents[2] / "prototype" / "ui" / "styles.css"
-
-LOGOUT_SCRIPT = """document.addEventListener('DOMContentLoaded', () => {
-  const button = document.getElementById('ronas-logout');
-  if (!button) return;
-  const retryMessage = 'Ù†Ø´Ø³Øª Ø¨Ù‡â€ŒØ±ÙˆØ²Ø±Ø³Ø§Ù†ÛŒ Ù†Ø´Ø¯Ø› Ø¨Ø±Ø§ÛŒ Ø§Ø¯Ø§Ù…Ù‡ Ø¯ÙˆØ¨Ø§Ø±Ù‡ ÙˆØ§Ø±Ø¯ Ø´ÙˆÛŒØ¯.';
-  const scheduleRenewal = async () => {
-    try {
-      const status = await fetch('/api/auth/session', {credentials:'same-origin', cache:'no-store'});
-      if (!status.ok) return;
-      const current = await status.json();
-      const delay = Math.max(5000, current.expires_at * 1000 - Date.now() - 60000);
-      window.setTimeout(async () => {
-        try {
-          const renewed = await fetch('/api/auth/refresh', {
-            method:'POST', credentials:'same-origin', cache:'no-store',
-            headers:{'X-CSRF-Token':current.csrf}
-          });
-          if (renewed.status === 409) { window.setTimeout(scheduleRenewal, 2000); return; }
-          if (!renewed.ok) throw Error('SESSION_REFRESH_REJECTED');
-          scheduleRenewal();
-        } catch {
-          const notice = document.getElementById('logout-message');
-          if (notice) notice.textContent = retryMessage;
-        }
-      }, delay);
-    } catch {
-      const notice = document.getElementById('logout-message');
-      if (notice) notice.textContent = retryMessage;
-      window.setTimeout(scheduleRenewal, 20000);
-    }
-  };
-  scheduleRenewal();
-  button.addEventListener('click', async () => {
-    button.disabled = true;
-    try {
-      const status = await fetch('/api/auth/session', {credentials:'same-origin', cache:'no-store'});
-      if (!status.ok) throw Error('NO_ACTIVE_SESSION');
-      const data = await status.json();
-      const form = document.createElement('form');
-      form.method = 'POST';
-      form.action = '/api/auth/logout/keycloak';
-      form.hidden = true;
-      const csrf = document.createElement('input');
-      csrf.type = 'hidden';
-      csrf.name = 'csrf';
-      csrf.value = data.csrf;
-      form.appendChild(csrf);
-      document.body.appendChild(form);
-      form.requestSubmit();
-    } catch {
-      button.disabled = false;
-      const notice = document.getElementById('logout-message');
-      if (notice) notice.textContent = 'Ø®Ø±ÙˆØ¬ ØªØ£ÛŒÛŒØ¯ Ù†Ø´Ø¯Ø› Ù†Ø´Ø³Øª Ø±Ø§ Ø¨Ø³ØªÙ‡ ÙØ±Ø¶ Ù†Ú©Ù†ÛŒØ¯.';
-    }
-  });
-});"""
-
-STAGE_UPLOAD_SCRIPT = r"""document.addEventListener('submit', async event => {
-  const form = event.target;
-  if (!(form instanceof HTMLFormElement) || !form.hasAttribute('data-stage-upload')) return;
-  event.preventDefault();
-  const fileInput = form.querySelector('input[type=file]');
-  const digestInput = form.querySelector('input[name=artifact_digest]');
-  const notice = form.querySelector('[data-upload-status]');
-  const button = form.querySelector('button[type=submit]');
-  const file = fileInput && fileInput.files && fileInput.files[0];
-  const say = text => { if (notice) notice.textContent = text; };
-  const safeFailure = async response => {
-    let detail = '';
-    try { detail = (await response.json()).detail || ''; } catch {}
-    if (response.status === 401) return 'Ù†Ø´Ø³Øª Ø´Ù…Ø§ Ù…Ø¹ØªØ¨Ø± Ù†ÛŒØ³ØªØ› Ø¯ÙˆØ¨Ø§Ø±Ù‡ ÙˆØ§Ø±Ø¯ Ø´ÙˆÛŒØ¯.';
-    if (response.status === 403) return 'Ø¯Ø±Ø®ÙˆØ§Ø³Øª Ø§Ø² Ù†Ø¸Ø± Ø§Ù…Ù†ÛŒØªÛŒ ØªØ£ÛŒÛŒØ¯ Ù†Ø´Ø¯Ø› ØµÙØ­Ù‡ Ø±Ø§ ØªØ§Ø²Ù‡ Ú©Ù†ÛŒØ¯.';
-    if (response.status === 409) return 'Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ÛŒØ§ Ø·Ø±Ø­ ØªØºÛŒÛŒØ± Ú©Ø±Ø¯Ù‡Ø› ØµÙØ­Ù‡ Ø±Ø§ ØªØ§Ø²Ù‡ Ú©Ù†ÛŒØ¯.';
-    if (response.status === 413 || detail === 'STAGE_ARTIFACT_TOO_LARGE')
-      return 'Ø­Ø¬Ù… ÙØ§ÛŒÙ„ Ø§Ø² Ø³Ù‚Ù Û¸ Ù…Ú¯Ø§Ø¨Ø§ÛŒØª Ø¨ÛŒØ´ØªØ± Ø§Ø³Øª.';
-    if (response.status === 422) return 'Ù†ÙˆØ¹ ÛŒØ§ Ù…Ø­ØªÙˆØ§ÛŒ ÙØ§ÛŒÙ„ Ù¾Ø°ÛŒØ±ÙØªÙ‡ Ù†Ø´Ø¯.';
-    return 'Ø«Ø¨Øª Ø§Ù†Ø¬Ø§Ù… Ù†Ø´Ø¯Ø› ÙˆØ¶Ø¹ÛŒØª Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø±Ø§ ØªØ§Ø²Ù‡ Ú©Ù†ÛŒØ¯ Ùˆ Ø¯ÙˆØ¨Ø§Ø±Ù‡ ØªÙ„Ø§Ø´ Ú©Ù†ÛŒØ¯.';
-  };
-  if (!file || !digestInput) { say('Ø§Ø¨ØªØ¯Ø§ ÛŒÚ© ÙØ§ÛŒÙ„ ØªØµÙˆÛŒØ± ÛŒØ§ PDF Ø§Ù†ØªØ®Ø§Ø¨ Ú©Ù†ÛŒØ¯.'); return; }
-  if (file.size < 1 || file.size > 8 * 1024 * 1024) { say('Ø§Ù†Ø¯Ø§Ø²Ù‡ ÙØ§ÛŒÙ„ Ø¨Ø§ÛŒØ¯ Ø­Ø¯Ø§Ú©Ø«Ø± Û¸ Ù…Ú¯Ø§Ø¨Ø§ÛŒØª Ø¨Ø§Ø´Ø¯.'); return; }
-  if (!['image/jpeg','image/png','image/webp','application/pdf'].includes(file.type)) {
-    digestInput.value = '';
-    say('ÙÙ‚Ø· ÙØ§ÛŒÙ„ JPEGØŒ PNGØŒ WebP ÛŒØ§ PDF Ù¾Ø°ÛŒØ±ÙØªÙ‡ Ù…ÛŒâ€ŒØ´ÙˆØ¯.');
-    return;
-  }
-  digestInput.value = '';
-  if (button) button.disabled = true;
-  say('ÙØ§ÛŒÙ„ Ø¯Ø± Ø­Ø§Ù„ Ø¨Ø§Ø±Ú¯Ø°Ø§Ø±ÛŒ Ø§Ø³Øªâ€¦');
-  try {
-    const get = name => form.elements.namedItem(name).value;
-    const uploaded = await fetch(form.dataset.uploadUrl, {
-      method:'PUT', credentials:'same-origin', cache:'no-store', body:file,
-      headers:{'Content-Type':file.type, 'X-CSRF-Token':get('csrf'),
-        'X-Ronas-Case-Version':get('case_version'),
-        'X-Ronas-Input-Revision':get('input_revision'),
-        'X-Ronas-Plan-Digest':get('plan_digest'), 'X-Ronas-Stage-Ref':get('stage_ref'),
-        'X-Ronas-Requirements-Digest':get('requirements_digest')}
-    });
-    if (!uploaded.ok) throw Error(await safeFailure(uploaded));
-    const artifact = await uploaded.json();
-    if (!/^[0-9a-f]{64}$/.test(artifact.digest) || artifact.byte_length !== file.size
-        || artifact.content_type !== file.type || artifact.stored !== true)
-      throw Error('Ù¾Ø§Ø³Ø® Ø§Ù…Ù† Ø¨Ø§Ø±Ú¯Ø°Ø§Ø±ÛŒ ÙØ§ÛŒÙ„ Ù…Ø¹ØªØ¨Ø± Ù†ÛŒØ³ØªØ› Ø¯ÙˆØ¨Ø§Ø±Ù‡ ØªÙ„Ø§Ø´ Ú©Ù†ÛŒØ¯.');
-    digestInput.value = artifact.digest;
-    const fields = new URLSearchParams();
-    for (const [key, value] of new FormData(form).entries())
-      if (typeof value === 'string') fields.append(key, value);
-    const saved = await fetch(form.action, {
-      method:'POST', credentials:'same-origin', cache:'no-store',
-      headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:fields
-    });
-    if (!saved.ok) throw Error(await safeFailure(saved));
-    window.location.assign(saved.url);
-  } catch (error) {
-    say(error instanceof Error && error.message
-      ? error.message : 'Ø«Ø¨Øª Ø§Ù†Ø¬Ø§Ù… Ù†Ø´Ø¯Ø› ÙˆØ¶Ø¹ÛŒØª Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø±Ø§ ØªØ§Ø²Ù‡ Ú©Ù†ÛŒØ¯ Ùˆ Ø¯ÙˆØ¨Ø§Ø±Ù‡ ØªÙ„Ø§Ø´ Ú©Ù†ÛŒØ¯.');
-    if (button) button.disabled = false;
-  }
-});
-document.addEventListener('change', event => {
-  const input = event.target;
-  if (!(input instanceof HTMLInputElement) || input.type !== 'file') return;
-  const form = input.form;
-  if (!(form instanceof HTMLFormElement) || !form.hasAttribute('data-stage-upload')) return;
-  const digest = form.querySelector('input[name=artifact_digest]');
-  const notice = form.querySelector('[data-upload-status]');
-  if (digest) digest.value = '';
-  if (notice) notice.textContent = '';
-});"""
-
-def page(title: str, body: str, *, logged_in: bool, code: int = 200,
-         local_test_form: bool = False,
-         login_return_path: str = "/",
-         stage_upload_script: bool = False) -> HTMLResponse:
-    logout = (
-        '<button type="button" id="ronas-logout">Ø®Ø±ÙˆØ¬ Ø§Ù…Ù†</button>'
-        '<p id="logout-message" role="status" aria-live="polite"></p>'
-        if logged_in else (
-            '<a class="btn" href="/api/auth/start?return_to='
-            + quote(login_return_path, safe='') + '">ÙˆØ±ÙˆØ¯ Ø¨Ø§ Keycloak</a>'
-        )
-    )
-    html = ('<!doctype html><html lang="fa" dir="rtl"><head>'
-            '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            '<title>' + escape(title) + '</title>'
-            '<link rel="stylesheet" href="/assets/ronas.css">'
-            '</head><body><header class="top"><a class="brand" href="/">Ø±ÙˆÙ†Ø§Ø³</a>'
-            '<nav aria-label="Ø¯Ùˆ Ù…Ø­ÛŒØ· Ø±ÙˆÙ†Ø§Ø³"><a href="/">Ø±ÙˆÙ†Ø§Ø³</a>'
-            '<a href="/admin">Ù…Ø¯ÛŒØ±ÛŒØª Ø±ÙˆÙ†Ø§Ø³</a></nav></header>'
-            '<div class="demo"><strong>Ù†Ø³Ø®Ù‡ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ</strong> Â· Ù‡Ù…Ù‡ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ù†Ù…ÙˆÙ†Ù‡ Ù‡Ø³ØªÙ†Ø¯Ø› '
-            'Ù‡ÛŒÚ† Ø¹Ù…Ù„ÛŒØ§Øª Ù…Ø§Ù„ÛŒØŒ ØµØ§Ø¯Ø±Ø§ØªØŒ Ø«Ø¨Øªâ€ŒÙ†Ø§Ù… ÛŒØ§ ØªØ£ÛŒÛŒØ¯ Ø¹Ù„Ù…ÛŒ Ø§Ù†Ø¬Ø§Ù… Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</div>'
-            '<main class="wrap" id="main"><h1>' + escape(title) + '</h1>'
-            + body + '<section class="section">' + logout + '</section></main>'
-            '<script src="/assets/ronas-auth.js" defer></script>'
-            + ('<script src="/assets/ronas-stage-observation-upload.js" defer></script>'
-               if stage_upload_script else '')
-            + '</body></html>')
-    response = HTMLResponse(html, status_code=code)
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; style-src 'self'; script-src 'self'; "
-        "connect-src 'self'; base-uri 'none'; form-action "
-        + ("'self'" if local_test_form else "'none'")
-        + "; frame-ancestors 'none'; object-src 'none'"
-    )
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Cache-Control"] = "no-store"
-    return response
-
-
-
-def readonly_domestic_preparation_html(preparation: dict) -> str:
-    """One safe DEMO field display, shared by owner and assigned expert."""
-    slots = (
-        ("Ù…Ø­ØµÙˆÙ„", "crop"), ("Ù…Ø³Ø§Ø­Øª", "growing_area"),
-        ("Ø¢Ø¨", "water"), ("Ø®Ø§Ú©", "soil"), ("Ù…ÙˆÙ‚Ø¹ÛŒØª", "location"),
-    )
-    # Deliberately only accept the pure LOCAL/TEST unknown-input contract;
-    # this renderer must never become a raw-input or advisory renderer.
-    if (preparation["input_state"] != "NOT_RECORDED_IN_DEMO"
-            or any(preparation["cultivation_inputs"][key] is not None
-                   for _, key in slots)
-            or preparation["plan_state"] != "NOT_AUTHORED"
-            or preparation["business_actions_enabled"] is not False):
-        raise ValueError("unapproved cultivation preparation display state")
-    events = preparation["technical_timeline"]
-    if not isinstance(events, list):
-        raise ValueError("invalid technical timeline")
-    try:
-        recorded = tuple(
-            event["technical_event"] for event in events
-        )
-        expected = domestic_preparation_preview(
-            case_version=preparation["case_version"],
-            review_revision=preparation["review_revision"],
-            technical_review_state=preparation["technical_review_state"],
-            valid_review_states=REVIEW_STATES,
-            observed_review_steps=recorded,
-        )
-        if preparation != expected:
-            raise ValueError("unexpected display snapshot")
-    except (TypeError, KeyError, AttributeError) as exc:
-        raise ValueError("invalid technical timeline") from exc
-    labels = {
-        "TECH_REVIEW_REQUESTED":
-            "Ø¯Ø±Ø®ÙˆØ§Ø³Øª Ø¨Ø±Ø±Ø³ÛŒ ÙÙ†ÛŒ Ø«Ø¨Øª Ø´Ø¯Ù‡Ø› Ø§ÛŒÙ† Ù…Ø±Ø­Ù„Ù‡ ØªØ£ÛŒÛŒØ¯ Ø¹Ù„Ù…ÛŒ Ù†ÛŒØ³Øª.",
-        "TECH_HUMAN_RESPONSE_RECORDED":
-            "Ù…Ø±Ø¬Ø¹ Ù¾Ø§Ø³Ø® ÙÙ†ÛŒ Ø«Ø¨Øª Ø´Ø¯Ù‡Ø› Ø·Ø±Ø­ Ú©Ø´Øª ØªØ£ÛŒÛŒØ¯ Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.",
-    }
-    history = (
-        '<ol>' + ''.join(
-            '<li>Ù…Ø±Ø­Ù„Ù‡ ' + str(event["revision"]) + ': '
-            + labels[event["technical_event"]] + '</li>'
-            for event in events
-        ) + '</ol>'
-        if events else '<p>Ù‡Ù†ÙˆØ² Ø±ÙˆÛŒØ¯Ø§Ø¯ Ø¨Ø±Ø±Ø³ÛŒ ÙÙ†ÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>'
-    )
-    timeline_html = (
-        '<section aria-label="Ø³Ø§Ø¨Ù‚Ù‡ Ù¾ÛŒÚ¯ÛŒØ±ÛŒ ÙÙ†ÛŒ"><h3>Ø³Ø§Ø¨Ù‚Ù‡ Ù¾ÛŒÚ¯ÛŒØ±ÛŒ ÙÙ†ÛŒ</h3>'
-        + history
-        + '<p>ØªÙ†Ù‡Ø§ Ù…Ø±Ø§Ø­Ù„ ÙÙ†ÛŒ Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡ Ù†Ù…Ø§ÛŒØ´ Ø¯Ø§Ø¯Ù‡ Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯Ø› '
-        'ØªØ§Ø±ÛŒØ®ØŒ Ù†Ø¸Ø± ØªØ®ØµØµÛŒ ÛŒØ§ ØªØµÙ…ÛŒÙ… Ø¯Ø±Ø¨Ø§Ø±Ù‡ Ú©Ø´Øª Ø§Ø² Ø¢Ù† Ø§Ø³ØªÙ†ØªØ§Ø¬ Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>'
-        '</section>'
-    )
-    items = ''.join('<li>' + label + ': ØªØ¹ÛŒÛŒÙ† Ù†Ø´Ø¯Ù‡</li>'
-                    for label, _ in slots)
-    return (
-        '<section><h3>Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ú©Ø´Øª Ø¯Ø± Ù¾ÛŒØ´â€ŒÙ†Ù…Ø§ÛŒØ´ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ</h3>'
-        '<p>Ø§ÛŒÙ† ÙÛŒÙ„Ø¯Ù‡Ø§ ØµØ±ÙØ§Ù‹ Ø¬Ø§ÛŒÚ¯Ø§Ù‡ Ù†Ù…Ø§ÛŒØ´ÛŒ Ù‡Ø³ØªÙ†Ø¯Ø› '
-        'Ù…Ø¹ÛŒØ§Ø± Ú©ÙØ§ÛŒØª Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø¨Ø±Ø§ÛŒ Ø·Ø±Ø­ Ú©Ø´Øª ØªØ¹ÛŒÛŒÙ† Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>'
-        '<ul>' + items + '</ul>'
-        '<p>Ø·Ø±Ø­ Ú©Ø´Øª ØªÙˆÙ„ÛŒØ¯ Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª. Ø±Ø¶Ø§ÛŒØª ÙˆØ§Ù‚Ø¹ÛŒ Ø§Ø­Ø±Ø§Ø² Ù†Ø´Ø¯Ù‡Ø› '
-        'ØµÙ„Ø§Ø­ÛŒØª Ø­Ø±ÙÙ‡â€ŒØ§ÛŒ Ùˆ ØªØ£ÛŒÛŒØ¯ Ø¹Ù„Ù…ÛŒ Ù†ÛŒØ² Ø§Ø­Ø±Ø§Ø² Ù†Ø´Ø¯Ù‡â€ŒØ§Ù†Ø¯.</p></section>'
-        + timeline_html
-    )
-
-
-def build_authenticated_ui_router(
-    flow: BrowserOIDC,
-    technical_review_ledger: SqliteSyntheticHumanReviewLedger | None = None,
-    owned_case_ledger: SqliteSyntheticGrantLedger | None = None,
-    household_input_ledger: SqliteSyntheticHouseholdInputLedger | None = None,
-    household_profile_schema: HouseholdInputSchema | None = None,
-    household_profile_access_authority: Callable[[Principal, str, str], bool] | None = None,
-    household_stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
-    gate_handoff_ledger: SqliteSyntheticGateEvidenceHandoff | None = None,
-    authority_enquiry_ledger: SqliteSyntheticAuthorityEnquiryLedger | None = None,
-    agronomy_workspace: SyntheticAgronomyWorkspace | None = None,
-    export_supplier_workspace: SyntheticSupplierWorkspace | None = None,
-    domestic_partner_workspace: SyntheticDomesticPartnerWorkspace | None = None,
-    household_stage_artifact_store: StageArtifactStore | None = None,
-    export_source_connectors: ExportSourceConnectorRegistry | None = None,
-    household_surplus_publication_authority=None,
-    household_surplus_draft_ledger: SurplusDraftLedger | None = None,
-    household_surplus_producer_consent_ledger: SqliteSyntheticProducerConsentLedger | None = None,
-) -> APIRouter:
-    if export_source_connectors is not None and (
-            not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
-            or technical_review_ledger is None):
-        raise ValueError("Export connector UI requires the explicit review ledger")
-    if household_surplus_publication_authority is not None and (
-            not callable(household_surplus_publication_authority)
-            or not isinstance(household_input_ledger,
-                              SqliteSyntheticHouseholdProfileLedger)
-            or household_input_ledger is not technical_review_ledger
-            or household_profile_schema != household_input_ledger.profile_schema
-            or not callable(household_profile_access_authority)):
-        raise ValueError(
-            "surplus readiness UI requires the same owner-scoped household profile ledger"
-        )
-    if household_surplus_draft_ledger is not None and (
-            not is_surplus_draft_ledger(household_surplus_draft_ledger)
-            or not isinstance(household_input_ledger,
-                              SqliteSyntheticHouseholdProfileLedger)
-            or household_input_ledger is not technical_review_ledger
-            or not callable(household_profile_access_authority)
-            or household_surplus_draft_ledger._owner_access_authority
-                != household_profile_access_authority):
-        raise ValueError(
-            "surplus draft UI requires the shared owner-scoped household authority"
-        )
-    if household_surplus_producer_consent_ledger is not None and (
-            not isinstance(household_surplus_producer_consent_ledger,
-                           SqliteSyntheticProducerConsentLedger)
-            or household_surplus_draft_ledger is None
-            or household_surplus_producer_consent_ledger._draft_ledger
-                is not household_surplus_draft_ledger):
-        raise ValueError(
-            "producer consent must share the exact surplus draft ledger"
-        )
-    # Only the opt-in same-instance ledger injected by create_app may
-    # provide the synthetic worklist. Never trust a client-side role list.
-    if (technical_review_ledger is not None
-            and not isinstance(technical_review_ledger, SqliteSyntheticHumanReviewLedger)):
-        raise ValueError("technical review worklist requires explicit ledger")
-    if (owned_case_ledger is not None
-            and not isinstance(owned_case_ledger, SqliteSyntheticGrantLedger)):
-        raise ValueError("owned household list requires explicit grant ledger")
-    if (household_input_ledger is not None
-            and (not isinstance(household_input_ledger,
-                                SqliteSyntheticHouseholdInputLedger)
-                 or household_input_ledger is not owned_case_ledger
-                 or household_input_ledger is not technical_review_ledger)):
-        raise ValueError("household input must use same explicit review ledger")
-    if household_profile_schema is not None:
-        if (not isinstance(household_input_ledger, SqliteSyntheticHouseholdProfileLedger)
-                or household_input_ledger.profile_schema != household_profile_schema
-                or not callable(household_profile_access_authority)):
-            raise ValueError("household profile UI needs exact ledger/schema/authority")
-    elif household_profile_access_authority is not None:
-        raise ValueError("household profile authority requires explicit schema")
-    if household_stage_context_authority is not None:
-        if (household_profile_schema is None
-                or not callable(household_stage_context_authority)):
-            raise ValueError("stage observation UI needs current context authority")
-    if household_stage_artifact_store is not None and (
-            household_stage_context_authority is None
-            or household_profile_schema is None
-            or not callable(household_profile_access_authority)
-            or not all(callable(getattr(household_stage_artifact_store, name, None))
-                       for name in ("put", "get", "contains"))):
-        raise ValueError("stage upload UI requires exact store and profile authorities")
-    if (gate_handoff_ledger is not None
-            and not isinstance(gate_handoff_ledger,
-                               SqliteSyntheticGateEvidenceHandoff)):
-        raise ValueError("technical gate handoff requires explicit synthetic ledger")
-    if (authority_enquiry_ledger is not None
-            and (not isinstance(authority_enquiry_ledger,
-                                SqliteSyntheticAuthorityEnquiryLedger)
-                 or gate_handoff_ledger is None
-                 or authority_enquiry_ledger.handoff is not gate_handoff_ledger)):
-        raise ValueError("authority enquiry requires same explicit handoff ledger")
-    if (agronomy_workspace is not None
-            and (not isinstance(agronomy_workspace, SyntheticAgronomyWorkspace)
-                 or technical_review_ledger is None
-                 or agronomy_workspace.ledger is not technical_review_ledger)):
-        raise ValueError("agronomy needs the same explicit human-review ledger")
-    if (export_supplier_workspace is not None
-            and not isinstance(export_supplier_workspace, SyntheticSupplierWorkspace)):
-        raise ValueError("explicit synthetic supplier workspace required")
-    if (domestic_partner_workspace is not None
-            and not isinstance(domestic_partner_workspace,
-                               SyntheticDomesticPartnerWorkspace)):
-        raise ValueError("explicit synthetic Domestic partner workspace required")
-    router = APIRouter()
-    cookie_name = "__Host-ronas_session"
-
-    async def checked_browser_form(
-        request: Request, sid: str | None, *,
-        fields: frozenset[str], optional_fields: frozenset[str] = frozenset(),
-        max_bytes: int = 1200, max_fields: int = 8,
-        max_value_length: int = 150, value_encoding: str = "ascii",
-    ) -> tuple[Principal, dict[str, str]]:
-        """Verified server session, strict Origin+CSRF and bounded form input.
-
-        This is not the existing Bearer API route. Never accept ambient cookies
-        as enough: the signed session is reverified, as are CSRF and Origin.
-        """
-        if request.headers.get("origin") != flow.config.origin:
-            raise HTTPException(403, detail="ORIGIN_REQUIRED")
-        if (request.headers.get("content-type", "").split(";")[0].strip()
-                != "application/x-www-form-urlencoded"):
-            raise HTTPException(415, detail="FORM_CONTENT_TYPE_REQUIRED")
-        try:
-            session = flow.session(sid)
-        except InvalidToken:
-            raise HTTPException(401, detail="INVALID_SESSION") from None
-        raw = await request.body()
-        if len(raw) > max_bytes:
-            raise HTTPException(413, detail="LOCAL_TEST_FORM_TOO_LARGE")
-        try:
-            form = parse_qs(
-                raw.decode("ascii"), keep_blank_values=True,
-                strict_parsing=True, max_num_fields=max_fields,
-                encoding=value_encoding, errors="strict",
-            )
-        except (ValueError, UnicodeError) as exc:
-            raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
-        present = set(form)
-        if (not fields.issubset(present)
-                or not present.issubset(fields | optional_fields)
-                or any(len(items) != 1 or len(items[0]) > max_value_length
-                       for items in form.values())):
-            raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
-        data = {key: values[0] for key, values in form.items()}
-        data.update({key: "" for key in optional_fields if key not in data})
-        if not hmac.compare_digest(session.csrf, data["csrf"]):
-            raise HTTPException(403, detail="CSRF_REQUIRED")
-        return Principal(session.subject, session.roles), data
-
-    def form_version(data: str, *, zero_allowed: bool = True) -> int:
-        if (not data.isascii() or not data.isdecimal()
-                or (len(data) > 1 and data.startswith("0"))
-                or len(data) > 12):
-            raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
-        value = int(data)
-        if (value < (0 if zero_allowed else 1)
-                or value > 2147483647):
-            raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
-        return value
-
-    def sample_choice_options(*, prefix: str) -> str:
-        return ''.join(
-            '<option value="' + prefix + option + '">'
-            + ('Ø³Ù†Ø§Ø±ÛŒÙˆÛŒ Ù†Ù…ÙˆÙ†Ù‡ Ø§Ù„Ù' if option == "ALPHA"
-               else 'Ø³Ù†Ø§Ø±ÛŒÙˆÛŒ Ù†Ù…ÙˆÙ†Ù‡ Ø¨') + '</option>'
-            for option in ("ALPHA", "BETA")
-        )
-
-    def export_navigation_query(technical_state: str, after_ref: str | None) -> str:
-        # Navigation only; never grant or infer Export case access from URL.
-        if (technical_state not in ("ALL", *TECHNICAL_STATES)
-                or after_ref is not None and not _synthetic_ref(after_ref)):
-            raise HTTPException(422, detail="INVALID_EXPORT_RESEARCH_QUEUE")
-        return (
-            "technical_state=" + quote(technical_state)
-            + ("&after_ref=" + quote(after_ref) if after_ref is not None else "")
-        )
-
-    def roles(sid: str | None) -> frozenset[str] | None:
-        if sid is None:
-            return None
-        try:
-            return flow.session(sid).roles
-        except InvalidToken:
-            return None
-
-    @router.get("/assets/ronas.css")
-    def style() -> PlainTextResponse:
-        # Exactly this trusted repository-owned CSS file; no path input.
-        if not STYLE.is_file():
-            raise HTTPException(503, detail="UI_ASSET_NOT_AVAILABLE")
-        return PlainTextResponse(STYLE.read_text(encoding="utf-8"), media_type="text/css")
-
-    @router.get("/assets/ronas-auth.js")
-    def client_script() -> PlainTextResponse:
-        return PlainTextResponse(LOGOUT_SCRIPT, media_type="text/javascript")
-
-    @router.get("/assets/ronas-stage-observation-upload.js")
-    def stage_upload_script() -> PlainTextResponse:
-        return PlainTextResponse(STAGE_UPLOAD_SCRIPT, media_type="text/javascript")
-
-    def household_worklist(
-        principal: Principal, after_ref: str | None, technical_state: str,
-    ) -> str:
-        if owned_case_ledger is None:
-            return ""
-        progress_enabled = (
-            technical_review_ledger is not None
-            and owned_case_ledger is technical_review_ledger
-        )
-        try:
-            if progress_enabled:
-                # One exact-owner, single-transaction snapshot: do not
-                # assemble status using separate per-record privileged reads.
-                result = technical_review_ledger.list_owned_domestic_progress(
-                    principal, after_ref=after_ref, limit=20,
-                    technical_state=technical_state,
-                )
-            else:
-                if technical_state != "ALL":
-                    raise ValueError("technical filtering requires review ledger")
-                result = owned_case_ledger.list_owned_domestic_drafts(
-                    principal, after_ref=after_ref, limit=20,
-                )
-        except LedgerIntegrityError:
-            raise  # app-level sanitizer produces 503, never partial HTML
-        except ValueError as exc:
-            raise HTTPException(422, detail="INVALID_OWNED_CASE_QUERY") from exc
-        link_base = (
-            "/my-drafts/" if progress_enabled else
-            "/api/v1/domestic/household-intake/drafts/"
-        )
-        labels = {
-            "UNREQUESTED": "Ø¨Ø±Ø±Ø³ÛŒ ÙÙ†ÛŒ Ø¯Ø±Ø®ÙˆØ§Ø³Øª Ù†Ø´Ø¯Ù‡",
-            "EVIDENCE_REVIEW_REQUESTED": "Ø¯Ø±Ø®ÙˆØ§Ø³Øª Ø¨Ø±Ø±Ø³ÛŒ Ø´ÙˆØ§Ù‡Ø¯ Ø«Ø¨Øª Ø´Ø¯Ù‡",
-            "HUMAN_RESPONSE_RECORDED":
-                "Ù…Ø±Ø¬Ø¹ Ù¾Ø§Ø³Ø® Ø§Ù†Ø³Ø§Ù†ÛŒ Ø«Ø¨Øª Ø´Ø¯Ù‡Ø› Ø¨Ù‡ Ù…Ø¹Ù†ÛŒ ØªØ£ÛŒÛŒØ¯ Ù†ÛŒØ³Øª",
-        }
-        rows = [
-            '<li><a href="' + link_base + escape(item["ref"]) + '">'
-            + escape(item["ref"]) + '</a> â€” DRAFT_ONLY'
-            + (' Â· ' + escape(labels[item["technical_review_state"]])
-               if progress_enabled else '')
-            + ' Â· <a href="/my-drafts/' + escape(item["ref"], quote=True)
-            + '/versions">ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§</a></li>'
-            for item in result["items"]
-        ]
-        body = ('<ul>' + ''.join(rows) + '</ul>' if rows else
-                '<p>Ø¯Ø± Ø§ÛŒÙ† ÙÛŒÙ„ØªØ± Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ù…ØªØ¹Ù„Ù‚ Ø¨Ù‡ Ø§ÛŒÙ† Ø­Ø³Ø§Ø¨ ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.</p>'
-                if progress_enabled and technical_state != "ALL" else
-                '<p>Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø³Ø§Ø®ØªÚ¯ÛŒ Ù…ØªØ¹Ù„Ù‚ Ø¨Ù‡ Ø§ÛŒÙ† Ø­Ø³Ø§Ø¨ ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.</p>')
-        if progress_enabled:
-            state_labels = {
-                "ALL": "Ù‡Ù…Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ù…Ù†",
-                **labels,
-            }
-            navigation = ' Â· '.join(
-                ('<strong>' + escape(label) + '</strong>'
-                 if state == technical_state else
-                 '<a href="/?household_technical_state=' + quote(state)
-                 + '">' + escape(label) + '</a>')
-                for state, label in state_labels.items()
-            )
-            body = (
-                '<p>ÙÛŒÙ„ØªØ± ØµØ±ÙØ§Ù‹ Ù…Ø±Ø­Ù„Ù‡ ÙÙ†ÛŒ Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡ Ø±Ø§ Ù†Ø´Ø§Ù† Ù…ÛŒâ€ŒØ¯Ù‡Ø¯Ø› '
-                'Ù¾Ø§Ø³Ø® Ø§Ù†Ø³Ø§Ù†ÛŒ Ø¨Ù‡ Ù…Ø¹Ù†ÛŒ ØªØ£ÛŒÛŒØ¯ Ø·Ø±Ø­ Ú©Ø´Øª Ù†ÛŒØ³Øª.</p>'
-                '<nav aria-label="ÙÛŒÙ„ØªØ± Ù¾ÛŒÚ¯ÛŒØ±ÛŒ Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ø®Ø§Ù†ÙˆØ§Ø±">'
-                + navigation + '</nav>' + body
-            )
-        if result["next_cursor"]:
-            body += ('<a href="/?household_technical_state='
-                     + quote(technical_state) + '&household_after_ref='
-                     + quote(result["next_cursor"]) + '">Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ø¨Ø¹Ø¯ÛŒ</a>')
-        return ('<section class="section"><h3>Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ù…Ù†'
-                ' (ÙÙ‚Ø· Ù†Ù…ÙˆÙ†Ù‡ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ)</h3>' + body + '</section>')
-
-    @router.get("/workspace/{role}")
-    def user_role_workspace(
-        role: str,
-        sid: str | None = Cookie(default=None, alias=cookie_name),
-        after_ref: str | None = None,
-        technical_state: str = "ALL",
-    ) -> HTMLResponse:
-        try:
-            session = flow.session(sid)
-        except InvalidToken:
-            raise HTTPException(401, detail="INVALID_SESSION") from None
-        active = visible_user_workspaces(
-            Principal(session.subject, session.roles),
-            owned_cases=owned_case_ledger is not None,
-            technical_progress=(
-                technical_review_ledger is not None
-                and owned_case_ledger is technical_review_ledger
-            ),
-            agronomy_cases=agronomy_workspace is not None,
-            export_supplier_preview=export_supplier_workspace is not None,
-            domestic_partner_preview=domestic_partner_workspace is not None,
-        )
-        assigned = next((w for w in active if w["role"] == role), None)
-        if assigned is None:
-            # Unknown and unassigned partner roles are indistinguishable.
-            raise HTTPException(404, detail="WORKSPACE_NOT_FOUND")
-        if role == "agronomy_expert" and agronomy_workspace is not None:
-            try:
-                listing = agronomy_workspace.list_assigned_cases(
-                    Principal(session.subject, session.roles),
-                    after_ref=after_ref, limit=20,
-                    technical_state=technical_state,
-                )
-            except LedgerIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
-                ) from exc
-            except ValueError as exc:
-                raise HTTPException(
-                    422, detail="INVALID_ASSIGNED_CASE_QUERY",
-                ) from exc
-            labels = {
-                "ALL": "Ù‡Ù…Ù‡ Ù…Ø±Ø§Ø­Ù„ Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡",
-                "UNREQUESTED": "Ø¨Ø¯ÙˆÙ† Ø¯Ø±Ø®ÙˆØ§Ø³Øª Ø¨Ø±Ø±Ø³ÛŒ ÙÙ†ÛŒ",
-                "EVIDENCE_REVIEW_REQUESTED": "Ø¯Ø±Ø®ÙˆØ§Ø³Øª Ø¨Ø±Ø±Ø³ÛŒ Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡",
-                "HUMAN_RESPONSE_RECORDED": "Ù…Ø±Ø¬Ø¹ Ù¾Ø§Ø³Ø® ÙÙ†ÛŒ Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡",
-            }
-            filters = ' Â· '.join(
-                ('<strong>' + escape(label) + '</strong>'
-                 if state == technical_state else
-                 '<a href="/workspace/agronomy_expert?technical_state='
-                 + quote(state) + '">' + escape(label) + '</a>')
-                for state, label in labels.items()
-            )
-            links = ''.join(
-                '<li><a href="/agronomy/assigned-drafts/'
-                + quote(item["ref"]) + '">'
-                + escape(item["ref"]) + '</a> â€” '
-                + escape(labels[item["technical_review_state"]])
-                + ' Â· Ø·Ø±Ø­ Ú©Ø´Øª ØªØ¯ÙˆÛŒÙ† Ù†Ø´Ø¯Ù‡</li>'
-                for item in listing["items"]
-            )
-            local_read = (
-                '<h3>Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ ØªØ®ØµÛŒØµâ€ŒÛŒØ§ÙØªÙ‡ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ</h3>'
-                '<p>ØªØ®ØµÛŒØµ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ØŒ Ø§Ø«Ø¨Ø§Øª ØµÙ„Ø§Ø­ÛŒØª Ø­Ø±ÙÙ‡â€ŒØ§ÛŒ ÛŒØ§ Ù…Ø¬ÙˆØ² ØµØ¯ÙˆØ± Ø·Ø±Ø­ Ù†ÛŒØ³Øª.'
-                ' ÙÛŒÙ„ØªØ± ÙÙ‚Ø· ÙˆØ¶Ø¹ÛŒØª ÙÙ†ÛŒ Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡ Ø±Ø§ Ù†Ø´Ø§Ù† Ù…ÛŒâ€ŒØ¯Ù‡Ø¯ØŒ Ù†Ù‡ ØªØ£ÛŒÛŒØ¯ Ø¹Ù„Ù…ÛŒ.</p>'
-                '<nav aria-label="ÙÛŒÙ„ØªØ± Ù…Ø±Ø§Ø­Ù„ ÙÙ†ÛŒ Ú©Ø§Ø±Ø´Ù†Ø§Ø³">'
-                + filters + '</nav>'
-                + ('<ul>' + links + '</ul>' if links else
-                   '<p>Ø¯Ø± Ø§ÛŒÙ† ÙÛŒÙ„ØªØ± Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ ØªØ®ØµÛŒØµâ€ŒÛŒØ§ÙØªÙ‡â€ŒØ§ÛŒ ÛŒØ§ÙØª Ù†Ø´Ø¯.</p>')
-                + ('<p><a href="/workspace/agronomy_expert?technical_state='
-                   + quote(technical_state) + '&after_ref='
-                   + quote(listing["next_cursor"])
-                   + '">Ø§Ø¯Ø§Ù…Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§</a></p>'
-                   if listing["next_cursor"] else '')
-            )
-        elif (role in ("local_buyer", "equipment_seller")
-              and domestic_partner_workspace is not None):
-            try:
-                preview = domestic_partner_workspace.own_preview(
-                    role, Principal(session.subject, session.roles)
-                )
-            except SyntheticDomesticPartnerUnavailable as exc:
-                raise HTTPException(
-                    503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE",
-                ) from exc
-            link = (
-                "/local-buyer/my-preview" if role == "local_buyer"
-                else "/equipment-seller/my-preview"
-            )
-            local_read = (
-                '<h3>Ù¾ÛŒØ´â€ŒÙ†Ù…Ø§ÛŒ Ø´Ø®ØµÛŒ Ù†Ù‚Ø´ Ø¯Ø§Ø®Ù„ÛŒ (ÙÙ‚Ø· DEMO)</h3>'
-                '<p><a href="/domestic-partners/my-preparation">'
-                'Ù†Ù…Ø§ÛŒ ÛŒÚ©Ù¾Ø§Ø±Ú†Ù‡ Ø¢Ù…Ø§Ø¯Ù‡â€ŒØ³Ø§Ø²ÛŒ Ø´Ø®ØµÛŒ Ù…Ù†</a></p>'
-                '<p>Ø§ÛŒÙ† Ø¬Ø§ÛŒÚ¯Ø§Ù‡ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ø¨Ù‡ Ù…Ø¹Ù†ÛŒ ÙˆØ¬ÙˆØ¯ Ø¯Ø±Ø®ÙˆØ§Ø³Øª Ø®Ø±ÛŒØ¯ØŒ Ù…ÙˆØ¬ÙˆØ¯ÛŒ '
-                'ØªØ¬Ù‡ÛŒØ²Ø§ØªØŒ Ù…Ø¬ÙˆØ²ØŒ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ ÛŒØ§ Ù…Ø¹Ø§Ù…Ù„Ù‡ Ù†ÛŒØ³Øª.</p>'
-                + ('<p><a href="' + link
-                   + '">Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ù¾ÛŒØ´â€ŒÙ†Ù…Ø§ÛŒ Ø¢Ù…Ø§Ø¯Ù‡â€ŒØ³Ø§Ø²ÛŒ Ø´Ø®ØµÛŒ</a></p>'
-                   if preview is not None else
-                   '<p>Ù†Ù…ÙˆÙ†Ù‡ Ø´Ø®ØµÛŒ Ø¯Ø§Ø±Ø§ÛŒ Ù…Ø¬ÙˆØ² Ø¬Ø§Ø±ÛŒ Ù…ÙˆØ¬ÙˆØ¯ Ù†ÛŒØ³Øª.</p>')
-            )
-        elif role == "export_supplier" and export_supplier_workspace is not None:
-            try:
-                preview = export_supplier_workspace.own_preview(
-                    Principal(session.subject, session.roles)
-                )
-            except SyntheticSupplierUnavailable as exc:
-                raise HTTPException(
-                    503, detail="SUPPLIER_PREVIEW_UNAVAILABLE",
-                ) from exc
-            local_read = (
-                '<h3>Ù¾ÛŒØ´â€ŒÙ†Ù…Ø§ÛŒ Ø´Ø®ØµÛŒ ØªØ£Ù…ÛŒÙ†â€ŒÚ©Ù†Ù†Ø¯Ù‡ ØµØ§Ø¯Ø±Ø§Øª (ÙÙ‚Ø· DEMO)</h3>'
-                '<p>Ø§ÛŒÙ† Ù†Ù…Ø§ÛŒ Ø´Ø®ØµÛŒØŒ Ù‡ÙˆÛŒØªØŒ Ø¸Ø±ÙÛŒØªØŒ Ù…Ø¬ÙˆØ² ÛŒØ§ Ø§Ø¸Ù‡Ø§Ø± ÙˆØ§Ù‚Ø¹ÛŒ Ù†ÛŒØ³Øª.</p>'
-                + (
-                    '<p><a href="/export-supplier/my-preview">'
-                    'Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ù¾ÛŒØ´â€ŒÙ†Ù…Ø§ÛŒ Ø¢Ù…Ø§Ø¯Ù‡â€ŒØ³Ø§Ø²ÛŒ ØªØ£Ù…ÛŒÙ†â€ŒÚ©Ù†Ù†Ø¯Ù‡</a></p>'
-                    if preview is not None else
-                    '<p>Ù†Ù…ÙˆÙ†Ù‡ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ø¯Ø§Ø±Ø§ÛŒ Ù…Ø¬ÙˆØ² ÙØ¹Ù„ÛŒ Ù…ÙˆØ¬ÙˆØ¯ Ù†ÛŒØ³Øª.</p>'
-                )
-            )
-        else:
-            local_read = (
-                '<p><a href="/">Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ø³Ø§Ø®ØªÚ¯ÛŒ Ù…ØªØ¹Ù„Ù‚ Ø¨Ù‡ Ù…Ù†</a></p>'
-                if "OWNED_SYNTHETIC_DOMESTIC_DRAFTS" in assigned["local_test_reads"]
-                else '<p>Ø¯Ø± Ø§ÛŒÙ† Ù†Ù‚Ø´ØŒ Ø®ÙˆØ§Ù†Ø¯Ù† Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø¹Ù…Ù„ÛŒØ§ØªÛŒ ÙØ¹Ø§Ù„ Ù†ÛŒØ³Øª.</p>'
-            )
-        body = (
-            '<article class="panel"><h2>' + escape(assigned["label"]) + '</h2>'
-            '<p>Ù…Ø­ÛŒØ· Ú©Ø§Ø±Ø¨Ø±Ø§Ù† Ùˆ Ù‡Ù…Ú©Ø§Ø±Ø§Ù† â€” Ø¯Ø³ØªØ±Ø³ÛŒ ØµØ±ÙØ§Ù‹ Ø¨Ù‡ Ù†Ù‚Ø´ Ø§Ù…Ø¶Ø§Ø´Ø¯Ù‡.</p>'
-            '<p>ÙˆØ¶Ø¹ÛŒØª Ø®Ø¯Ù…Ø§Øª Ø§ÛŒÙ† Ù†Ù‚Ø´: ØºÛŒØ±Ø¹Ù…Ù„ÛŒØ§ØªÛŒØ› Ù…Ø¹Ø§Ù…Ù„Ù‡ØŒ Ø«Ø¨Øªâ€ŒÙ†Ø§Ù…ØŒ '
-            'ØªØ£ÛŒÛŒØ¯ Ùˆ ØªØµÙ…ÛŒÙ… Business ØºÛŒØ±ÙØ¹Ø§Ù„ Ù‡Ø³ØªÙ†Ø¯.</p>'
-            + local_read
-            + '<p><a href="/">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù…Ø­ÛŒØ· Ù…Ø´ØªØ±Ú©</a></p></article>'
-        )
-        return page("Ø±ÙˆÙ†Ø§Ø³ â€” ÙØ¶Ø§ÛŒ Ú©Ø§Ø± Ù†Ù‚Ø´ Ù…Ù† (Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ)", body, logged_in=True)
-
-    if agronomy_workspace is not None:
-        @router.get("/agronomy/assigned-drafts/{ref}")
-        def agronomy_case_page(
-            ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            data = agronomy_workspace.read_assigned_case(
-                ref, Principal(session.subject, session.roles),
-            )
-            if data is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            expert_journey_html = ""
-            if isinstance(agronomy_workspace.ledger,
-                          SqliteSyntheticExpertQuestionLedger):
-                who = Principal(session.subject, session.roles)
-                history = agronomy_workspace.read_assigned_synthetic_review_questions(
-                    ref, who,
-                )
-                if history is None:
-                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-                try:
-                    proposal = agronomy_workspace.read_assigned_proposal_structure(
-                        ref, who,
-                    )
-                except LedgerIntegrityError as exc:
-                    # Corrupted / stale independent input or source lineage
-                    # cannot be presented as an ordinary navigable case.
-                    raise HTTPException(
-                        503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
-                    ) from exc
-                try:
-                    next_step = expert_next_action(history, proposal)
-                except JourneyEvidenceMismatch as exc:
-                    raise HTTPException(
-                        503, detail="SYNTHETIC_JOURNEY_UNAVAILABLE",
-                    ) from exc
-                guidance = {
-                    "SOURCE_OR_INPUT_CHANGED_HISTORY_ONLY":
-                        "Ù…Ù†Ø¨Ø¹ ÛŒØ§ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ù…Ø¹ØªØ¨Ø± Ø¬Ø§Ø±ÛŒ Ù…ÙˆØ¬ÙˆØ¯ Ù†ÛŒØ³ØªØ› ÙÙ‚Ø· ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù‚Ø§Ø¨Ù„ Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø§Ø³Øª",
-                    "REQUEST_MISSING_EVIDENCE_DEMO":
-                        "Ù¾Ø±Ø³Ø´ Ø³Ø§Ø®ØªØ§Ø±ÛŒ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ø¯Ø±Ø¨Ø§Ø±Ù‡ Ø¯Ø§Ø¯Ù‡ Ù‚Ø§Ø¨Ù„ Ø«Ø¨Øª Ø§Ø³Øª",
-                    "WAIT_FOR_HOUSEHOLD_RESPONSE_DEMO":
-                        "Ù¾Ø±Ø³Ø´ Ø«Ø¨Øª Ø´Ø¯Ù‡Ø› Ø¯Ø±ÛŒØ§ÙØª Ù¾Ø§Ø³Ø® Ù…Ø±Ø¬Ø¹ÛŒ Ø®Ø§Ù†ÙˆØ§Ø± Ø¯Ø± Ø§Ù†ØªØ¸Ø§Ø± Ø§Ø³Øª",
-                    "INSPECT_RESPONSE_RECEIPT_DEMO":
-                        "Ø±Ø³ÛŒØ¯ Ù¾Ø§Ø³Ø® Ø®Ø§Ù†ÙˆØ§Ø± Ù‚Ø§Ø¨Ù„ Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø§Ø³ØªØ› Ù†Ù‡ Ù…Ø­ØªÙˆØ§ÛŒ Ø®ØµÙˆØµÛŒ Ø¢Ù†",
-                    "RECEIPT_OBSERVED_NOT_REVIEWED":
-                        "Ø±Ø³ÛŒØ¯ Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø´Ø¯Ø› Ù‡ÛŒÚ† Ø¨Ø±Ø±Ø³ÛŒ Ø¹Ù„Ù…ÛŒ ÛŒØ§ Ø¨Ø±Ù†Ø§Ù…Ù‡â€ŒØ§ÛŒ ØªØµÙˆÛŒØ¨ Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª",
-                }[next_step]
-                expert_journey_html = (
-                    '<nav class="journey" aria-label="Ø§Ù‚Ø¯Ø§Ù… Ø¨Ø¹Ø¯ÛŒ Ú©Ø§Ø±Ø´Ù†Ø§Ø³">'
-                    '<h3>Ù…Ø±Ø­Ù„Ù‡ Ø¨Ø¹Ø¯ÛŒ Ø¯Ø± Ù‡Ù…ÛŒÙ† Ù¾Ø±ÙˆÙ†Ø¯Ù‡</h3><p>'
-                    + escape(guidance) + '</p>'
-                    '<p><a href="/agronomy/assigned-drafts/'
-                    + quote(ref) + '/review-questions#expert-demo-actions">'
-                    'Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ù¾Ø±Ø³Ø´â€ŒÙ‡Ø§ Ùˆ Ø§Ù‚Ø¯Ø§Ù…Ø§Øª Ù…Ø¬Ø§Ø²</a></p>'
-                    + ('<p><a href="/agronomy/assigned-drafts/'
-                       + quote(ref) + '/stage-observations">'
-                       'Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ú¯Ø²Ø§Ø±Ø´â€ŒÙ‡Ø§ÛŒ Ù…Ø±Ø­Ù„Ù‡â€ŒØ§ÛŒ Ø®Ø§Ù†ÙˆØ§Ø±</a></p>'
-                       if household_stage_context_authority is not None
-                       and isinstance(agronomy_workspace.ledger,
-                                      SqliteSyntheticHouseholdProfileLedger)
-                       else '')
-                    + '<p>ØªØ®ØµÛŒØµ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ù…Ø¬ÙˆØ² ØªØ®ØµØµÛŒ ÛŒØ§ ØªØ£ÛŒÛŒØ¯ Ø¨Ø±Ù†Ø§Ù…Ù‡ Ú©Ø´Øª Ù†ÛŒØ³Øª.</p>'
-                    + '</nav>'
-                )
-            body = (
-                '<article class="panel"><h2>Ù¾ÛŒØ´â€ŒÙ†Ù…Ø§ÛŒ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø®Ø§Ù†ÙˆØ§Ø± (ÙÙ‚Ø· DEMO): '
-                + escape(data["ref"]) + '</h2>'
-                '<p>Ù†Ø³Ø®Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡: ' + str(data["case_version"])
-                + ' Â· ÙˆØ¶Ø¹ÛŒØª: DRAFT_ONLY</p>'
-                + readonly_domestic_preparation_html(
-                    data["cultivation_preparation"]
-                )
-                + expert_journey_html
-                + '<p>Ù‡ÛŒÚ† Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ù…Ø­ØµÙˆÙ„ ÛŒØ§ Ø¨Ø±Ù†Ø§Ù…Ù‡ Ø¢Ø¨ÛŒØ§Ø±ÛŒ '
-                'ØªÙˆÙ„ÛŒØ¯ Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>'
-                '<p>ØªØ®ØµÛŒØµ ÙÙ†ÛŒ Ú©Ø§Ø±Ø´Ù†Ø§Ø³ØŒ ØµÙ„Ø§Ø­ÛŒØª Ø­Ø±ÙÙ‡â€ŒØ§ÛŒ Ø±Ø§ Ø§Ø­Ø±Ø§Ø² Ù†Ù…ÛŒâ€ŒÚ©Ù†Ø¯Ø› '
-                'Ø±Ø¶Ø§ÛŒØª ÙˆØ§Ù‚Ø¹ÛŒ Ø®Ø§Ù†ÙˆØ§Ø± Ùˆ ØªØ£ÛŒÛŒØ¯ Ø¹Ù„Ù…ÛŒ/Ø·Ø±Ø­ Ú©Ø´Øª ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.</p>'
-                '<p><a href="/agronomy/assigned-drafts/'
-                + quote(ref) + '/internal-plan-proposal">'
-                'Ø³Ø§Ø®ØªØ§Ø± Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ø¯Ø§Ø®Ù„ÛŒ Ø¨Ø±Ù†Ø§Ù…Ù‡ Ú©Ø´Øª (ÙÙ‚Ø· DEMO)</a></p>'
-                '<p><a href="/agronomy/assigned-drafts/'
-                + quote(ref) + '/expert-review-preparation">'
-                'Ø³Ù‡ Ù…Ø­ÙˆØ± Ø¢Ù…Ø§Ø¯Ù‡â€ŒØ³Ø§Ø²ÛŒ Ø¨Ø±Ø±Ø³ÛŒ Ù…Ø³ØªÙ‚Ù„ Ù…ØªØ®ØµØµ (ÙÙ‚Ø· DEMO)</a></p>'
-                + ('<p><a href="/agronomy/assigned-drafts/'
-                   + quote(ref) + '/review-questions">'
-                   'Ù¾Ø±Ø³Ø´ØŒ Ø¯Ø±ÛŒØ§ÙØª Ù¾Ø§Ø³Ø® Ùˆ Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø±Ø³ÛŒØ¯ DEMO</a></p>'
-                   if isinstance(agronomy_workspace.ledger,
-                                 SqliteSyntheticExpertQuestionLedger) else '')
-                + '<p><a href="/workspace/agronomy_expert">'
-                'Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ ÙØ¶Ø§ÛŒ Ú©Ø§Ø± Ú©Ø§Ø±Ø´Ù†Ø§Ø³ Ú©Ø´Ø§ÙˆØ±Ø²ÛŒ</a></p>'
-                '</article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” ÙØ¶Ø§ÛŒ Ú©Ø§Ø± Ú©Ø§Ø±Ø´Ù†Ø§Ø³ Ú©Ø´Ø§ÙˆØ±Ø²ÛŒ (Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ)",
-                        body, logged_in=True)
-
-    if (agronomy_workspace is not None
-            and household_stage_context_authority is not None
-            and isinstance(agronomy_workspace.ledger,
-                           SqliteSyntheticHouseholdProfileLedger)):
-        @router.get(
-            "/agronomy/assigned-drafts/{ref}/stage-observations",
-        )
-        def agronomy_stage_observations_page(
-            ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            try:
-                data = agronomy_workspace.read_assigned_stage_observations(
-                    ref, Principal(session.subject, session.roles),
-                    context_authority=household_stage_context_authority,
-                )
-            except StageObservationConflict as exc:
-                raise HTTPException(
-                    409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
-                ) from exc
-            except (LedgerIntegrityError, sqlite3.Error) as exc:
-                raise HTTPException(
-                    503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
-                ) from exc
-            if data is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            progress_labels = {
-                "NOT_REPORTED": "Ø±Ø³ÛŒØ¯ÛŒ Ú¯Ø²Ø§Ø±Ø´ Ù†Ø´Ø¯Ù‡",
-                "CURRENT_RECEIPT": "Ø±Ø³ÛŒØ¯ Ø¬Ø§Ø±ÛŒ",
-                "HISTORICAL_RECEIPT": "Ø±Ø³ÛŒØ¯ ØªØ§Ø±ÛŒØ®ÛŒ",
-            }
-            stage_progress = ''.join(
-                '<li>' + escape(item["stage_ref"]) + ' Â· '
-                + progress_labels[item["state"]]
-                + (' Â· Ù†Ø³Ø®Ù‡ ' + str(item["observation_revision"])
-                   if item["observation_revision"] is not None else '')
-                + (' Â· Ø±Ø³ÛŒØ¯ Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø´Ø¯ (Ø¨Ø¯ÙˆÙ† Ø¯Ø§ÙˆØ±ÛŒ)'
-                   if item["receipt_inspected"] else '')
-                + '</li>'
-                for item in data["stage_progress"]
-            )
-            items = []
-            for item in data["observations"]:
-                state = "Ø¬Ø§Ø±ÛŒ Ø¨Ø§ Ø²Ù…ÛŒÙ†Ù‡ ÙØ¹Ù„ÛŒ" if item["current"] else "ØªØ§Ø±ÛŒØ®ÛŒ"
-                if item["is_superseded"]:
-                    replacement_revision = item["superseded_by_revision"]
-                    state += (
-                        ' Â· Ø§ØµÙ„Ø§Ø­â€ŒØ´Ø¯Ù‡ Ø¨Ø§ <a href="#observation-'
-                        + quote(item["stage_ref"]) + '-'
-                        + str(replacement_revision) + '">Ø±Ø³ÛŒØ¯ '
-                        + str(replacement_revision) + '</a>'
-                    )
-                file_link = ""
-                if household_stage_artifact_store is not None:
-                    file_link = (
-                        '<p><a href="/agronomy/assigned-drafts/'
-                        + quote(ref) + '/stage-observations/artifacts/'
-                        + quote(item["stage_ref"]) + '/'
-                        + quote(item["observation_artifact_digest"])
-                        + '">Ø¯Ø±ÛŒØ§ÙØª ÙØ§ÛŒÙ„ Ù…Ø´Ø§Ù‡Ø¯Ù‡</a></p>'
-                    )
-                if item["receipt_inspected"]:
-                    inspection = (
-                        '<p>Ø±Ø³ÛŒØ¯ Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø´Ø¯ (Ø¨Ø¯ÙˆÙ† Ø¯Ø§ÙˆØ±ÛŒ ØªØ®ØµØµÛŒ).</p>'
-                    )
-                else:
-                    inspection = (
-                        '<form method="post" action="/agronomy/assigned-drafts/'
-                        + quote(ref) + '/stage-observations/inspect">'
-                        '<input type="hidden" name="csrf" value="'
-                        + escape(session.csrf, quote=True) + '">'
-                        '<input type="hidden" name="case_version" value="'
-                        + str(data["case_version"]) + '">'
-                        '<input type="hidden" name="stage_ref" value="'
-                        + escape(item["stage_ref"], quote=True) + '">'
-                        '<input type="hidden" name="observation_revision" value="'
-                        + str(item["revision"]) + '">'
-                        '<input type="hidden" name="receipt_digest" value="'
-                        + escape(item["receipt_digest"], quote=True) + '">'
-                        '<button type="submit">Ø«Ø¨Øª Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø±Ø³ÛŒØ¯ (Ø¨Ø¯ÙˆÙ† Ø¨Ø±Ø±Ø³ÛŒ)</button>'
-                        '</form>'
-                    )
-                items.append(
-                    '<section id="observation-'
-                    + escape(item["stage_ref"], quote=True) + '-'
-                    + str(item["revision"]) + '"><h3>'
-                    + escape(item["stage_ref"]) + '</h3>'
-                    + '<p>Ù†Ø³Ø®Ù‡ Ø±Ø³ÛŒØ¯: ' + str(item["revision"])
-                    + ' Â· Ù†Ø³Ø®Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ' + str(item["case_version"])
-                    + ' Â· Ù†Ø³Ø®Ù‡ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø± ' + str(item["input_revision"])
-                    + ' Â· ' + state + '</p>'
-                    + ('<p>Ø§ÛŒÙ† Ø±Ø³ÛŒØ¯ Ø§ØµÙ„Ø§Ø­ Ù†Ø³Ø®Ù‡ <a href="#observation-'
-                       + quote(item["stage_ref"]) + '-'
-                       + str(item["corrects_revision"]) + '">'
-                       + str(item["corrects_revision"]) + '</a> Ø§Ø³Øª.</p>'
-                       if item["corrects_revision"] is not None else '')
-                    + '<p>Ø²Ù…Ø§Ù† Ø«Ø¨Øª: ' + escape(item["observed_at"]) + '</p>'
-                    + file_link + inspection + '</section>'
-                )
-            body = (
-                '<article class="panel"><h2>Ù…Ø´Ø§Ù‡Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ù…Ø±Ø­Ù„Ù‡â€ŒØ§ÛŒ Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡'
-                ' (ÙÙ‚Ø· Ø±Ø³ÛŒØ¯ Ø®Ø§Ù†ÙˆØ§Ø±)</h2>'
-                '<p>Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ' + escape(data["ref"])
-                + ' Â· Ù†Ø³Ø®Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ' + str(data["case_version"]) + '</p>'
-                + ('<h3>ÙˆØ¶Ø¹ÛŒØª Ú¯Ø²Ø§Ø±Ø´ Ù…Ø±Ø­Ù„Ù‡â€ŒÙ‡Ø§ÛŒ Ø·Ø±Ø­ Ø¬Ø§Ø±ÛŒ</h3><ul>'
-                   + stage_progress + '</ul>'
-                   if data["current_context"] is not None else
-                   '<p>Ù…Ø±Ø¬Ø¹ Ø¬Ø§Ø±ÛŒ Ø¨Ø±Ø§ÛŒ ØªØ¹ÛŒÛŒÙ† Ù…Ø±Ø­Ù„Ù‡â€ŒÙ‡Ø§ÛŒ Ù…ÙˆØ±Ø¯Ù†ÛŒØ§Ø² Ù…ÙˆØ¬ÙˆØ¯ Ù†ÛŒØ³Øª.</p>')
-                + (''.join(items) if items else '<p>Ø±Ø³ÛŒØ¯ÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>')
-                + '<p>Ø§ÛŒÙ† Ø±Ø³ÛŒØ¯Ù‡Ø§ Ú¯Ø²Ø§Ø±Ø´ Ø®Ø§Ù†ÙˆØ§Ø± Ù‡Ø³ØªÙ†Ø¯ Ùˆ ØªÚ©Ù…ÛŒÙ„ Ù…Ø±Ø­Ù„Ù‡ØŒ '
-                'Ø§Ø±Ø²ÛŒØ§Ø¨ÛŒ Ø¹Ù„Ù…ÛŒØŒ ØªÙˆØµÛŒÙ‡ ÛŒØ§ ØªØ£ÛŒÛŒØ¯ Ø¨Ø±Ù†Ø§Ù…Ù‡ Ú©Ø´Øª Ø±Ø§ Ù†Ø´Ø§Ù† Ù†Ù…ÛŒâ€ŒØ¯Ù‡Ù†Ø¯.</p>'
-                '<p><a href="/agronomy/assigned-drafts/' + quote(ref)
-                + '">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ØªØ®ØµÛŒØµâ€ŒÛŒØ§ÙØªÙ‡</a></p></article>'
-            )
-            return page(
-                "Ø±ÙˆÙ†Ø§Ø³ â€” Ø±Ø³ÛŒØ¯Ù‡Ø§ÛŒ Ù…Ø±Ø­Ù„Ù‡â€ŒØ§ÛŒ Ø®Ø§Ù†ÙˆØ§Ø±",
-                body, logged_in=True, local_test_form=True,
-            )
-
-        @router.post(
-            "/agronomy/assigned-drafts/{ref}/stage-observations/inspect",
-        )
-        async def inspect_stage_receipt_from_browser(
-            ref: str, request: Request,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> RedirectResponse:
-            principal, form = await checked_browser_form(
-                request, sid, fields=frozenset({
-                    "csrf", "case_version", "stage_ref",
-                    "observation_revision", "receipt_digest",
-                }),
-            )
-            try:
-                result = agronomy_workspace.inspect_assigned_stage_receipt(
-                    ref, principal,
-                    action_id="DEMO-UI-SI-" + secrets.token_hex(10).upper(),
-                    expected_case_version=form_version(
-                        form["case_version"], zero_allowed=False,
-                    ),
-                    stage_ref=form["stage_ref"],
-                    expected_observation_revision=form_version(
-                        form["observation_revision"], zero_allowed=False,
-                    ),
-                    expected_observation_receipt_digest=form["receipt_digest"],
-                )
-            except ReviewQuestionConflict as exc:
-                raise HTTPException(
-                    409, detail="STAGE_RECEIPT_CONTEXT_CHANGED",
-                ) from exc
-            except (LedgerIntegrityError, sqlite3.Error) as exc:
-                raise HTTPException(
-                    503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
-                ) from exc
-            except ValueError as exc:
-                raise HTTPException(422, detail="INVALID_STAGE_RECEIPT_INSPECTION") from exc
-            if result is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            return RedirectResponse(
-                "/agronomy/assigned-drafts/" + quote(ref)
-                + "/stage-observations", status_code=303,
-            )
-
-    if (agronomy_workspace is not None
-            and household_stage_artifact_store is not None
-            and isinstance(agronomy_workspace.ledger,
-                           SqliteSyntheticHouseholdProfileLedger)):
-        @router.get(
-            "/agronomy/assigned-drafts/{ref}/stage-observations/"
-            "artifacts/{stage_ref}/{digest}",
-        )
-        def agronomy_stage_observation_artifact(
-            ref: str, stage_ref: str, digest: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> Response:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            try:
-                stored = agronomy_workspace.read_assigned_stage_artifact(
-                    ref, stage_ref, digest,
-                    Principal(session.subject, session.roles),
-                    store=household_stage_artifact_store,
-                )
-            except StageArtifactStoreError as exc:
-                raise HTTPException(
-                    503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
-                ) from exc
-            except (LedgerIntegrityError, sqlite3.Error) as exc:
-                raise HTTPException(
-                    503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
-                ) from exc
-            if stored is None:
-                raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
-            artifact, content = stored
-            return Response(
-                content=content, media_type=artifact.content_type,
-                headers={
-                    "Content-Disposition": 'attachment; filename="stage-observation"',
-                    "Cache-Control": "no-store",
-                    "X-Content-Type-Options": "nosniff",
-                },
-            )
-
-    if agronomy_workspace is not None:
-        @router.get("/agronomy/assigned-drafts/{ref}/internal-plan-proposal")
-        def agronomy_internal_proposal_page(
-            ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            try:
-                data = agronomy_workspace.read_assigned_proposal_structure(
-                    ref, Principal(session.subject, session.roles),
-                )
-            except LedgerIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
-                ) from exc
-            if data is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            if (data["engine"] != "DOMESTIC"
-                    or data["plan_state"] != "NOT_AUTHORED"
-                    or data["plan_accepted"] is not False
-                    or data["advice_enabled"] is not False
-                    or data["real_data"] is not False):
-                raise HTTPException(
-                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
-                )
-            status = data["proposal_status"]
-            if status == "NO_INTERNAL_PROPOSAL_FIXTURE":
-                explanation = (
-                    '<p>Ù‡Ù†ÙˆØ² Ù‡ÛŒÚ† Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ø³Ø§Ø®ØªØ§Ø±ÛŒ AI Ø¯Ø§Ø®Ù„ÛŒ Ø±ÙˆÙ†Ø§Ø³ '
-                    'Ø¨Ø±Ø§ÛŒ Ø§ÛŒÙ† Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.</p>'
-                )
-            elif status == "STRUCTURE_ONLY_UNREVIEWED":
-                stages = ''.join(
-                    '<li>' + escape(stage_ref) + '</li>'
-                    for stage_ref in data["proposed_stage_refs"]
-                )
-                explanation = (
-                    '<p>Ù†Ù…ÙˆÙ†Ù‡ Ø³Ø§Ø®ØªØ§Ø±ÛŒ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ø¨Ø±Ø§ÛŒ Ù…Ø·Ø§Ù„Ø¹Ù‡ Ù¾ÛŒÙˆÙ†Ø¯ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§ Ù…ÙˆØ¬ÙˆØ¯ Ø§Ø³Øª. '
-                    'Ø§Ø¬Ø±Ø§ÛŒ ÙˆØ§Ù‚Ø¹ÛŒ Ù…Ø¯Ù„ØŒ Ù…Ø­ØªÙˆØ§ÛŒ Ø¹Ù„Ù…ÛŒ Ùˆ Ø§Ø¹ØªØ¨Ø§Ø±Ø³Ù†Ø¬ÛŒ Ø¢Ù† ØªØ£ÛŒÛŒØ¯ Ù†Ø´Ø¯Ù‡â€ŒØ§Ù†Ø¯.</p>'
-                    '<h3>Ø´Ù†Ø§Ø³Ù‡â€ŒÙ‡Ø§ÛŒ Ù…Ø±Ø§Ø­Ù„ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ÛŒ ØºÛŒØ±Ø¹Ù…Ù„ÛŒØ§ØªÛŒ</h3>'
-                    '<ul>' + stages + '</ul>'
-                )
-            else:
-                raise HTTPException(
-                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
-                )
-            body = (
-                '<article class="panel"><h2>Ø¨Ø±Ø±Ø³ÛŒ Ø³Ø§Ø®ØªØ§Ø± Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ø¯Ø§Ø®Ù„ÛŒ Ú©Ø´Øª '
-                '(ÙÙ‚Ø· DEMO)</h2>'
-                '<p>Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ' + escape(data["case_ref"])
-                + ' Â· Ù†Ø³Ø®Ù‡ ' + str(data["case_version"]) + '</p>'
-                + explanation
-                + '<p>Ø§ÛŒÙ† Ù¾Ø§Ø³Ø® ÛŒÚ© Ø¨Ø±Ù†Ø§Ù…Ù‡ Ú©Ø´Øª ÛŒØ§ ØªØ£ÛŒÛŒØ¯ Ù…ØªØ®ØµØµ Ù†ÛŒØ³ØªØ› '
-                'Ø¯Ø§Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ø®Ø§Ù†ÙˆØ§Ø±ØŒ Ø±Ø¶Ø§ÛŒØªØŒ Ù…Ù†Ø§Ø¨Ø¹ Ø¹Ù„Ù…ÛŒØŒ Ù…Ø¯Ù„ Ø§Ø¬Ø±Ø§ÛŒÛŒ Ùˆ '
-                'ØµÙ„Ø§Ø­ÛŒØª ÙˆØ§Ù‚Ø¹ÛŒ Ù…ØªØ®ØµØµ Ù‡Ù†ÙˆØ² Ø§Ø­Ø±Ø§Ø² Ù†Ø´Ø¯Ù‡â€ŒØ§Ù†Ø¯.</p>'
-                '<p>Ù‡ÛŒÚ† Ø¨Ø±Ù†Ø§Ù…Ù‡â€ŒØ§ÛŒ Ù¾Ø°ÛŒØ±ÙØªÙ‡ Ù†Ø´Ø¯Ù‡ Ùˆ Ú¯Ø²Ø§Ø±Ø´ Ù…Ø±Ø­Ù„Ù‡â€ŒØ§ÛŒ '
-                'ÛŒØ§ ØªÙˆØµÛŒÙ‡ Ú©Ø´Øª Ø§Ø² Ø¢Ù† ÙØ¹Ø§Ù„ Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>'
-                '<p><a href="/agronomy/assigned-drafts/' + quote(ref)
-                + '">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ØªØ®ØµÛŒØµâ€ŒÛŒØ§ÙØªÙ‡</a></p></article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ø¨Ø±Ø±Ø³ÛŒ Ø³Ø§Ø®ØªØ§Ø± Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ú©Ø´Øª (DEMO)",
-                        body, logged_in=True)
-
-    if agronomy_workspace is not None:
-        @router.get("/agronomy/assigned-drafts/{ref}/expert-review-preparation")
-        def agronomy_expert_review_preparation_page(
-            ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            try:
-                dossier = agronomy_workspace.read_assigned_expert_review_preparation(
-                    ref, Principal(session.subject, session.roles),
-                )
-            except LedgerIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
-                ) from exc
-            if dossier is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            if (dossier["engine"] != "DOMESTIC"
-                    or dossier["case_status"] != "DRAFT_ONLY"
-                    or dossier["combined_review_status"] != "NOT_AUTHORIZED_FOR_DECISION"
-                    or dossier["plan_accepted"] is not False
-                    or dossier["real_data"] is not False
-                    or dossier["new_advice_enabled"] is not False):
-                raise HTTPException(
-                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
-                )
-            descriptions = {
-                "HOUSEHOLD_INPUT_ADEQUACY": (
-                    "Û±. Ú©ÙØ§ÛŒØª Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø±",
-                    "Ù†Ø³Ø®Ù‡ Ø³Ø§Ø®ØªØ§Ø±ÛŒ Ø¨Ù‡ Ù…Ø¹Ù†ÛŒ Ú©ÙØ§ÛŒØª Ø¯Ø§Ø¯Ù‡ ÛŒØ§ Ø±Ø¶Ø§ÛŒØª Ø®Ø§Ù†ÙˆØ§Ø± Ù†ÛŒØ³Øª."),
-                "SCIENTIFIC_BASIS_AND_USE_RIGHTS": (
-                    "Û². Ù…Ù†Ø´Ø£ Ø¹Ù„Ù…ÛŒ Ùˆ Ø­Ù‚ÙˆÙ‚ Ø§Ø³ØªÙØ§Ø¯Ù‡",
-                    "Ù…Ù†Ø¨Ø¹ Ù†Ø³Ø®Ù‡â€ŒØ¯Ø§Ø± Ø¨Ù‡ Ù…Ø¹Ù†ÛŒ Ø­Ù‚ Ø§Ø³ØªÙØ§Ø¯Ù‡ ÛŒØ§ Ø§Ø¹ØªØ¨Ø§Ø± Ø¹Ù„Ù…ÛŒ Ù†ÛŒØ³Øª."),
-                "INDIVIDUAL_CULTIVATION_PROPOSAL": (
-                    "Û³. Ø¨Ø±Ø±Ø³ÛŒ Ø®ÙˆØ¯ Ø¨Ø±Ù†Ø§Ù…Ù‡ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ÛŒ",
-                    "Ø³Ø§Ø®ØªØ§Ø± Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ÛŒ AI ØªØ£ÛŒÛŒØ¯ Ø¨Ø±Ù†Ø§Ù…Ù‡ ØªÙˆØ³Ø· Ù…ØªØ®ØµØµ Ù†ÛŒØ³Øª."),
-            }
-            items = []
-            for part in dossier["tracks"]:
-                label, note = descriptions[part["track"]]
-                items.append(
-                    '<section><h3>' + escape(label) + '</h3>'
-                    '<p>ÙˆØ¶Ø¹ÛŒØª Ø³Ø§Ø®ØªØ§Ø±ÛŒ: ' + escape(part["observed_structure"])
-                    + '</p><p>' + escape(note) + '</p>'
-                    '<p>Ù†ØªÛŒØ¬Ù‡ Ø¨Ø±Ø±Ø³ÛŒ Ù…Ø³ØªÙ‚Ù„: Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡.</p></section>'
-                )
-            body = (
-                '<article class="panel"><h2>Ø¢Ù…Ø§Ø¯Ù‡â€ŒØ³Ø§Ø²ÛŒ Ø³Ù‡ Ù…Ø­ÙˆØ± Ø¨Ø±Ø±Ø³ÛŒ Ù…ØªØ®ØµØµ '
-                '(ÙÙ‚Ø· DEMO)</h2>'
-                '<p>Ù¾Ø±ÙˆÙ†Ø¯Ù‡: ' + escape(dossier["case_ref"])
-                + ' Â· Ù†Ø³Ø®Ù‡ ' + str(dossier["case_version"]) + '</p>'
-                + ''.join(items)
-                + '<p>Ø§ÛŒÙ† Ø³Ù‡ Ù…Ø­ÙˆØ± Ù…Ø³ØªÙ‚Ù„â€ŒØ§Ù†Ø¯. Ù‡ÛŒÚ† ØªØµÙ…ÛŒÙ… Ú©Ø§Ø±Ø´Ù†Ø§Ø³ÛŒ ÙˆØ§Ù‚Ø¹ÛŒØŒ '
-                'Ø±Ø¶Ø§ÛŒØª Ù…Ø¹ØªØ¨Ø± Ø®Ø§Ù†ÙˆØ§Ø±ØŒ Ø§Ø­Ø±Ø§Ø² ØµÙ„Ø§Ø­ÛŒØªØŒ Ù…Ø¬ÙˆØ² Ø¹Ù„Ù…ÛŒ ÛŒØ§ '
-                'ØªØ£ÛŒÛŒØ¯ Ø¨Ø±Ù†Ø§Ù…Ù‡ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>'
-                '<p>ØªØ£ÛŒÛŒØ¯ØŒ Ø±Ø¯ØŒ Ø§ØµÙ„Ø§Ø­ Ø¨Ø±Ù†Ø§Ù…Ù‡ØŒ Ø«Ø¨Øª Ú¯Ø²Ø§Ø±Ø´ Ú©Ø´Øª '
-                'Ùˆ ØªÙˆØµÛŒÙ‡ Ø¬Ø¯ÛŒØ¯ Ø¯Ø± Ø§ÛŒÙ† ØµÙØ­Ù‡ ØºÛŒØ±ÙØ¹Ø§Ù„â€ŒØ§Ù†Ø¯.</p>'
-                + ('<p><a href="/agronomy/assigned-drafts/'
-                   + quote(ref) + '/review-questions">'
-                   'ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù¾Ø±Ø³Ø´â€ŒÙ‡Ø§ÛŒ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ø³Ù‡ Ù…Ø­ÙˆØ±</a></p>'
-                   if isinstance(agronomy_workspace.ledger,
-                                 SqliteSyntheticExpertQuestionLedger)
-                   else '')
-                + '<p><a href="/agronomy/assigned-drafts/' + quote(ref)
-                + '">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ØªØ®ØµÛŒØµâ€ŒÛŒØ§ÙØªÙ‡</a></p></article>'
-            )
-            return page(
-                "Ø±ÙˆÙ†Ø§Ø³ â€” Ø¢Ù…Ø§Ø¯Ù‡â€ŒØ³Ø§Ø²ÛŒ Ø¨Ø±Ø±Ø³ÛŒ Ù…Ø³ØªÙ‚Ù„ Ø¨Ø±Ù†Ø§Ù…Ù‡ Ú©Ø´Øª (DEMO)",
-                body, logged_in=True,
-            )
-
-    if (agronomy_workspace is not None
-            and isinstance(agronomy_workspace.ledger,
-                           SqliteSyntheticExpertQuestionLedger)):
-        @router.get("/agronomy/assigned-drafts/{ref}/review-questions")
-        def agronomy_question_history_page(
-            ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            try:
-                notes = agronomy_workspace.read_assigned_synthetic_review_questions(
-                    ref, Principal(session.subject, session.roles),
-                )
-            except LedgerIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
-                ) from exc
-            if notes is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            if (notes["engine"] != "DOMESTIC"
-                    or notes["qualification_verified"] is not False
-                    or notes["questions_are_review_decisions"] is not False
-                    or notes["plan_accepted"] is not False
-                    or notes["real_data"] is not False):
-                raise HTTPException(
-                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
-                )
-            # Historical questions must remain visible after an input or
-            # scientific source changes. Failure to obtain a CURRENT pinned
-            # synthetic proposal only disables new form commands.
-            current_proposal = None
-            try:
-                current_proposal = (
-                    agronomy_workspace.read_assigned_proposal_structure(
-                        ref, Principal(session.subject, session.roles),
-                    )
-                )
-            except LedgerIntegrityError:
-                pass
-            current_stage_observations = []
-            if (household_stage_context_authority is not None
-                    and isinstance(
-                        agronomy_workspace.ledger,
-                        SqliteSyntheticHouseholdProfileLedger,
-                    )):
-                try:
-                    stage_data = agronomy_workspace.read_assigned_stage_observations(
-                        ref, Principal(session.subject, session.roles),
-                        context_authority=household_stage_context_authority,
-                    )
-                    if stage_data is not None:
-                        current_stage_observations = [
-                            item for item in stage_data["observations"]
-                            if item["current"]
-                        ]
-                except (StageObservationConflict, LedgerIntegrityError, sqlite3.Error):
-                    current_stage_observations = []
-            expert_forms = ""
-            if (current_proposal is not None
-                    and current_proposal["proposal_status"]
-                    == "STRUCTURE_ONLY_UNREVIEWED"
-                    and type(current_proposal.get("input_revision")) is int):
-                track_options = (
-                    ("HOUSEHOLD_INPUT_ADEQUACY", "Ù¾Ø±Ø³Ø´ Ø¯Ø±Ø¨Ø§Ø±Ù‡ Ú©ÙØ§ÛŒØª Ø¯Ø§Ø¯Ù‡"),
-                    ("SCIENTIFIC_BASIS_AND_USE_RIGHTS", "Ù¾Ø±Ø³Ø´ Ø¯Ø±Ø¨Ø§Ø±Ù‡ Ù…Ù†Ø´Ø£ Ø¹Ù„Ù…ÛŒ"),
-                    ("INDIVIDUAL_CULTIVATION_PROPOSAL", "Ù¾Ø±Ø³Ø´ Ø¯Ø±Ø¨Ø§Ø±Ù‡ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ú©Ø´Øª"),
-                )
-                for track, label in track_options:
-                    revision = max((
-                        q["question_revision"] for q in notes["questions"]
-                        if q["track"] == track
-                    ), default=0)
-                    expert_forms += (
-                        '<form method="post" action="/agronomy/assigned-drafts/'
-                        + quote(ref) + '/review-questions/demo-question">'
-                        '<input type="hidden" name="csrf" value="'
-                        + escape(session.csrf, quote=True) + '">'
-                        '<input type="hidden" name="action_id" value="DEMO-UI-Q-'
-                        + secrets.token_hex(10).upper() + '">\n'
-
-                        '<input type="hidden" name="case_version" value="'
-                        + str(notes["case_version"]) + '">'
-                        '<input type="hidden" name="input_revision" value="'
-                        + str(current_proposal["input_revision"]) + '">'
-                        '<input type="hidden" name="question_revision" value="'
-                        + str(revision) + '">'
-                        '<input type="hidden" name="track" value="'
-                        + track + '">'
-                        '<input type="hidden" name="stage_ref" value="">'
-                        '<input type="hidden" name="stage_observation_revision" value="">'
-                        '<input type="hidden" name="stage_observation_receipt_digest" value="">'
-                        '<p><button type="submit">' + escape(label)
-                        + ' (ÙÙ‚Ø· DEMO)</button></p></form>'
-                    )
-                if household_stage_context_authority is not None:
-                    revision = max((
-                        q["question_revision"] for q in notes["questions"]
-                        if q["track"] == "HOUSEHOLD_INPUT_ADEQUACY"
-                    ), default=0)
-                    for item in current_stage_observations:
-                        expert_forms += (
-                            '<form method="post" action="/agronomy/assigned-drafts/'
-                            + quote(ref) + '/review-questions/demo-question">'
-                            '<input type="hidden" name="csrf" value="'
-                            + escape(session.csrf, quote=True) + '">'
-                            '<input type="hidden" name="action_id" value="DEMO-UI-Q-'
-                            + secrets.token_hex(10).upper() + '">\n'
-
-                            '<input type="hidden" name="case_version" value="'
-                            + str(notes["case_version"]) + '">'
-                            '<input type="hidden" name="input_revision" value="'
-                            + str(current_proposal["input_revision"]) + '">'
-                            '<input type="hidden" name="question_revision" value="'
-                            + str(revision) + '">'
-                            '<input type="hidden" name="track" value="HOUSEHOLD_INPUT_ADEQUACY">'
-                            '<input type="hidden" name="stage_ref" value="'
-                            + escape(item["stage_ref"], quote=True) + '">'
-                            '<input type="hidden" name="stage_observation_revision" value="'
-                            + str(item["revision"]) + '">'
-                            '<input type="hidden" name="stage_observation_receipt_digest" value="'
-                            + escape(item["receipt_digest"], quote=True) + '">'
-                            '<p><button type="submit">Ù¾Ø±Ø³Ø´ Ø¯Ø±Ø¨Ø§Ø±Ù‡ Ø±Ø³ÛŒØ¯ Ø¬Ø§Ø±ÛŒ '
-                            + escape(item["stage_ref"]) + ' Â· Ù†Ø³Ø®Ù‡ '
-                            + str(item["revision"]) + ' (ÙÙ‚Ø· DEMO)</button></p></form>'
-                        )
-            inspections = ""
-            if current_proposal is not None and type(
-                current_proposal.get("input_revision")
-            ) is int:
-                input_revision = current_proposal["input_revision"]
-                current_questions = [
-                    q for q in notes["questions"]
-                    if q["track"] == "HOUSEHOLD_INPUT_ADEQUACY"
-                ]
-                if current_questions:
-                    recent = max(
-                        current_questions, key=lambda q: q["question_revision"],
-                    )
-                    if (recent["bound_input_revision"] == input_revision
-                            and recent["synthetic_household_response_received"]
-                            and not recent["synthetic_receipt_inspected_not_reviewed"]):
-                        inspections = (
-                            '<form method="post" action="/agronomy/assigned-drafts/'
-                            + quote(ref) + '/review-questions/demo-inspection">'
-                            '<input type="hidden" name="csrf" value="'
-                            + escape(session.csrf, quote=True) + '">'
-                            '<input type="hidden" name="action_id" value="DEMO-UI-I-'
-                            + secrets.token_hex(10).upper() + '">\n'
-
-                            '<input type="hidden" name="case_version" value="'
-                            + str(notes["case_version"]) + '">'
-                            '<input type="hidden" name="input_revision" value="'
-                            + str(input_revision) + '">'
-                            '<input type="hidden" name="question_revision" value="'
-                            + str(recent["question_revision"]) + '">'
-                            '<button type="submit">Ø«Ø¨Øª Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø±Ø³ÛŒØ¯ Ù¾Ø§Ø³Ø® DEMO '
-                            '(Ù†Ù‡ Ø¨Ø±Ø±Ø³ÛŒ Ø¹Ù„Ù…ÛŒ)</button></form>'
-                        )
-            form_section = (
-                '<section id="expert-demo-actions" aria-label="Ú¯Ø±Ø¯Ø´ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ù¾Ø±Ø³Ø´ Ù…ØªØ®ØµØµ">'
-                '<h3>Ø«Ø¨Øª Ù¾Ø±Ø³Ø´ Ø³Ø§Ø®ØªØ§Ø±ÛŒ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ</h3>'
-                '<p>ÙÙ‚Ø· Ø´Ù†Ø§Ø³Ù‡â€ŒÙ‡Ø§ÛŒ Ø«Ø§Ø¨Øª Ù†Ù…ÙˆÙ†Ù‡ Ø«Ø¨Øª Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯Ø› '
-                'Ù‡ÛŒÚ† Ù¾Ø±Ø³Ø´ ÙˆØ§Ù‚Ø¹ÛŒØŒ Ø³Ù†Ø¯ ØªØ®ØµØµÛŒ ÛŒØ§ Ù†ØªÛŒØ¬Ù‡ Ø§Ø±Ø²ÛŒØ§Ø¨ÛŒ Ø¯Ø±ÛŒØ§ÙØª Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>'
-                + (expert_forms if expert_forms else
-                   '<p>Ù†Ø³Ø®Ù‡ Ù…Ø¹ØªØ¨Ø±Ù Ø³Ø§Ø®ØªØ§Ø±ÛŒ Ø¨Ø±Ø§ÛŒ Ù¾Ø±Ø³Ø´ Ø¬Ø¯ÛŒØ¯ Ù…ÙˆØ¬ÙˆØ¯ Ù†ÛŒØ³Øª.</p>')
-                + inspections + '</section>'
-            )
-            descriptions = {
-                "HOUSEHOLD_INPUT_ADEQUACY": "Ú©ÙØ§ÛŒØª Ø¯Ø§Ø¯Ù‡ Ø®Ø§Ù†ÙˆØ§Ø±",
-                "SCIENTIFIC_BASIS_AND_USE_RIGHTS": "Ù…Ù†Ø´Ø£ Ø¹Ù„Ù…ÛŒ Ùˆ Ø­Ù‚ÙˆÙ‚ Ø§Ø³ØªÙØ§Ø¯Ù‡",
-                "INDIVIDUAL_CULTIVATION_PROPOSAL": "Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ø§Ø®ØªØµØ§ØµÛŒ Ú©Ø´Øª",
-            }
-            rows = ''.join(
-                '<li>' + escape(descriptions[q["track"]])
-                + ' Â· Ù¾Ø±Ø³Ø´ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ ' + str(q["question_revision"])
-                + ' Â· Ù†Ø³Ø®Ù‡ ÙˆØ±ÙˆØ¯ÛŒ ' + str(q["bound_input_revision"])
-                + ' Â· Ø§Ø±Ø¬Ø§Ø¹ Ø¯Ù„ÛŒÙ„ ' + escape(q["draft_reason_ref"])
-                + ' Â· Ø§Ø±Ø¬Ø§Ø¹ Ø´Ø§Ù‡Ø¯ ' + escape(q["draft_evidence_ref"])
-                + (' Â· Ù…ØªØµÙ„ Ø¨Ù‡ Ø±Ø³ÛŒØ¯ Ù…Ø±Ø­Ù„Ù‡ ' + escape(q["stage_ref"])
-                   + ' Â· Ù†Ø³Ø®Ù‡ ' + str(q["stage_observation_revision"])
-                   + ' Â· <a href="/agronomy/assigned-drafts/' + quote(ref)
-                   + '/stage-observations#observation-'
-                   + quote(q["stage_ref"], safe="") + '-'
-                   + str(q["stage_observation_revision"])
-                   + '">Ø¯ÛŒØ¯Ù† Ù‡Ù…Ø§Ù† Ø±Ø³ÛŒØ¯ Ù…Ø±Ø­Ù„Ù‡â€ŒØ§ÛŒ</a>'
-                   if q.get("stage_ref") else '')
-                + (' Â· Ù¾Ø§Ø³Ø® Ø³Ø§Ø®ØªØ§Ø±ÛŒ Ø®Ø§Ù†ÙˆØ§Ø± Ø¯Ø±ÛŒØ§ÙØª Ø´Ø¯Ù‡ (Ø¨Ø±Ø±Ø³ÛŒ Ù†Ø´Ø¯Ù‡)'
-                   if q["synthetic_household_response_received"]
-                   else ' Â· Ù¾Ø§Ø³Ø®ÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡')
-                + (' Â· Ø±Ø³ÛŒØ¯ Ù¾Ø§Ø³Ø® Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø´Ø¯ (Ø¨Ø¯ÙˆÙ† Ø¯Ø§ÙˆØ±ÛŒ ØªØ®ØµØµÛŒ)'
-                   if q["synthetic_receipt_inspected_not_reviewed"]
-                   else '')
-                + ' â€” ØµØ±ÙØ§Ù‹ Ø³Ø§Ø¨Ù‚Ù‡ØŒ Ø¨Ø¯ÙˆÙ† ØªØ£ÛŒÛŒØ¯</li>'
-                for q in notes["questions"]
-            )
-            body = (
-                '<article class="panel"><h2>ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù¾Ø±Ø³Ø´â€ŒÙ‡Ø§ÛŒ Ø¨Ø±Ø±Ø³ÛŒ '
-                'Ù…ØªØ®ØµØµ (ÙÙ‚Ø· DEMO)</h2>'
-                '<p>Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ' + escape(notes["case_ref"])
-                + ' Â· Ù†Ø³Ø®Ù‡ ' + str(notes["case_version"]) + '</p>'
-                + ('<ul>' + rows + '</ul>' if rows else
-                   '<p>Ù‡Ù†ÙˆØ² Ù¾Ø±Ø³Ø´ÛŒ Ø¯Ø± Ù†Ù…ÙˆÙ†Ù‡ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>')
-                + '<p>Ù¾Ø±Ø³Ø´â€ŒÙ‡Ø§ Ø¨Ø§Ø²Ø®ÙˆØ±Ø¯ ÛŒØ§ Ø±Ø£ÛŒ Ø¹Ù„Ù…ÛŒ Ù†ÛŒØ³ØªÙ†Ø¯Ø› '
-                'ØªØºÛŒÛŒØ± Ù†Ø³Ø®Ù‡ ÙˆØ±ÙˆØ¯ÛŒ ÛŒØ§ Ù…Ù†Ø¨Ø¹ØŒ Ø§Ø¬Ø§Ø²Ù‡ Ø§Ø³ØªÙØ§Ø¯Ù‡ Ø§Ø² '
-                'Ù†Ø³Ø®Ù‡ Ù‚Ø¯ÛŒÙ…ÛŒ Ø¨Ø±Ø§ÛŒ ØªØµÙ…ÛŒÙ… Ø¬Ø¯ÛŒØ¯ Ø±Ø§ Ù†Ù…ÛŒâ€ŒØ¯Ù‡Ø¯.</p>'
-                '<p>ÙØ±Ù… Ø«Ø¨Øª Ø¯Ø§Ø¯Ù‡ ÙˆØ§Ù‚Ø¹ÛŒØŒ ØªØ£ÛŒÛŒØ¯ Ø¨Ø±Ù†Ø§Ù…Ù‡ØŒ Ø§ØµÙ„Ø§Ø­ ØªØ®ØµØµÛŒ '
-                'Ùˆ Ù…Ø¬ÙˆØ² Ø§Ù†ØªØ´Ø§Ø± Ø¯Ø± Ø§ÛŒÙ† ØµÙØ­Ù‡ ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.</p>'
-                + form_section
-                + '<p><a href="/agronomy/assigned-drafts/'
-                + quote(ref) + '/expert-review-preparation">'
-                'Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ø³Ù‡ Ù…Ø­ÙˆØ± Ø¨Ø±Ø±Ø³ÛŒ</a></p></article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù¾Ø±Ø³Ø´â€ŒÙ‡Ø§ÛŒ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ú©Ø§Ø±Ø´Ù†Ø§Ø³",
-                        body, logged_in=True, local_test_form=True)
-
-        @router.post("/agronomy/assigned-drafts/{ref}/review-questions/demo-question")
-        async def expert_demo_question(
-            ref: str, request: Request,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> RedirectResponse:
-            principal, form = await checked_browser_form(
-                request, sid, fields=frozenset({
-                    "csrf", "action_id", "case_version", "input_revision",
-                    "question_revision", "track",
-                }), optional_fields=frozenset({
-                    "stage_ref", "stage_observation_revision",
-                    "stage_observation_receipt_digest",
-                }),
-            )
-            track = form["track"]
-            if track not in (
-                "HOUSEHOLD_INPUT_ADEQUACY",
-                "SCIENTIFIC_BASIS_AND_USE_RIGHTS",
-                "INDIVIDUAL_CULTIVATION_PROPOSAL",
-            ):
-                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
-            stage_fields = (
-                form["stage_ref"], form["stage_observation_revision"],
-                form["stage_observation_receipt_digest"],
-            )
-            if any(stage_fields) and not all(stage_fields):
-                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
-            try:
-                created = agronomy_workspace.record_assigned_synthetic_review_question(
-                    ref, principal,
-                    action_id=form["action_id"],
-                    track=track,
-                    expected_case_version=form_version(
-                        form["case_version"], zero_allowed=False,
-                    ),
-                    expected_input_revision=form_version(
-                        form["input_revision"], zero_allowed=False,
-                    ),
-                    expected_question_revision=form_version(
-                        form["question_revision"],
-                    ),
-                    reason_ref="DEMO-UI-MISSING-REF",
-                    evidence_ref="DEMO-UI-PENDING-REF",
-                    stage_context_authority=household_stage_context_authority,
-                    stage_ref=form["stage_ref"] or None,
-                    expected_stage_observation_revision=(
-                        form_version(form["stage_observation_revision"], zero_allowed=False)
-                        if form["stage_observation_revision"] else None
-                    ),
-                    expected_stage_observation_receipt_digest=(
-                        form["stage_observation_receipt_digest"] or None
-                    ),
-                )
-            except ReviewQuestionConflict as exc:
-                raise HTTPException(
-                    409, detail="SYNTHETIC_QUESTION_VERSION_CONFLICT",
-                ) from exc
-            except LedgerIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
-                ) from exc
-            except ValueError as exc:
-                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
-            if created is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            return RedirectResponse(
-                "/agronomy/assigned-drafts/" + quote(ref) + "/review-questions",
-                status_code=303,
-            )
-
-        @router.post(
-            "/agronomy/assigned-drafts/{ref}/review-questions/demo-inspection"
-        )
-        async def expert_demo_receipt_inspection(
-            ref: str, request: Request,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> RedirectResponse:
-            principal, form = await checked_browser_form(
-                request, sid, fields=frozenset({
-                    "csrf", "action_id", "case_version", "input_revision",
-                    "question_revision",
-                }),
-            )
-            try:
-                checked = agronomy_workspace.inspect_assigned_synthetic_response_receipt(
-                    ref, principal,
-                    action_id=form["action_id"],
-                    expected_case_version=form_version(
-                        form["case_version"], zero_allowed=False,
-                    ),
-                    expected_input_revision=form_version(
-                        form["input_revision"], zero_allowed=False,
-                    ),
-                    expected_question_revision=form_version(
-                        form["question_revision"], zero_allowed=False,
-                    ),
-                )
-            except ReviewQuestionConflict as exc:
-                raise HTTPException(
-                    409, detail="SYNTHETIC_RECEIPT_CONTEXT_CHANGED",
-                ) from exc
-            except LedgerIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
-                ) from exc
-            except ValueError as exc:
-                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
-            if checked is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            return RedirectResponse(
-                "/agronomy/assigned-drafts/" + quote(ref) + "/review-questions",
-                status_code=303,
-            )
-
-    if domestic_partner_workspace is not None:
-        @router.get("/domestic-partners/my-preparation")
-        def domestic_partner_preparation_page(
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            if not ({"local_buyer", "equipment_seller"} & session.roles):
-                raise HTTPException(404, detail="PREVIEW_NOT_FOUND")
-            try:
-                overview = domestic_partner_workspace.own_preparation_overview(
-                    Principal(session.subject, session.roles),
-                )
-            except SyntheticDomesticPartnerUnavailable as exc:
-                raise HTTPException(
-                    503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE",
-                ) from exc
-            labels = {
-                "local_buyer": (
-                    "Ø®Ø±ÛŒØ¯Ø§Ø± Ù…Ø­Ù„ÛŒ", "/local-buyer/my-preview",
-                    ("Ù‡ÙˆÛŒØª", "Ù…Ø­ØµÙˆÙ„ Ø¯Ø±Ø®ÙˆØ§Ø³ØªÛŒ", "Ù…Ù‚Ø¯Ø§Ø± Ø¯Ø±Ø®ÙˆØ§Ø³ØªÛŒ",
-                     "Ù…Ø­Ù„ ØªØ­ÙˆÛŒÙ„", "Ø¨ÙˆØ¯Ø¬Ù‡"),
-                ),
-                "equipment_seller": (
-                    "ÙØ±ÙˆØ´Ù†Ø¯Ù‡ ØªØ¬Ù‡ÛŒØ²Ø§Øª", "/equipment-seller/my-preview",
-                    ("Ù‡ÙˆÛŒØª", "ÙÙ‡Ø±Ø³Øª ØªØ¬Ù‡ÛŒØ²Ø§Øª", "Ù…ÙˆØ¬ÙˆØ¯ÛŒ",
-                     "Ù…Ø­Ø¯ÙˆØ¯Ù‡ Ø®Ø¯Ù…Ø§Øª", "ØªÙ†Ø§Ø³Ø¨ ÙÙ†ÛŒ ØªØ¬Ù‡ÛŒØ²Ø§Øª"),
-                ),
-            }
-            blocks = []
-            for item in overview["items"]:
-                role = item["role"]
-                label, url, slots = labels[role]
-                if (item["business_readiness"] != "NOT_EVALUATED"
-                        or item["commercial_actions_enabled"] is not False
-                        or item["data_submission_enabled"] is not False
-                        or item["unknown_display_slots"] !=
-                           list(DOMESTIC_PARTNER_FIELDS[role])):
-                    raise HTTPException(
-                        503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE",
-                    )
-                rows = ''.join(
-                    '<li>' + escape(name) + ': Ù‡Ù†ÙˆØ² Ø¯Ø§Ø¯Ù‡â€ŒØ§ÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡</li>'
-                    for name in slots
-                )
-                blocks.append(
-                    '<section class="section"><h3>' + escape(label) + '</h3>'
-                    '<p>Ù†Ù…ÙˆÙ†Ù‡ Ø§Ø®ØªØµØ§ØµÛŒ: ' + escape(item["profile_ref"])
-                    + ' â€” Ù†Ø³Ø®Ù‡ ' + str(item["profile_version"]) + '</p>'
-                    '<p>ÙˆØ¶Ø¹ÛŒØª Ø¨Ø±Ø±Ø³ÛŒ Ø¢Ù…Ø§Ø¯Ú¯ÛŒ ØªØ¬Ø§Ø±ÛŒ: Ø§Ù†Ø¬Ø§Ù… Ù†Ø´Ø¯Ù‡ (DEMO)</p>'
-                    '<ul>' + rows + '</ul>'
-                    '<p><a href="' + url
-                    + '">Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø¬Ø²Ø¦ÛŒØ§Øª Ù‡Ù…ÛŒÙ† Ù†Ù‚Ø´</a></p></section>'
-                )
-            content = (
-                '<article class="panel"><h2>Ø¢Ù…Ø§Ø¯Ù‡â€ŒØ³Ø§Ø²ÛŒ Ø´Ø®ØµÛŒ Ù…Ù† (ÙÙ‚Ø· DEMO)</h2>'
-                '<p>ÙÙ‚Ø· Ù†Ù…ÙˆÙ†Ù‡â€ŒÙ‡Ø§ÛŒÛŒ Ù†Ù…Ø§ÛŒØ´ Ø¯Ø§Ø¯Ù‡ Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯ Ú©Ù‡ Ø§ÛŒÙ† Ø­Ø³Ø§Ø¨ Ø¨Ø§ Ù†Ù‚Ø´ '
-                'Ø§Ù…Ø¶Ø§Ø´Ø¯Ù‡ Ùˆ Ù…Ø¬ÙˆØ² Ø¬Ø§Ø±ÛŒ Ø§Ø®ØªØµØ§ØµÛŒ Ø¨Ù‡ Ø¢Ù†â€ŒÙ‡Ø§ Ø¯Ø³ØªØ±Ø³ÛŒ Ø¯Ø§Ø±Ø¯.</p>'
-                '<p>Ø§ÛŒÙ† Ø¬Ø§ÛŒÚ¯Ø§Ù‡â€ŒÙ‡Ø§ ØµØ±ÙØ§Ù‹ Ù†Ù…Ø§ÛŒØ´ÛŒ Ùˆ Ø¯Ø§Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ø¢Ù†â€ŒÙ‡Ø§ Ù†Ø§Ù…Ø´Ø®Øµâ€ŒØ§Ù†Ø¯Ø› '
-                'Ù…Ø¹ÛŒØ§Ø± Ø§Ø¬Ø¨Ø§Ø±ÛŒ Ø«Ø¨Øªâ€ŒÙ†Ø§Ù… ÛŒØ§ ØµÙ„Ø§Ø­ÛŒØª Ù†ÛŒØ³ØªÙ†Ø¯.</p>'
-                + (''.join(blocks) if blocks else
-                   '<p>Ù‡ÛŒÚ† Ù¾ÛŒØ´â€ŒÙ†Ù…Ø§ÛŒ Ù…Ø¬Ø§Ø² Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ù…ÙˆØ¬ÙˆØ¯ Ù†ÛŒØ³Øª.</p>')
-                + '<p>Ø§Ø±ØªØ¨Ø§Ø· Ø¨Ø§ Ø®Ø§Ù†ÙˆØ§Ø±ØŒ ØªØ·Ø¨ÛŒÙ‚ Ø®Ø±ÛŒØ¯Ø§Ø± Ùˆ ÙØ±ÙˆØ´Ù†Ø¯Ù‡ØŒ '
-                'Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ØŒ Ø³ÙØ§Ø±Ø´ØŒ Ù‚ÛŒÙ…ØªØŒ Ù¾Ø±Ø¯Ø§Ø®Øª Ùˆ ÙØ¹Ø§Ù„ÛŒØª ØªØ¬Ø§Ø±ÛŒ ÙØ¹Ø§Ù„ Ù†ÛŒØ³Øª.</p>'
-                '<p><a href="/">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù…Ø­ÛŒØ· Ù…Ø´ØªØ±Ú©</a></p>'
-                '</article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ù†Ù…Ø§ÛŒ Ø¢Ù…Ø§Ø¯Ù‡â€ŒØ³Ø§Ø²ÛŒ Ø´Ø®ØµÛŒ (DEMO)",
-                        content, logged_in=True)
-
-        def partner_page(
-            role: str, sid: str | None,
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            try:
-                view = domestic_partner_workspace.own_preview(
-                    role, Principal(session.subject, session.roles),
-                )
-            except SyntheticDomesticPartnerUnavailable as exc:
-                raise HTTPException(
-                    503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE",
-                ) from exc
-            if view is None:
-                raise HTTPException(404, detail="PREVIEW_NOT_FOUND")
-            if (view["profile_state"] != "NOT_SUBMITTED_DEMO"
-                    or view["commercial_actions_enabled"] is not False
-                    or view["data_submission_enabled"] is not False
-                    or tuple(view["preparation_fields"]) != DOMESTIC_PARTNER_FIELDS[role]
-                    or any(value is not None
-                           for value in view["preparation_fields"].values())):
-                raise HTTPException(503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE")
-            labels = {
-                "local_buyer": (
-                    "Ø®Ø±ÛŒØ¯Ø§Ø± Ù…Ø­Ù„ÛŒ",
-                    ("Ù‡ÙˆÛŒØª", "Ù…Ø­ØµÙˆÙ„ Ø¯Ø±Ø®ÙˆØ§Ø³ØªÛŒ", "Ù…Ù‚Ø¯Ø§Ø± Ø¯Ø±Ø®ÙˆØ§Ø³ØªÛŒ",
-                     "Ù…Ø­Ù„ ØªØ­ÙˆÛŒÙ„", "Ø¨ÙˆØ¯Ø¬Ù‡"),
-                ),
-                "equipment_seller": (
-                    "ÙØ±ÙˆØ´Ù†Ø¯Ù‡ ØªØ¬Ù‡ÛŒØ²Ø§Øª",
-                    ("Ù‡ÙˆÛŒØª", "ÙÙ‡Ø±Ø³Øª ØªØ¬Ù‡ÛŒØ²Ø§Øª", "Ù…ÙˆØ¬ÙˆØ¯ÛŒ",
-                     "Ù…Ø­Ø¯ÙˆØ¯Ù‡ Ø®Ø¯Ù…Ø§Øª", "ØªÙ†Ø§Ø³Ø¨ ÙÙ†ÛŒ ØªØ¬Ù‡ÛŒØ²Ø§Øª"),
-                ),
-            }
-            label, slots = labels[role]
-            items = ''.join(
-                '<li>' + name + ': Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡</li>' for name in slots
-            )
-            body = (
-                '<article class="panel"><h2>Ù¾ÛŒØ´â€ŒÙ†Ù…Ø§ÛŒ Ø´Ø®ØµÛŒ '
-                + label + ' (ÙÙ‚Ø· DEMO)</h2>'
-                '<p>Ø´Ù†Ø§Ø³Ù‡ Ù†Ù…ÙˆÙ†Ù‡: ' + escape(view["profile_ref"])
-                + ' â€” Ù†Ø³Ø®Ù‡ ' + str(view["profile_version"]) + '</p>'
-                '<p>ÙˆØ¶Ø¹ÛŒØª: NOT_SUBMITTED_DEMOØ› Ù‡ÛŒÚ† Ø§Ø·Ù„Ø§Ø¹Ø§ØªÛŒ Ø§Ø±Ø³Ø§Ù„ Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>'
-                '<h3>Ø¬Ø§ÛŒÚ¯Ø§Ù‡â€ŒÙ‡Ø§ÛŒ Ø¢Ù…Ø§Ø¯Ù‡â€ŒØ³Ø§Ø²ÛŒ</h3><ul>' + items + '</ul>'
-                '<p>Ø§ÛŒÙ† Ø¬Ø§ÛŒÚ¯Ø§Ù‡â€ŒÙ‡Ø§ Ù…Ø¹ÛŒØ§Ø± Ù¾Ø°ÛŒØ±Ø´ ÛŒØ§ Ø§Ø¸Ù‡Ø§Ø± ÙˆØ§Ù‚Ø¹ÛŒ Ù†ÛŒØ³ØªÙ†Ø¯. '
-                'Ù‡ÙˆÛŒØªØŒ Ø±Ø¶Ø§ÛŒØªØŒ Ù…ÙˆØ¬ÙˆØ¯ÛŒ ÛŒØ§ ØªÙ‚Ø§Ø¶Ø§ Ø§Ø­Ø±Ø§Ø² Ù†Ø´Ø¯Ù‡â€ŒØ§Ù†Ø¯.</p>'
-                '<p>Ø®Ø±ÛŒØ¯ÙˆÙØ±ÙˆØ´ØŒ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ØŒ Ø³ÙØ§Ø±Ø´ØŒ Ù‚ÛŒÙ…ØªØŒ Ù¾Ø±Ø¯Ø§Ø®Øª Ùˆ '
-                'ØªØ£ÛŒÛŒØ¯ ØªÙ†Ø§Ø³Ø¨ ÙÙ†ÛŒ ÙØ¹Ø§Ù„ Ù†ÛŒØ³ØªÙ†Ø¯.</p>'
-                '<p><a href="/workspace/' + role
-                + '">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ ÙØ¶Ø§ÛŒ Ú©Ø§Ø± Ù†Ù‚Ø´ Ù…Ù†</a></p>'
-                '</article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ù¾ÛŒØ´â€ŒÙ†Ù…Ø§ÛŒ Ø¯Ø§Ø®Ù„ÛŒ " + label + " (DEMO)",
-                        body, logged_in=True)
-
-        @router.get("/local-buyer/my-preview")
-        def buyer_page(
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            return partner_page("local_buyer", sid)
-
-        @router.get("/equipment-seller/my-preview")
-        def equipment_page(
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            return partner_page("equipment_seller", sid)
-
-    if export_supplier_workspace is not None:
-        @router.get("/export-supplier/my-preview")
-        def supplier_personal_preview(
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            try:
-                view = export_supplier_workspace.own_preview(
-                    Principal(session.subject, session.roles)
-                )
-            except SyntheticSupplierUnavailable as exc:
-                raise HTTPException(
-                    503, detail="SUPPLIER_PREVIEW_UNAVAILABLE",
-                ) from exc
-            if view is None:
-                raise HTTPException(404, detail="PREVIEW_NOT_FOUND")
-            fields = (
-                "Ù‡ÙˆÛŒØª Ø­Ø±ÙÙ‡â€ŒØ§ÛŒ", "Ù…Ø­ØµÙˆÙ„Ø§Øª", "Ø¸Ø±ÙÛŒØª ØªØ£Ù…ÛŒÙ†",
-                "Ø²Ù…Ø§Ù† Ø¯Ø³ØªØ±Ø³ÛŒ", "ØªØ£Ø³ÛŒØ³Ø§Øª", "Ù…Ø¬ÙˆØ²Ù‡Ø§ÛŒ ØµØ§Ø¯Ø±Ø§ØªÛŒ",
-            )
-            slots = ''.join(
-                '<li>' + escape(label) + ': Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡</li>'
-                for label in fields
-            )
-            body = (
-                '<article class="panel"><h2>Ù¾ÛŒØ´â€ŒÙ†Ù…Ø§ÛŒ Ø´Ø®ØµÛŒ ØªØ£Ù…ÛŒÙ†â€ŒÚ©Ù†Ù†Ø¯Ù‡ '
-                '(ÙÙ‚Ø· Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ)</h2>'
-                '<p>Ø´Ù†Ø§Ø³Ù‡ Ù†Ù…ÙˆÙ†Ù‡: ' + escape(view["profile_ref"])
-                + ' â€” Ù†Ø³Ø®Ù‡ ' + str(view["profile_version"]) + '</p>'
-                '<p>ÙˆØ¶Ø¹ÛŒØª: NOT_SUBMITTED_DEMOØ› Ø§Ø·Ù„Ø§Ø¹Ø§ØªÛŒ Ø§Ø±Ø³Ø§Ù„ Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>'
-                '<h3>Ø¬Ø§ÛŒÚ¯Ø§Ù‡â€ŒÙ‡Ø§ÛŒ Ø¢Ù…Ø§Ø¯Ù‡â€ŒØ³Ø§Ø²ÛŒ Ø§Ø¸Ù‡Ø§Ø± ØªØ£Ù…ÛŒÙ†â€ŒÚ©Ù†Ù†Ø¯Ù‡</h3>'
-                '<ul>' + slots + '</ul>'
-                '<p>Ù‡ÛŒÚ† Ù‡ÙˆÛŒØª Ø­Ø±ÙÙ‡â€ŒØ§ÛŒØŒ Ø¸Ø±ÙÛŒØª ÙˆØ§Ù‚Ø¹ÛŒØŒ Ù…Ø¬ÙˆØ²ØŒ Ø­Ù‚ Ø§Ø³ØªÙØ§Ø¯Ù‡ '
-                'Ø§Ø² Ù…Ù†Ø¨Ø¹ ÛŒØ§ ØµÙ„Ø§Ø­ÛŒØª ØªØ¬Ø§Ø±ÛŒ ØªØ£ÛŒÛŒØ¯ Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>'
-                '<p>Ø®Ø±ÛŒØ¯Ø§Ø±ØŒ Ù‚ÛŒÙ…ØªØŒ Ø³ÙØ§Ø±Ø´ØŒ Ù…Ø¹Ø§Ù…Ù„Ù‡ØŒ Ù¾Ø±Ø¯Ø§Ø®Øª Ùˆ Ù‚Ø±Ø§Ø±Ø¯Ø§Ø¯ ÙØ¹Ø§Ù„ Ù†ÛŒØ³ØªÙ†Ø¯.'
-                ' Ø§ÛŒÙ† ØµÙØ­Ù‡ ÙÙ‚Ø· Ù†Ù…Ø§ÛŒØ´ Ø§Ø³Øª Ùˆ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø¯Ø±ÛŒØ§ÙØª Ù†Ù…ÛŒâ€ŒÚ©Ù†Ø¯.</p>'
-                '<p><a href="/workspace/export_supplier">'
-                'Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ ÙØ¶Ø§ÛŒ ØªØ£Ù…ÛŒÙ†â€ŒÚ©Ù†Ù†Ø¯Ù‡</a></p>'
-                '</article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ù¾ÛŒØ´â€ŒÙ†Ù…Ø§ÛŒ ØªØ£Ù…ÛŒÙ†â€ŒÚ©Ù†Ù†Ø¯Ù‡ ØµØ§Ø¯Ø±Ø§Øª (DEMO)",
-                        body, logged_in=True)
-
-    @router.get("/")
-    def public_ui(
-        sid: str | None = Cookie(default=None, alias=cookie_name),
-        household_after_ref: str | None = None,
-        household_technical_state: str = "ALL",
-    ) -> HTMLResponse:
-        try:
-            session = flow.session(sid)
-        except InvalidToken:
-            session = None
-        grants = session.roles if session is not None else None
-        if grants is None:
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ù…Ø­ÛŒØ· Ú©Ø§Ø±Ø¨Ø±Ø§Ù† Ùˆ Ù‡Ù…Ú©Ø§Ø±Ø§Ù†",
-                        '<p>Ø¨Ø±Ø§ÛŒ Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø¨Ø®Ø´ Ù…Ø±Ø¨ÙˆØ· Ø¨Ù‡ Ù†Ù‚Ø´ Ø®ÙˆØ¯ØŒ Ø¨Ø§ Keycloak ÙˆØ§Ø±Ø¯ Ø´ÙˆÛŒØ¯. '
-                        'Ø§ÛŒÙ† Ù†Ø³Ø®Ù‡ ÙÙ‚Ø· Ø¯Ø§Ø¯Ù‡ Ø³Ø§Ø®ØªÚ¯ÛŒ Ù†Ù…Ø§ÛŒØ´ Ù…ÛŒâ€ŒØ¯Ù‡Ø¯.</p>', logged_in=False)
-        active = [(name, label) for name, label in USER_ROLES.items() if name in grants]
-        cards = ''
-        for name, label in active:
-            if name == "household" and owned_case_ledger is not None:
-                household = household_worklist(
-                    Principal(session.subject, session.roles),
-                    household_after_ref, household_technical_state,
-                )
-            else:
-                household = (
-                    '<p>Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø³Ø§Ø®ØªÚ¯ÛŒ DEMO-H01Ø› Ø±Ø¶Ø§ÛŒØª ÙˆØ§Ù‚Ø¹ÛŒ Ùˆ ØªØ£ÛŒÛŒØ¯ Ù…ØªØ®ØµØµ ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.</p>'
-                    if name == "household" else ''
-                )
-            cards += ('<article class="panel"><h2>' + escape(label) + '</h2>'
-                      '<p>ÙˆØ¶Ø¹ÛŒØª Ø®Ø¯Ù…Øª: Ù†ÛŒØ§Ø²Ù…Ù†Ø¯ Ø´ÙˆØ§Ù‡Ø¯ Ùˆ Ù…Ø¬ÙˆØ² Ø¹Ù…Ù„ÛŒØ§ØªÛŒ.</p>'
-                      '<p><a href="/workspace/' + quote(name)
-                      + '">Ù…Ø´Ø§Ù‡Ø¯Ù‡ ÙØ¶Ø§ÛŒ Ú©Ø§Ø± Ø§ÛŒÙ† Ù†Ù‚Ø´</a></p>'
-                      + household + '</article>')
-        if not cards:
-            cards = '<p>Ù‡ÛŒÚ† Ù†Ù…Ø§ÛŒ Ú©Ø§Ø±Ø¨Ø±ÛŒ Ø¨ÛŒØ±ÙˆÙ†ÛŒ Ø¨Ø±Ø§ÛŒ Ø¯Ø³ØªØ±Ø³ÛŒâ€ŒÙ‡Ø§ÛŒ ÙØ¹Ù„ÛŒ Ø´Ù…Ø§ ØªØ®ØµÛŒØµ Ù†ÛŒØ§ÙØªÙ‡ Ø§Ø³Øª.</p>'
-        return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ù…Ø­ÛŒØ· Ú©Ø§Ø±Ø¨Ø±Ø§Ù† Ùˆ Ù‡Ù…Ú©Ø§Ø±Ø§Ù†", cards, logged_in=True)
-
-    if owned_case_ledger is not None:
-        @router.get("/my-drafts/{ref}/versions")
-        def household_versions_page(
-            ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            principal = Principal(session.subject, session.roles)
-            result = owned_case_ledger.read_owned_domestic_version_history(
-                ref, principal,
-            )
-            if result is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            versions = ''.join(
-                '<li>Ù†Ø³Ø®Ù‡ ' + str(entry["version"]) +
-                (' â€” Ù†Ø³Ø®Ù‡ Ù…ÙˆØ¬ÙˆØ¯ (Ø³Ø§Ø®ØªÚ¯ÛŒ)' if entry["is_current"]
-                 else ' â€” Ù†Ø³Ø®Ù‡ Ù¾ÛŒØ´ÛŒÙ† (Ø³Ø§Ø®ØªÚ¯ÛŒ)')
-                + '</li>' for entry in result["versions"]
-            )
-            body = (
-                '<article class="panel"><h2>ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§ÛŒ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ '
-                + escape(result["ref"]) + '</h2>'
-                '<p>Ø§ÛŒÙ† ÙÙ‡Ø±Ø³Øª ÙÙ‚Ø· Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§ÛŒ Ø§Ø² Ù¾ÛŒØ´ Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡ Ù†Ù…ÙˆÙ†Ù‡ DEMO Ø§Ø³ØªØ› '
-                'ÙØ±Ø§ÛŒÙ†Ø¯ Ø§ØµÙ„Ø§Ø­ ÙˆØ§Ù‚Ø¹ÛŒØŒ ØªØ§Ø±ÛŒØ® ØªØºÛŒÛŒØ±Ø§Øª ÛŒØ§ ØªØ£ÛŒÛŒØ¯ Ù…ØªØ®ØµØµ '
-                'Ø§Ø² Ø§ÛŒÙ† Ø¯Ø§Ø¯Ù‡â€ŒÙ‡Ø§ Ø§Ø³ØªÙ†ØªØ§Ø¬ Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>'
-                '<p>ÙˆØ¶Ø¹ÛŒØª Ù‡Ù…Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§: DRAFT_ONLYØ› '
-                'Ø±Ø¶Ø§ÛŒØªØŒ Ø·Ø±Ø­ Ú©Ø´Øª Ùˆ ØªØ£ÛŒÛŒØ¯ Ù…ØªØ®ØµØµ ÙˆØ§Ù‚Ø¹ÛŒ ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.</p>'
-                '<ol>' + versions + '</ol>'
-                '<p><a href="/">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ù…Ù†</a></p>'
-                '</article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø³Ø§Ø®ØªÚ¯ÛŒ Ù…Ù†",
-                        body, logged_in=True)
-
-    if household_input_ledger is not None:
-        @router.get("/my-drafts/{ref}/progress-notes")
-        def household_progress_notes_page(
-            ref: str, corrects_revision: int = 0,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            result = household_input_ledger.read_owned_progress_notes(
-                ref, Principal(session.subject, session.roles),
-            )
-            if result is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            correction_target = None
-            if corrects_revision:
-                correction_target = next((item for item in result["notes"]
-                                          if item["revision"] == corrects_revision
-                                          and not item["is_superseded"]), None)
-                if correction_target is None:
-                    raise HTTPException(404, detail="PROGRESS_NOTE_NOT_FOUND")
-            notes = ''.join(
-                '<li><time>' + escape(item["reported_at"]) + '</time> Â· '
-                + ('Ø²Ù…ÛŒÙ†Ù‡ Ø¬Ø§Ø±ÛŒ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ùˆ ÙˆØ±ÙˆØ¯ÛŒ'
-                   if item["current_case_version"] and item["current_input_context"]
-                   else 'Ø²Ù…ÛŒÙ†Ù‡ ÙˆØ±ÙˆØ¯ÛŒ Ø«Ø¨Øªâ€ŒÙ†Ø´Ø¯Ù‡Ø› ØªØ§Ø±ÛŒØ®ÛŒ'
-                   if item["input_revision"] is None
-                   else 'Ù†Ø³Ø®Ù‡ ØªØ§Ø±ÛŒØ®ÛŒ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ' + str(item["case_version"])
-                   if not item["current_case_version"]
-                   else 'Ù†Ø³Ø®Ù‡ ØªØ§Ø±ÛŒØ®ÛŒ ÙˆØ±ÙˆØ¯ÛŒ ' + str(item["input_revision"]))
-                + ' â€” ' + escape(item["note"])
-                + (' Â· Ø§ØµÙ„Ø§Ø­ Ø´Ù…Ø§Ø±Ù‡ ' + str(item["superseded_by_revision"])
-                   if item["is_superseded"] else '')
-                + ('' if item["is_superseded"] else
-                   ' Â· <a href="/my-drafts/' + quote(ref)
-                   + '/progress-notes?corrects_revision=' + str(item["revision"])
-                   + '">Ø§ØµÙ„Ø§Ø­ Ø§ÛŒÙ† ÛŒØ§Ø¯Ø¯Ø§Ø´Øª</a>') + '</li>'
-                for item in result["notes"]
-            )
-            form = (
-                '<form method="post" action="/my-drafts/' + quote(ref)
-                + '/progress-notes">'
-                '<input type="hidden" name="csrf" value="'
-                + escape(session.csrf, quote=True) + '">'
-                '<input type="hidden" name="action_id" value="DEMO-PROGRESS-'
-                + secrets.token_hex(10).upper() + '">'
-                '<input type="hidden" name="case_version" value="'
-                + str(result["case_version"]) + '">'
-                '<input type="hidden" name="revision" value="'
-                + str(result["current_revision"]) + '">'
-                '<input type="hidden" name="input_revision" value="'
-                + str(result["current_input_revision"]) + '">'
-                '<input type="hidden" name="corrects_revision" value="'
-                + str(corrects_revision or 0) + '">'
-                + ('<p>Ø«Ø¨Øª Ø§ØµÙ„Ø§Ø­ Ø¨Ø±Ø§ÛŒ ÛŒØ§Ø¯Ø¯Ø§Ø´Øª Ø´Ù…Ø§Ø±Ù‡ '
-                   + str(correction_target["revision"]) + '</p>'
-                   if correction_target is not None else '')
-                + '<label for="reported-at">Ø²Ù…Ø§Ù† Ú¯Ø²Ø§Ø±Ø´â€ŒØ´Ø¯Ù‡ Ø¨Ø§ Ù…Ù†Ø·Ù‚Ù‡ Ø²Ù…Ø§Ù†ÛŒ</label>'
-                '<input id="reported-at" name="reported_at" maxlength="40" '
-                'placeholder="2026-10-12T10:30:00+03:30" required>'
-                '<label for="progress-note">ÛŒØ§Ø¯Ø¯Ø§Ø´Øª Ø³Ø§Ø®ØªÚ¯ÛŒ</label>'
-                '<textarea id="progress-note" name="note" maxlength="150" '
-                'required>DEMO: </textarea>'
-                '<button type="submit">'
-                + ('Ø«Ø¨Øª Ø§ØµÙ„Ø§Ø­ DEMO' if correction_target is not None
-                   else 'Ø«Ø¨Øª ÛŒØ§Ø¯Ø¯Ø§Ø´Øª DEMO') + '</button></form>'
-            )
-            body = (
-                '<article class="panel"><h2>ÛŒØ§Ø¯Ø¯Ø§Ø´Øªâ€ŒÙ‡Ø§ÛŒ Ù¾ÛŒØ´Ø±ÙØª Ù¾Ø±ÙˆÙ†Ø¯Ù‡ (DEMO)</h2>'
-                '<p>ÙÙ‚Ø· Ù…ØªÙ† Ø³Ø§Ø®ØªÚ¯ÛŒ Ø¨Ø§ Ù¾ÛŒØ´ÙˆÙ†Ø¯ DEMO: Ùˆ Ø²Ù…Ø§Ù† ÙˆØ§Ø±Ø¯Ø´Ø¯Ù‡ ØªÙˆØ³Ø· Ø´Ù…Ø§ Ø«Ø¨Øª Ù…ÛŒâ€ŒØ´ÙˆØ¯. '
-                'Ù…Ø±Ø­Ù„Ù‡ Ø¹Ù„Ù…ÛŒ Ø§Ø² Ù¾ÛŒØ´ ØªØ¹Ø±ÛŒÙâ€ŒØ´Ø¯Ù‡ ÛŒØ§ Ø§Ø±Ø²ÛŒØ§Ø¨ÛŒ Ù…Ø­ØµÙˆÙ„ ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.</p>'
-                + ('<ol>' + notes + '</ol>' if notes else
-                   '<p>ÛŒØ§Ø¯Ø¯Ø§Ø´ØªÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>')
-                + '<p>Ø§ÛŒÙ† ÛŒØ§Ø¯Ø¯Ø§Ø´Øªâ€ŒÙ‡Ø§ Ø¯Ø§Ø¯Ù‡ ÙˆØ§Ù‚Ø¹ÛŒØŒ Ù†Ø¸Ø§Ø±Øª Ù…ØªØ®ØµØµØŒ Ø§Ø±Ø²ÛŒØ§Ø¨ÛŒ Ø¹Ù„Ù…ÛŒ ÛŒØ§ '
-                'ØªØ£ÛŒÛŒØ¯ Ø¨Ø±Ù†Ø§Ù…Ù‡ Ú©Ø´Øª Ù…Ø­Ø³ÙˆØ¨ Ù†Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯ Ùˆ ÙÙ‚Ø· Ø¨Ø±Ø§ÛŒ Ù…Ø§Ù„Ú© Ù‚Ø§Ø¨Ù„ Ù…Ø´Ø§Ù‡Ø¯Ù‡â€ŒØ§Ù†Ø¯.</p>'
-                + form
-                + '<p><a href="/my-drafts/' + quote(ref)
-                + '">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ù…Ù†</a></p></article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” ÛŒØ§Ø¯Ø¯Ø§Ø´Øª Ù¾ÛŒØ´Ø±ÙØª Ø³Ø§Ø®ØªÚ¯ÛŒ",
-                        body, logged_in=True, local_test_form=True)
-
-        @router.post("/my-drafts/{ref}/progress-notes")
-        async def household_progress_note_submit(
-            ref: str, request: Request,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> RedirectResponse:
-            principal, form = await checked_browser_form(
-                request, sid, fields=frozenset({
-                    "csrf", "action_id", "case_version", "revision",
-                    "input_revision", "corrects_revision", "reported_at", "note",
-                }),
-            )
-            try:
-                saved = household_input_ledger.append_owned_progress_note(
-                    ref, principal,
-                    action_id=form["action_id"],
-                    expected_case_version=form_version(
-                        form["case_version"], zero_allowed=False,
-                    ),
-                    expected_revision=form_version(form["revision"]),
-                    expected_input_revision=form_version(form["input_revision"]),
-                    corrects_revision=(form_version(form["corrects_revision"]) or None),
-                    reported_at=form["reported_at"], note=form["note"],
-                )
-            except InputRevisionConflict as exc:
-                raise HTTPException(409, detail="SYNTHETIC_PROGRESS_VERSION_CONFLICT") from exc
-            except LedgerIntegrityError as exc:
-                raise HTTPException(503, detail="SYNTHETIC_PROGRESS_HISTORY_UNAVAILABLE") from exc
-            except ValueError as exc:
-                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
-            if saved is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            return RedirectResponse(
-                "/my-drafts/" + quote(ref) + "/progress-notes", status_code=303,
-            )
-
-        @router.get("/my-drafts/{ref}/input-revisions")
-        def household_input_history_page(
-            ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            result = household_input_ledger.read_owned_input_revisions(
-                ref, Principal(session.subject, session.roles),
-            )
-            if result is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            demo_form = (
-                '<section id="domestic-demo-correction" aria-label="Ø«Ø¨Øª Ø§ØµÙ„Ø§Ø­ ØµØ±ÙØ§Ù‹ Ù†Ù…Ø§ÛŒØ´ÛŒ">'
-                '<h3>Ø«Ø¨Øª Ø§ØµÙ„Ø§Ø­ Ù†Ø³Ø®Ù‡ DEMO</h3>'
-                '<p>ÙÙ‚Ø· ÛŒÚ© Ø³Ù†Ø§Ø±ÛŒÙˆÛŒ Ø§Ø² Ù¾ÛŒØ´ ØªØ¹Ø±ÛŒÙâ€ŒØ´Ø¯Ù‡ Ø«Ø¨Øª Ù…ÛŒâ€ŒØ´ÙˆØ¯. '
-                'Ù‡ÛŒÚ† Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ú©Ø´ØªØŒ Ù‡ÙˆÛŒØª ÛŒØ§ Ø±Ø¶Ø§ÛŒØª ÙˆØ§Ù‚Ø¹ÛŒ Ø¯Ø±ÛŒØ§ÙØª Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>'
-                '<form method="post" action="/my-drafts/'
-                + quote(ref) + '/input-revisions/demo-correction">'
-                '<input type="hidden" name="csrf" value="'
-                + escape(session.csrf, quote=True) + '">'
-                '<input type="hidden" name="action_id" value="DEMO-UI-D-'
-                + secrets.token_hex(10).upper() + '">'
-                '<input type="hidden" name="case_version" value="'
-                + str(result["case_version"]) + '">'
-                '<input type="hidden" name="input_revision" value="'
-                + str(result["current_input_revision"] or 0) + '">'
-                '<label for="domestic-demo-choice">Ø³Ù†Ø§Ø±ÛŒÙˆÛŒ Ø§ØµÙ„Ø§Ø­ Ù†Ù…ÙˆÙ†Ù‡</label>'
-                '<select id="domestic-demo-choice" name="scenario">'
-                + sample_choice_options(prefix="DEMO-MANIFEST-")
-                + '</select><button type="submit">Ø«Ø¨Øª Ù†Ø³Ø®Ù‡ DEMO</button>'
-                '</form></section>'
-            )
-            entries = ''.join(
-                '<li>Ø¨Ø§Ø²Ù†Ú¯Ø±ÛŒ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ ' + str(number) + '</li>'
-                for number in result["input_revisions"]
-            )
-            body = (
-                '<article class="panel"><h2>ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù†Ù…ÙˆÙ†Ù‡ Ø§ØµÙ„Ø§Ø­ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø± '
-                '(ÙÙ‚Ø· DEMO)</h2>'
-                '<p>Ù¾Ø±ÙˆÙ†Ø¯Ù‡: ' + escape(result["ref"]) + ' Â· Ù†Ø³Ø®Ù‡ '
-                + str(result["case_version"]) + '</p>'
-                + ('<ol>' + entries + '</ol>' if entries else
-                   '<p>Ù‡Ù†ÙˆØ² Ø§Ø«Ø±Ø§Ù†Ú¯Ø´Øª Ù†Ø³Ø®Ù‡â€ŒØ§ÛŒ Ø¯Ø± Ø§ÛŒÙ† Ù†Ù…ÙˆÙ†Ù‡ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>')
-                + '<p>ØµØ±ÙØ§Ù‹ Ø´Ù†Ø§Ø³Ù‡ Ù†Ø³Ø®Ù‡ Ùˆ Ø§Ø«Ø±Ø§Ù†Ú¯Ø´Øª Ø³Ø§Ø®ØªÚ¯ÛŒ Ø«Ø¨Øª Ù…ÛŒâ€ŒØ´ÙˆØ¯Ø› '
-                'Ù‡ÛŒÚ† Ù…Ø­ØµÙˆÙ„ØŒ Ø¢Ø¨ØŒ Ø®Ø§Ú©ØŒ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø´Ø®ØµÛŒ ÛŒØ§ Ø¯Ø³ØªÙˆØ± Ú©Ø´Øª Ø¯Ø±ÛŒØ§ÙØª Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>'
-                '<p>Ø§ÛŒÙ† Ø³Ø§Ø¨Ù‚Ù‡ Ø±Ø¶Ø§ÛŒØª Ø¢Ú¯Ø§Ù‡Ø§Ù†Ù‡ØŒ Ú©ÙØ§ÛŒØª Ø¯Ø§Ø¯Ù‡ØŒ '
-                'ØªØ£ÛŒÛŒØ¯ Ù…ØªØ®ØµØµ ÛŒØ§ Ø¨Ø±Ù†Ø§Ù…Ù‡ Ú©Ø´Øª Ù…Ø¹ØªØ¨Ø± Ù†ÛŒØ³Øª.</p>'
-                '<p>Ø«Ø¨Øª Ø§ØµÙ„Ø§Ø­ ÙˆØ§Ù‚Ø¹ÛŒ Ùˆ Ø§Ø±Ø§Ø¦Ù‡ ÙØ±Ù… Ø±Ø¶Ø§ÛŒØª '
-                'Ø¯Ø± Ø§ÛŒÙ† Ù¾ÛŒØ´â€ŒÙ†Ù…Ø§ÛŒ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ ÙØ¹Ø§Ù„ Ù†ÛŒØ³Øª.</p>'
-                + demo_form
-                + ('<p><a href="/my-drafts/' + quote(ref)
-                   + '/question-responses">'
-                   'Ù¾Ø§Ø³Ø®â€ŒÙ‡Ø§ÛŒ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ù…Ù† Ø¨Ù‡ Ù¾Ø±Ø³Ø´ Ú©ÙØ§ÛŒØª Ø§Ø·Ù„Ø§Ø¹Ø§Øª</a></p>'
-                   if isinstance(household_input_ledger,
-                                 SqliteSyntheticExpertQuestionLedger) else '')
-                + '<p><a href="/my-drafts/' + quote(ref)
-                + '">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ù…Ù†</a></p></article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ø§ØµÙ„Ø§Ø­ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø±",
-                        body, logged_in=True, local_test_form=True)
-
-
-        if (household_profile_schema is not None
-                and household_profile_access_authority is not None
-                and isinstance(household_input_ledger,
-                               SqliteSyntheticHouseholdProfileLedger)):
-            @router.get("/my-drafts/{ref}/cultivation-inputs")
-            def household_cultivation_inputs_page(
-                ref: str,
-                sid: str | None = Cookie(default=None, alias=cookie_name),
-            ) -> HTMLResponse:
-                try:
-                    session = flow.session(sid)
-                except InvalidToken:
-                    raise HTTPException(401, detail="INVALID_SESSION") from None
-                principal = Principal(session.subject, session.roles)
-                try:
-                    permitted = household_profile_access_authority(
-                        principal, ref, household_profile_schema.schema_ref,
-                    )
-                except Exception as exc:
-                    raise HTTPException(
-                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
-                    ) from exc
-                if permitted is not True:
-                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
-                try:
-                    result = household_input_ledger.read_owned_profile(ref, principal)
-                except (LedgerIntegrityError, sqlite3.Error) as exc:
-                    raise HTTPException(503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE") from exc
-                if result is None:
-                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-                controls = []
-                for field in household_profile_schema.fields:
-                    value = result["current_values"].get(field.key, "")
-                    label = escape(field.label)
-                    key = escape(field.key, quote=True)
-                    safe_value = escape(value, quote=True)
-                    required = " required" if field.required else ""
-                    if field.kind == "choice":
-                        options = ['<option value="">Ø§Ù†ØªØ®Ø§Ø¨ Ú©Ù†ÛŒØ¯</option>']
-                        options.extend(
-                            '<option value="' + escape(choice, quote=True) + '"'
-                            + (" selected" if choice == value else "") + ">"
-                            + escape(choice) + "</option>"
-                            for choice in field.choices
-                        )
-                        control = '<select id="' + key + '" name="' + key + '"' + required + '>' + ''.join(options) + '</select>'
-                    elif field.kind == "text":
-                        control = '<textarea id="' + key + '" name="' + key + '" maxlength="' + str(field.max_length) + '"' + required + '>' + escape(value) + '</textarea>'
-                    else:
-                        control = '<input id="' + key + '" name="' + key + '" type="' + field.kind + '" maxlength="' + str(field.max_length) + '" value="' + safe_value + '"' + required + '>'
-                    controls.append('<label for="' + key + '">' + label + '</label>' + control)
-                history = ''.join(
-                    '<li><a href="/my-drafts/' + quote(ref)
-                    + '/cultivation-inputs/revisions/'
-                    + str(item["revision"]) + '">Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ù†Ø³Ø®Ù‡ '
-                    + str(item["revision"]) + '</a></li>'
-                    for item in result["revisions"]
-                )
-                revision_options = ''.join(
-                    '<option value="' + str(item["revision"]) + '">Ù†Ø³Ø®Ù‡ '
-                    + str(item["revision"]) + '</option>'
-                    for item in result["revisions"]
-                )
-                fields = frozenset(
-                    {"csrf", "case_version", "profile_revision"}
-                    | {field.key for field in household_profile_schema.fields}
-                )
-                body = (
-                    '<article class="panel"><h2>Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø³Ø§Ø®ØªØ§Ø±ÛŒØ§ÙØªÙ‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ú©Ø´Øª</h2>'
-                    '<p>Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ' + escape(ref) + ' Â· Ù†Ø³Ø®Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ '
-                    + str(result["case_version"]) + '</p>'
-                    '<p>Ø§ÛŒÙ† ÙØ±Ù… ÙÙ‚Ø· Ø¨Ø±Ø§ÛŒ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ù…Ø­Ù„ÛŒ ÙØ¹Ø§Ù„ Ø§Ø³Øª. '
-                    'Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø³Ø§Ø®ØªÚ¯ÛŒ ÙˆØ§Ø±Ø¯ Ú©Ù†ÛŒØ¯Ø› ØªØ£ÛŒÛŒØ¯ Ø¹Ù„Ù…ÛŒ ÛŒØ§ Ø¨Ø±Ù†Ø§Ù…Ù‡ Ú©Ø´Øª ØªÙˆÙ„ÛŒØ¯ Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>'
-                    + ('<p role="status">Ù†Ø³Ø®Ù‡ ÙØ±Ù… ØªØºÛŒÛŒØ± Ú©Ø±Ø¯Ù‡ Ø§Ø³ØªØ› '
-                       'Ù…Ù‚Ø§Ø¯ÛŒØ± Ù†Ø³Ø®Ù‡ Ù‚Ø¨Ù„ÛŒ Ø¨Ø±Ø§ÛŒ Ø§ÛŒÙ† ÙØ±Ù… Ù†Ù…Ø§ÛŒØ´ Ø¯Ø§Ø¯Ù‡ Ù†Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯.</p>'
-                       if result["schema_changed"] else '')
-                    + '<form method="post" action="/my-drafts/' + quote(ref)
-                    + '/cultivation-inputs"><input type="hidden" name="csrf" value="'
-                    + escape(session.csrf, quote=True) + '">'
-                    '<input type="hidden" name="action_id" value="DEMO-PROFILE-'
-                    + secrets.token_hex(10).upper() + '">'
-                    '<input type="hidden" name="case_version" value="'
-                    + str(result["case_version"]) + '">'
-                    '<input type="hidden" name="profile_revision" value="'
-                    + str(result["current_revision"]) + '">'
-                    + ''.join(controls)
-                    + '<button type="submit">Ø°Ø®ÛŒØ±Ù‡ Ù†Ø³Ø®Ù‡ Ø¬Ø¯ÛŒØ¯</button></form>'
-                    + ('<p><a href="/my-drafts/' + quote(ref)
-                        + '/surplus-offers">ÙÙ‡Ø±Ø³Øª Ùˆ Ø´Ø±ÙˆØ¹ Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³ Ù…Ø§Ø²Ø§Ø¯</a></p>'
-                        if household_surplus_draft_ledger is not None else '')
-                    + ('<form method="get" action="/my-drafts/' + quote(ref)
-                        + '/surplus-publication-readiness">'
-                        '<label for="surplus-offer-ref">Ø´Ù†Ø§Ø³Ù‡ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ù…Ø§Ø²Ø§Ø¯ (DEMO)</label>'
-                        '<input id="surplus-offer-ref" name="offer_ref" required '
-                        'pattern="DEMO-[A-Za-z0-9._:-]{1,96}" maxlength="101">'
-                        '<button type="submit">Ø¨Ø±Ø±Ø³ÛŒ Ø¢Ù…Ø§Ø¯Ú¯ÛŒ ÙÙ†ÛŒ</button></form>'
-                        if household_surplus_publication_authority is not None else '')
-                     + '<h3>ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ø§ØµÙ„Ø§Ø­</h3>'
-                    + ('<ol>' + history + '</ol>' if history else
-                       '<p>Ù‡Ù†ÙˆØ² Ù†Ø³Ø®Ù‡â€ŒØ§ÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>')
-                    + ('<form method="get" action="/my-drafts/' + quote(ref)
-                       + '/cultivation-inputs/compare">'
-                       '<label for="profile-before">Ù†Ø³Ø®Ù‡ Ù…Ø¨Ù†Ø§</label>'
-                       '<select id="profile-before" name="before_revision">'
-                       + revision_options + '</select>'
-                       '<label for="profile-after">Ù†Ø³Ø®Ù‡ Ø¬Ø¯ÛŒØ¯ØªØ±</label>'
-                       '<select id="profile-after" name="after_revision">'
-                       + revision_options + '</select>'
-                       '<button type="submit">Ù…Ù‚Ø§ÛŒØ³Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§</button></form>'
-                       if len(result["revisions"]) > 1 else '')
-                    + '<p>Ù…Ù‚Ø§Ø¯ÛŒØ± ÙÙ‚Ø· Ø¨Ø±Ø§ÛŒ ØµØ§Ø­Ø¨ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ù‚Ø§Ø¨Ù„ Ù…Ø´Ø§Ù‡Ø¯Ù‡â€ŒØ§Ù†Ø¯. '
-                    'Ø«Ø¨Øª Ø¢Ù†â€ŒÙ‡Ø§ Ø¨Ù‡ Ù…Ø¹Ù†ÛŒ Ø±Ø¶Ø§ÛŒØªØŒ ØªØ£ÛŒÛŒØ¯ Ù…ØªØ®ØµØµ ÛŒØ§ Ù¾Ø°ÛŒØ±Ø´ Ø·Ø±Ø­ Ù†ÛŒØ³Øª.</p>'
-                    '<p><a href="/my-drafts/' + quote(ref) + '">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡</a></p>'
-                    '</article>'
-                )
-                if household_stage_context_authority is not None:
-                    body += (
-                        '<p><a href="/my-drafts/' + quote(ref)
-                        + '/stage-observations">Ø«Ø¨Øª Ùˆ Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø±Ø³ÛŒØ¯Ù‡Ø§ÛŒ Ù…Ø±Ø­Ù„Ù‡â€ŒØ§ÛŒ</a></p>'
-                    )
-                return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ú©Ø´Øª",
-                            body, logged_in=True, local_test_form=True)
-
-            @router.get(
-                "/my-drafts/{ref}/cultivation-inputs/revisions/{revision}",
-                response_class=HTMLResponse,
-            )
-            def household_cultivation_inputs_revision_page(
-                ref: str, revision: int,
-                sid: str | None = Cookie(default=None, alias=cookie_name),
-            ) -> HTMLResponse:
-                try:
-                    session = flow.session(sid)
-                except InvalidToken:
-                    raise HTTPException(401, detail="INVALID_SESSION") from None
-                principal = Principal(session.subject, session.roles)
-                try:
-                    permitted = household_profile_access_authority(
-                        principal, ref, household_profile_schema.schema_ref,
-                    )
-                except Exception as exc:
-                    raise HTTPException(
-                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
-                    ) from exc
-                if permitted is not True:
-                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
-                try:
-                    result = household_input_ledger.read_owned_profile_revision(
-                        ref, principal, revision,
-                    )
-                except (LedgerIntegrityError, sqlite3.Error) as exc:
-                    raise HTTPException(503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE") from exc
-                except ValueError as exc:
-                    raise HTTPException(422, detail="INVALID_HOUSEHOLD_PROFILE_REVISION") from exc
-                if result is None:
-                    raise HTTPException(404, detail="PROFILE_REVISION_NOT_FOUND")
-                if result["schema_changed"]:
-                    values_html = (
-                        '<p role="status">Ø³Ø§Ø®ØªØ§Ø± ÙØ±Ù… Ù¾Ø³ Ø§Ø² Ø«Ø¨Øª Ø§ÛŒÙ† Ù†Ø³Ø®Ù‡ ØªØºÛŒÛŒØ± Ú©Ø±Ø¯Ù‡ Ø§Ø³ØªØ› '
-                        'Ø¨Ø±Ø§ÛŒ Ø¬Ù„ÙˆÚ¯ÛŒØ±ÛŒ Ø§Ø² Ù†Ù…Ø§ÛŒØ´ Ù†Ø§Ø¯Ø±Ø³ØªØŒ Ù…Ù‚Ø§Ø¯ÛŒØ± Ù‚Ø¯ÛŒÙ…ÛŒ Ù¾Ù†Ù‡Ø§Ù† Ø´Ø¯Ù‡â€ŒØ§Ù†Ø¯.</p>'
-                    )
-                    restore_form = ""
-                else:
-                    rows = ''.join(
-                        '<dt>' + escape(field.label) + '</dt><dd>'
-                        + escape(result["values"].get(field.key, '')) + '</dd>'
-                        for field in household_profile_schema.fields
-                    )
-                    values_html = '<dl>' + rows + '</dl>'
-                    try:
-                        current_profile = household_input_ledger.read_owned_profile(
-                            ref, principal,
-                        )
-                    except (LedgerIntegrityError, sqlite3.Error) as exc:
-                        raise HTTPException(
-                            503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE",
-                        ) from exc
-                    if current_profile is None:
-                        raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-                    restore_form = (
-                        '<form method="post" action="/my-drafts/' + quote(ref)
-                        + '/cultivation-inputs/revisions/' + str(revision)
-                        + '/restore"><input type="hidden" name="csrf" value="'
-                        + escape(session.csrf, quote=True) + '">'
-                        '<input type="hidden" name="action_id" value="DEMO-RESTORE-'
-                        + secrets.token_hex(10).upper() + '">'
-                        '<input type="hidden" name="case_version" value="'
-                        + str(result["case_version"]) + '">'
-                        '<input type="hidden" name="expected_profile_revision" value="'
-                        + str(current_profile["current_revision"]) + '">'
-                        '<button type="submit">Ø«Ø¨Øª Ø§ÛŒÙ† Ù…Ù‚Ø§Ø¯ÛŒØ± Ø¨Ù‡â€ŒØ¹Ù†ÙˆØ§Ù† Ù†Ø³Ø®Ù‡ Ø¬Ø¯ÛŒØ¯</button>'
-                        '</form><p>Ù†Ø³Ø®Ù‡ Ù‚Ø¨Ù„ÛŒ Ø­ÙØ¸ Ù…ÛŒâ€ŒØ´ÙˆØ¯Ø› Ø¨Ø§Ø²Ú¯Ø±Ø¯Ø§Ù†ÛŒØŒ Ù†Ø³Ø®Ù‡ Ø¬Ø§Ø±ÛŒ Ø±Ø§ '
-                        'Ø¨Ø§Ø²Ù†ÙˆÛŒØ³ÛŒ Ù†Ù…ÛŒâ€ŒÚ©Ù†Ø¯.</p>'
-                        if not current_profile["schema_changed"] else
-                        '<p role="status">Ø´ÙÙ…Ø§ÛŒ Ù†Ø³Ø®Ù‡ Ø¬Ø§Ø±ÛŒ Ø¨Ø§ Ø§ÛŒÙ† ÙØ±Ù… Ù…ØªÙØ§ÙˆØª Ø§Ø³ØªØ› '
-                        'Ø«Ø¨Øª Ù†Ø³Ø®Ù‡ Ø§Ø² Ø§ÛŒÙ† ØªØ§Ø±ÛŒØ®Ú†Ù‡ ØºÛŒØ±ÙØ¹Ø§Ù„ Ø§Ø³Øª.</p>'
-                    )
-                body = (
-                    '<article class="panel"><h2>Ù†Ø³Ø®Ù‡ ØªØ§Ø±ÛŒØ®ÛŒ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ù¾Ø±ÙˆÙ†Ø¯Ù‡</h2>'
-                    '<p>Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ' + escape(ref) + ' Â· Ù†Ø³Ø®Ù‡ '
-                    + str(result["revision"]) + '</p>'
-                    + values_html
-                    + restore_form
-                    + '<p>Ø§ÛŒÙ† Ø³Ø§Ø¨Ù‚Ù‡ ÙÙ‚Ø· Ø¨Ø±Ø§ÛŒ ØµØ§Ø­Ø¨ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø§Ø³Øª Ùˆ Ø¨Ù‡ Ù…Ø¹Ù†ÛŒ ØªØ£ÛŒÛŒØ¯ Ø¹Ù„Ù…ÛŒØŒ '
-                    'Ù¾Ø°ÛŒØ±Ø´ Ø·Ø±Ø­ ÛŒØ§ Ø±Ø¶Ø§ÛŒØª Ø¨Ø±Ø§ÛŒ Ù…ØµØ±Ù Ø¯ÛŒÚ¯Ø±ÛŒ Ù†ÛŒØ³Øª.</p>'
-                    '<p><a href="/my-drafts/' + quote(ref)
-                    + '/cultivation-inputs">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ù¾Ø±ÙˆÙ†Ø¯Ù‡</a></p>'
-                    '</article>'
-                )
-                return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ù†Ø³Ø®Ù‡ ØªØ§Ø±ÛŒØ®ÛŒ Ø§Ø·Ù„Ø§Ø¹Ø§Øª",
-                            body, logged_in=True, local_test_form=True)
-
-            @router.post(
-                "/my-drafts/{ref}/cultivation-inputs/revisions/{revision}/restore",
-            )
-            async def household_cultivation_inputs_restore(
-                ref: str, revision: int, request: Request,
-                sid: str | None = Cookie(default=None, alias=cookie_name),
-            ) -> RedirectResponse:
-                principal, form = await checked_browser_form(
-                    request, sid, fields=frozenset({
-                        "csrf", "action_id", "case_version",
-                        "expected_profile_revision",
-                    }), max_bytes=2048, max_fields=5, max_value_length=120,
-                )
-                try:
-                    permitted = household_profile_access_authority(
-                        principal, ref, household_profile_schema.schema_ref,
-                    )
-                except Exception as exc:
-                    raise HTTPException(
-                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
-                    ) from exc
-                if permitted is not True:
-                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
-                try:
-                    previous = household_input_ledger.read_owned_profile_revision(
-                        ref, principal, revision,
-                    )
-                    if previous is None:
-                        raise HTTPException(404, detail="PROFILE_REVISION_NOT_FOUND")
-                    if previous["schema_changed"]:
-                        raise HTTPException(
-                            409, detail="PROFILE_REVISION_SCHEMA_CHANGED",
-                        )
-                    restored = household_input_ledger.append_owned_profile(
-                        ref, principal, action_id=form["action_id"],
-                        expected_case_version=form_version(
-                            form["case_version"], zero_allowed=False,
-                        ), expected_revision=form_version(
-                            form["expected_profile_revision"],
-                        ), values=previous["values"],
-                    )
-                except InputRevisionConflict as exc:
-                    raise HTTPException(
-                        409, detail="HOUSEHOLD_PROFILE_CHANGED",
-                    ) from exc
-                except (LedgerIntegrityError, sqlite3.Error) as exc:
-                    raise HTTPException(
-                        503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE",
-                    ) from exc
-                except ValueError as exc:
-                    raise HTTPException(
-                        422, detail="INVALID_HOUSEHOLD_PROFILE_RESTORE",
-                    ) from exc
-                if restored is None:
-                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-                return RedirectResponse(
-                    "/my-drafts/" + quote(ref) + "/cultivation-inputs",
-                    status_code=303,
-                )
-
-            @router.get(
-                "/my-drafts/{ref}/cultivation-inputs/compare",
-                response_class=HTMLResponse,
-            )
-            def household_cultivation_inputs_compare_page(
-                ref: str, before_revision: int, after_revision: int,
-                sid: str | None = Cookie(default=None, alias=cookie_name),
-            ) -> HTMLResponse:
-                try:
-                    session = flow.session(sid)
-                except InvalidToken:
-                    raise HTTPException(401, detail="INVALID_SESSION") from None
-                principal = Principal(session.subject, session.roles)
-                try:
-                    permitted = household_profile_access_authority(
-                        principal, ref, household_profile_schema.schema_ref,
-                    )
-                except Exception as exc:
-                    raise HTTPException(
-                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
-                    ) from exc
-                if permitted is not True:
-                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
-                try:
-                    result = household_input_ledger.compare_owned_profile_revisions(
-                        ref, principal, before_revision, after_revision,
-                    )
-                except ValueError as exc:
-                    raise HTTPException(
-                        422, detail="INVALID_HOUSEHOLD_PROFILE_COMPARISON",
-                    ) from exc
-                except (LedgerIntegrityError, sqlite3.Error) as exc:
-                    raise HTTPException(503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE") from exc
-                if result is None:
-                    raise HTTPException(404, detail="PROFILE_COMPARISON_NOT_FOUND")
-                if result["schema_changed"]:
-                    comparison = (
-                        '<p role="status">Ø³Ø§Ø®ØªØ§Ø± ÙØ±Ù… Ø¨ÛŒÙ† Ø§ÛŒÙ† Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§ ØªØºÛŒÛŒØ± Ú©Ø±Ø¯Ù‡Ø› '
-                        'Ø¨Ø±Ø§ÛŒ Ø¬Ù„ÙˆÚ¯ÛŒØ±ÛŒ Ø§Ø² Ù…Ù‚Ø§ÛŒØ³Ù‡ Ù†Ø§Ø¯Ø±Ø³ØªØŒ Ù…Ù‚Ø§Ø¯ÛŒØ± Ù†Ù…Ø§ÛŒØ´ Ø¯Ø§Ø¯Ù‡ Ù†Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯.</p>'
-                    )
-                elif result["changes"]:
-                    rows = ''.join(
-                        '<tr><th scope="row">' + escape(field.label)
-                        + '</th><td>' + escape(change["before"])
-                        + '</td><td>' + escape(change["after"])
-                        + '</td></tr>'
-                        for change in result["changes"]
-                        for field in household_profile_schema.fields
-                        if field.key == change["key"]
-                    )
-                    comparison = (
-                        '<table><caption>ØªØºÛŒÛŒØ±Ø§Øª Ø¨ÛŒÙ† Ù†Ø³Ø®Ù‡ '
-                        + str(before_revision) + ' Ùˆ ' + str(after_revision)
-                        + '</caption><thead><tr><th scope="col">ÙÛŒÙ„Ø¯</th>'
-                        '<th scope="col">Ù…Ù‚Ø¯Ø§Ø± Ù‚Ø¨Ù„ÛŒ</th><th scope="col">Ù…Ù‚Ø¯Ø§Ø± Ø¬Ø¯ÛŒØ¯</th>'
-                        '</tr></thead><tbody>' + rows + '</tbody></table>'
-                    )
-                else:
-                    comparison = '<p>ØªØºÛŒÛŒØ±ÛŒ Ø¨ÛŒÙ† Ø§ÛŒÙ† Ø¯Ùˆ Ù†Ø³Ø®Ù‡ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>'
-                body = (
-                    '<article class="panel"><h2>Ù…Ù‚Ø§ÛŒØ³Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§ÛŒ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø±</h2>'
-                    '<p>Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ' + escape(ref) + ' Â· Ù†Ø³Ø®Ù‡ ' + str(before_revision)
-                    + ' â† Ù†Ø³Ø®Ù‡ ' + str(after_revision) + '</p>' + comparison
-                    + '<p>Ø§ÛŒÙ† Ù…Ù‚Ø§ÛŒØ³Ù‡ ÙÙ‚Ø· Ø§Ø®ØªÙ„Ø§Ù Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡ Ø±Ø§ Ù†Ø´Ø§Ù† Ù…ÛŒâ€ŒØ¯Ù‡Ø¯Ø› '
-                    'Ø§Ø¹ØªØ¨Ø§Ø± Ø¹Ù„Ù…ÛŒ ÛŒØ§ ÙˆØ¶Ø¹ÛŒØª Ú©Ø´Øª Ø±Ø§ Ø§Ø±Ø²ÛŒØ§Ø¨ÛŒ Ù†Ù…ÛŒâ€ŒÚ©Ù†Ø¯.</p>'
-                    '<p><a href="/my-drafts/' + quote(ref)
-                    + '/cultivation-inputs">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ù¾Ø±ÙˆÙ†Ø¯Ù‡</a></p>'
-                    '</article>'
-                )
-                return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ù…Ù‚Ø§ÛŒØ³Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§ÛŒ Ø§Ø·Ù„Ø§Ø¹Ø§Øª",
-                            body, logged_in=True, local_test_form=True)
-
-            if household_stage_context_authority is not None:
-                if household_stage_artifact_store is not None:
-                    @router.put("/my-drafts/{ref}/stage-observations/artifacts")
-                    async def household_stage_artifact_upload(
-                        ref: str, request: Request,
-                        sid: str | None = Cookie(default=None, alias=cookie_name),
-                    ) -> JSONResponse:
-                        if request.headers.get("origin") != flow.config.origin:
-                            raise HTTPException(403, detail="ORIGIN_REQUIRED")
-                        try:
-                            session = flow.session(sid)
-                        except InvalidToken:
-                            raise HTTPException(401, detail="INVALID_SESSION") from None
-                        csrf = request.headers.get("x-csrf-token", "")
-                        if not hmac.compare_digest(session.csrf, csrf):
-                            raise HTTPException(403, detail="CSRF_REQUIRED")
-                        principal = Principal(session.subject, session.roles)
-                        try:
-                            permitted = household_profile_access_authority(
-                                principal, ref, household_profile_schema.schema_ref,
-                            )
-                        except Exception as exc:
-                            raise HTTPException(
-                                503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
-                            ) from exc
-                        if permitted is not True:
-                            raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
-                        case_version = form_version(
-                            request.headers.get("x-ronas-case-version", ""),
-                            zero_allowed=False,
-                        )
-                        input_revision = form_version(
-                            request.headers.get("x-ronas-input-revision", ""),
-                            zero_allowed=False,
-                        )
-                        try:
-                            context = household_stage_context_authority(ref)
-                        except Exception as exc:
-                            raise HTTPException(503, detail="STAGE_CONTEXT_UNAVAILABLE") from exc
-                        stage_ref = request.headers.get("x-ronas-stage-ref", "")
-                        requirements = request.headers.get(
-                            "x-ronas-requirements-digest", "",
-                        )
-                        if (not isinstance(context, CurrentStageContext)
-                                or context.case_ref != ref
-                                or context.case_version != case_version
-                                or context.input_revision != input_revision
-                                or context.plan_digest != request.headers.get(
-                                    "x-ronas-plan-digest", "",
-                                )
-                                or not any(
-                                    item.stage_ref == stage_ref
-                                    and item.observation_requirements_digest == requirements
-                                    for item in context.requirements
-                                )):
-                            raise HTTPException(
-                                409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
-                            )
-                        declared_size = _declared_upload_size(
-                            request.headers.get("content-length"),
-                        )
-                        chunks, size = [], 0
-                        async for chunk in request.stream():
-                            size += len(chunk)
-                            if size > MAX_ARTIFACT_BYTES:
-                                raise HTTPException(413, detail="STAGE_ARTIFACT_TOO_LARGE")
-                            chunks.append(chunk)
-                        _check_upload_size(declared_size, size)
-                        try:
-                            artifact = household_stage_artifact_store.put(
-                                principal.subject, ref + ":" + stage_ref,
-                                request.headers.get("content-type", ""),
-                                b"".join(chunks),
-                            )
-                        except ValueError as exc:
-                            raise HTTPException(422, detail="INVALID_STAGE_ARTIFACT") from exc
-                        except StageArtifactStoreError as exc:
-                            raise HTTPException(
-                                503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
-                            ) from exc
-                        return JSONResponse(status_code=201, content={
-                            "digest": artifact.digest,
-                            "content_type": artifact.content_type,
-                            "byte_length": artifact.byte_length,
-                            "stored": True,
-                        })
-
-                    @router.get(
-                        "/my-drafts/{ref}/stage-observations/artifacts/"
-                        "{stage_ref}/{digest}",
-                    )
-                    def household_stage_artifact_download(
-                        ref: str, stage_ref: str, digest: str,
-                        sid: str | None = Cookie(default=None, alias=cookie_name),
-                    ) -> Response:
-                        try:
-                            session = flow.session(sid)
-                        except InvalidToken:
-                            raise HTTPException(401, detail="INVALID_SESSION") from None
-                        principal = Principal(session.subject, session.roles)
-                        try:
-                            permitted = household_profile_access_authority(
-                                principal, ref, household_profile_schema.schema_ref,
-                            )
-                        except Exception as exc:
-                            raise HTTPException(
-                                503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
-                            ) from exc
-                        if permitted is not True:
-                            raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
-                        try:
-                            history = household_input_ledger.read_owned_stage_observations(
-                                ref, principal,
-                                context_authority=household_stage_context_authority,
-                            )
-                        except StageObservationConflict as exc:
-                            raise HTTPException(
-                                409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
-                            ) from exc
-                        except (LedgerIntegrityError, sqlite3.Error) as exc:
-                            raise HTTPException(
-                                503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
-                            ) from exc
-                        receipt_exists = bool(history and any(
-                            item["stage_ref"] == stage_ref
-                            and item["observation_artifact_digest"] == digest
-                            for item in history["observations"]
-                        ))
-                        if not receipt_exists:
-                            raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
-                        try:
-                            stored = household_stage_artifact_store.get(
-                                session.subject, ref + ":" + stage_ref, digest,
-                            )
-                        except (ValueError, StageArtifactStoreError) as exc:
-                            raise HTTPException(
-                                503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
-                            ) from exc
-                        if stored is None:
-                            raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
-                        artifact, content = stored
-                        return Response(
-                            content=content, media_type=artifact.content_type,
-                            headers={
-                                "Content-Disposition": 'attachment; filename="stage-observation"',
-                                "Cache-Control": "private, no-store",
-                                "X-Content-Type-Options": "nosniff",
-                            },
-                        )
-
-                @router.get(
-                    "/my-drafts/{ref}/stage-observations",
-                    response_class=HTMLResponse,
-                )
-                def household_stage_observations_page(
-                    ref: str, corrects_revision: int = 0,
-                    sid: str | None = Cookie(default=None, alias=cookie_name),
-                ) -> HTMLResponse:
-                    try:
-                        session = flow.session(sid)
-                    except InvalidToken:
-                        raise HTTPException(401, detail="INVALID_SESSION") from None
-                    principal = Principal(session.subject, session.roles)
-                    try:
-                        permitted = household_profile_access_authority(
-                            principal, ref, household_profile_schema.schema_ref,
-                        )
-                    except Exception as exc:
-                        raise HTTPException(
-                            503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
-                        ) from exc
-                    if permitted is not True:
-                        raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
-                    try:
-                        result = household_input_ledger.read_owned_stage_observations(
-                            ref, principal,
-                            context_authority=household_stage_context_authority,
-                        )
-                    except StageObservationConflict as exc:
-                        raise HTTPException(
-                            409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
-                        ) from exc
-                    except (LedgerIntegrityError, sqlite3.Error) as exc:
-                        raise HTTPException(
-                            503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
-                        ) from exc
-                    if result is None:
-                        raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-                    correction_target = None
-                    if corrects_revision:
-                        correction_target = next((item for item in result["observations"]
-                                                  if item["revision"] == corrects_revision
-                                                  and not item["is_superseded"]
-                                                  and item["current"]), None)
-                        if correction_target is None:
-                            raise HTTPException(404, detail="STAGE_OBSERVATION_NOT_CORRECTABLE")
-                    current = result["current_context"]
-                    progress_labels = {
-                        "NOT_REPORTED": "Ù‡Ù†ÙˆØ² Ø±Ø³ÛŒØ¯ÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡",
-                        "CURRENT_RECEIPT": "Ø±Ø³ÛŒØ¯ Ø¬Ø§Ø±ÛŒ Ø«Ø¨Øª Ø´Ø¯Ù‡",
-                        "HISTORICAL_RECEIPT": "ÙÙ‚Ø· Ø±Ø³ÛŒØ¯ ØªØ§Ø±ÛŒØ®ÛŒ Ù…ÙˆØ¬ÙˆØ¯ Ø§Ø³Øª",
-                    }
-                    stage_progress_html = ''.join(
-                        '<li>' + escape(item["stage_ref"]) + ' Â· '
-                        + progress_labels[item["state"]]
-                        + (' Â· Ù†Ø³Ø®Ù‡ ' + str(item["observation_revision"])
-                           if item["observation_revision"] is not None else '')
-                        + (' Â· Ø±Ø³ÛŒØ¯ Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø´Ø¯ (Ø¨Ø¯ÙˆÙ† Ø¯Ø§ÙˆØ±ÛŒ)'
-                           if item["receipt_inspected"] else '')
-                        + '</li>'
-                        for item in result["stage_progress"]
-                    )
-                    forms = []
-                    if current:
-                        for index, stage in enumerate(current["stages"], start=1):
-                            stage_ref = escape(stage["stage_ref"], quote=True)
-                            requirements = escape(
-                                stage["observation_requirements_digest"], quote=True,
-                            )
-                            if household_stage_artifact_store is not None:
-                                form_attrs = (
-                                    ' data-stage-upload data-upload-url="/my-drafts/'
-                                    + quote(ref) + '/stage-observations/artifacts"'
-                                )
-                                artifact_control = (
-                                    '<label for="artifact-' + str(index)
-                                    + '">ÙØ§ÛŒÙ„ Ù…Ø´Ø§Ù‡Ø¯Ù‡ (ØªØµÙˆÛŒØ± ÛŒØ§ PDFØŒ Ø­Ø¯Ø§Ú©Ø«Ø± Û¸ Ù…Ú¯Ø§Ø¨Ø§ÛŒØª)</label>'
-                                    '<input id="artifact-' + str(index)
-                                    + '" name="observation_file" type="file" '
-                                    'accept="image/jpeg,image/png,image/webp,application/pdf" required>'
-                                    '<input name="artifact_digest" type="hidden" value="">'
-                                    '<p data-upload-status role="status" aria-live="polite"></p>'
-                                )
-                            else:
-                                form_attrs = ''
-                                artifact_control = (
-                                    '<label for="artifact-' + str(index)
-                                    + '">Ø§Ø«Ø± Ø§Ù†Ú¯Ø´Øª Ù…Ø±Ø¬Ø¹ Ù…Ø´Ø§Ù‡Ø¯Ù‡ (SHA-256)</label>'
-                                    '<input id="artifact-' + str(index)
-                                    + '" name="artifact_digest" type="text" '
-                                    'inputmode="latin" minlength="64" maxlength="64" '
-                                    'pattern="[0-9a-f]{64}" required>'
-                                )
-                            form = (
-                                '<form method="post" action="/my-drafts/'
-                                + quote(ref) + '/stage-observations"' + form_attrs + '>'
-                                + '<input type="hidden" name="csrf" value="'
-                                + escape(session.csrf, quote=True) + '">'
-                                '<input type="hidden" name="action_id" value="DEMO-STAGE-OBS-'
-                                + secrets.token_hex(10).upper() + '">'
-                                '<input type="hidden" name="case_version" value="'
-                                + str(current["case_version"]) + '">'
-                                '<input type="hidden" name="input_revision" value="'
-                                + str(current["input_revision"]) + '">'
-                                '<input type="hidden" name="input_snapshot_digest" value="'
-                                + escape(current["input_snapshot_digest"], quote=True) + '">'
-                                '<input type="hidden" name="plan_digest" value="'
-                                + escape(current["plan_digest"], quote=True) + '">'
-                                '<input type="hidden" name="stage_ref" value="'
-                                + stage_ref + '">'
-                                '<input type="hidden" name="requirements_digest" value="'
-                                + requirements + '">'
-                                '<input type="hidden" name="observation_revision" value="'
-                                + str(result["current_revision"]) + '">'
-                                '<input type="hidden" name="corrects_revision" value="'
-                                + str(corrects_revision if correction_target is not None
-                                      and correction_target["stage_ref"] == stage["stage_ref"]
-                                      else 0) + '">'
-                                '<h3>Ù…Ø±Ø­Ù„Ù‡ ' + str(index) + '</h3>'
-                                '<p>Ø´Ù†Ø§Ø³Ù‡ Ù…Ø±Ø­Ù„Ù‡: ' + stage_ref + '</p>'
-                                + ('<p>Ø§ØµÙ„Ø§Ø­ Ø±Ø³ÛŒØ¯ Ø´Ù…Ø§Ø±Ù‡ '
-                                   + str(correction_target["revision"]) + '</p>'
-                                   if correction_target is not None
-                                   and correction_target["stage_ref"] == stage["stage_ref"] else '')
-                                + artifact_control
-                                + '<button type="submit">'
-                                + ('Ø«Ø¨Øª Ø§ØµÙ„Ø§Ø­ Ø±Ø³ÛŒØ¯' if correction_target is not None
-                                   and correction_target["stage_ref"] == stage["stage_ref"]
-                                   else 'Ø«Ø¨Øª Ø±Ø³ÛŒØ¯ Ù…Ø´Ø§Ù‡Ø¯Ù‡') + '</button>'
-                                '</form>'
-                            )
-                            forms.append(form)
-                    history = ''.join(
-                        '<li>Ù…Ø±Ø­Ù„Ù‡ ' + escape(item["stage_ref"])
-                        + ' Â· ' + ('Ø±Ø³ÛŒØ¯ Ø¬Ø§Ø±ÛŒ' if item["current"]
-                                   else 'Ø±Ø³ÛŒØ¯ Ù‚Ø¯ÛŒÙ…ÛŒ') + ' Â· Ù†Ø³Ø®Ù‡ '
-                        + str(item["revision"])
-                        + (' Â· Ø¨Ø§ <a href="#observation-'
-                           + quote(item["stage_ref"]) + '-'
-                           + str(item["superseded_by_revision"]) + '">Ø±Ø³ÛŒØ¯ '
-                           + str(item["superseded_by_revision"])
-                           + '</a> Ø§ØµÙ„Ø§Ø­ Ø´Ø¯' if item["is_superseded"] else '')
-                        + (' Â· Ø§ØµÙ„Ø§Ø­ <a href="#observation-'
-                           + quote(item["stage_ref"]) + '-'
-                           + str(item["corrects_revision"]) + '">Ù†Ø³Ø®Ù‡ '
-                           + str(item["corrects_revision"])
-                           + '</a>' if item["corrects_revision"] is not None else '')
-                        + ' Â· Ù†Ø³Ø®Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ' + str(item["case_version"])
-                        + ' Â· Ù†Ø³Ø®Ù‡ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø± ' + str(item["input_revision"])
-                        + (' Â· Ø±Ø³ÛŒØ¯ Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø´Ø¯ (Ø¨Ø¯ÙˆÙ† Ø¯Ø§ÙˆØ±ÛŒ)'
-                           if item["receipt_inspected"] else '')
-                        + (' Â· <a href="/my-drafts/' + quote(ref)
-                           + '/stage-observations/artifacts/'
-                           + quote(item["stage_ref"]) + '/'
-                           + escape(item["observation_artifact_digest"], quote=True)
-                           + '">Ø¯Ø±ÛŒØ§ÙØª ÙØ§ÛŒÙ„</a>'
-                           if household_stage_artifact_store is not None else
-                           ' Â· Ù…Ø±Ø¬Ø¹ ' + escape(item["observation_artifact_digest"]))
-                        + ('' if item["is_superseded"] or not item["current"] else
-                           ' Â· <a href="/my-drafts/' + quote(ref)
-                           + '/stage-observations?corrects_revision='
-                           + str(item["revision"]) + '">Ø§ØµÙ„Ø§Ø­ Ø±Ø³ÛŒØ¯</a>')
-                        + '</li>'
-                        for item in result["observations"]
-                    )
-                    body = (
-                        '<article class="panel"><h2>Ø«Ø¨Øª Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ù…Ø±Ø­Ù„Ù‡â€ŒØ§ÛŒ</h2>'
-                        '<p>ÙÙ‚Ø· Ù…Ø±Ø¬Ø¹ Ø±Ù…Ø²Ù†Ú¯Ø§Ø±ÛŒâ€ŒØ´Ø¯Ù‡Ù” Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø«Ø¨Øª Ù…ÛŒâ€ŒØ´ÙˆØ¯. '
-                        'Ø«Ø¨Øª Ø±Ø³ÛŒØ¯ Ø¨Ù‡ Ù…Ø¹Ù†ÛŒ ØªÚ©Ù…ÛŒÙ„ Ù…Ø±Ø­Ù„Ù‡ØŒ Ø§Ø±Ø²ÛŒØ§Ø¨ÛŒ Ø¹Ù„Ù…ÛŒ ÛŒØ§ ØªØ£ÛŒÛŒØ¯ Ù…ØªØ®ØµØµ Ù†ÛŒØ³Øª.</p>'
-                        + ('<p role="status">Ù…Ø±Ø¬Ø¹ Ø¬Ø§Ø±ÛŒ Ø·Ø±Ø­ Ø¯Ø± Ø¯Ø³ØªØ±Ø³ Ù†ÛŒØ³ØªØ› '
-                           'Ø«Ø¨Øª Ù…Ø´Ø§Ù‡Ø¯Ù‡ ØªØ§ Ø¯Ø±ÛŒØ§ÙØª Ù†Ø³Ø®Ù‡ Ø¬Ø§Ø±ÛŒ ØºÛŒØ±ÙØ¹Ø§Ù„ Ø§Ø³Øª.</p>'
-                           if not current else
-                           '<p>Ø·Ø±Ø­ Ùˆ Ø§Ù„Ø²Ø§Ù…Ø§Øª Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø§Ø² Ù…Ø±Ø¬Ø¹ Ø¬Ø§Ø±ÛŒ Ø¯Ø±ÛŒØ§ÙØª Ø´Ø¯Ù‡â€ŒØ§Ù†Ø¯Ø› '
-                           'Ù‡ÛŒÚ† Ù…Ø¹ÛŒØ§Ø± Ú©Ø´Ø§ÙˆØ±Ø²ÛŒ Ø¯Ø± Ø§ÛŒÙ† ÙØ±Ù… Ø³Ø§Ø®ØªÙ‡ Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>'
-                           + '<h3>ÙˆØ¶Ø¹ÛŒØª Ú¯Ø²Ø§Ø±Ø´ Ù‡Ø± Ù…Ø±Ø­Ù„Ù‡</h3><ul>'
-                           + stage_progress_html + '</ul>')
-                        + ''.join(forms)
-                        + ('<ol>' + history + '</ol>' if history else
-                           '<p>Ø±Ø³ÛŒØ¯ÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>')
-                        + '<p>Ø¨Ø§ Ø§ØµÙ„Ø§Ø­ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ÛŒØ§ ØªØºÛŒÛŒØ± Ø·Ø±Ø­ØŒ Ø±Ø³ÛŒØ¯Ù‡Ø§ÛŒ Ù‚Ø¨Ù„ÛŒ Ø­ÙØ¸ Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯ '
-                        'Ùˆ Ø¨Ù‡â€ŒØ¹Ù†ÙˆØ§Ù† Ø±Ø³ÛŒØ¯ Ø¬Ø§Ø±ÛŒ Ù†Ù…Ø§ÛŒØ´ Ø¯Ø§Ø¯Ù‡ Ù†Ø®ÙˆØ§Ù‡Ù†Ø¯ Ø´Ø¯.</p>'
-                        + '<p><a href="/my-drafts/' + quote(ref)
-                        + '/cultivation-inputs">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ù¾Ø±ÙˆÙ†Ø¯Ù‡</a></p>'
-                        '</article>'
-                    )
-                    return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ù…Ø±Ø­Ù„Ù‡â€ŒØ§ÛŒ Ù¾Ø±ÙˆÙ†Ø¯Ù‡",
-                                body, logged_in=True, local_test_form=True,
-                                stage_upload_script=household_stage_artifact_store is not None)
-
-                @router.post("/my-drafts/{ref}/stage-observations")
-                async def household_stage_observation_submit(
-                    ref: str, request: Request,
-                    sid: str | None = Cookie(default=None, alias=cookie_name),
-                ) -> RedirectResponse:
-                    principal, form = await checked_browser_form(
-                        request, sid,
-                        fields=frozenset({
-                            "csrf", "action_id", "case_version", "input_revision",
-                            "input_snapshot_digest", "plan_digest", "stage_ref",
-                            "requirements_digest", "observation_revision",
-                            "artifact_digest", "corrects_revision",
-                        }),
-                        max_bytes=4096, max_fields=11, max_value_length=128,
-                    )
-                    try:
-                        permitted = household_profile_access_authority(
-                            principal, ref, household_profile_schema.schema_ref,
-                        )
-                    except Exception as exc:
-                        raise HTTPException(
-                            503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
-                        ) from exc
-                    if permitted is not True:
-                        raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
-                    try:
-                        command = StageObservationCommand(
-                            action_id=form["action_id"],
-                            expected_case_version=form_version(
-                                form["case_version"], zero_allowed=False,
-                            ),
-                            expected_input_revision=form_version(
-                                form["input_revision"], zero_allowed=False,
-                            ),
-                            expected_input_snapshot_digest=form[
-                                "input_snapshot_digest"
-                            ],
-                            expected_plan_digest=form["plan_digest"],
-                            stage_ref=form["stage_ref"],
-                            expected_observation_requirements_digest=
-                                form["requirements_digest"],
-                            observed_at=datetime.now(timezone.utc).isoformat(
-                                timespec="seconds",
-                            ),
-                            observation_artifact_digest=form["artifact_digest"],
-                            corrects_revision=(form_version(
-                                form["corrects_revision"],
-                            ) or None),
-                        )
-                        if (household_stage_artifact_store is not None
-                                and not household_stage_artifact_store.contains(
-                                    principal.subject, ref + ":" + command.stage_ref,
-                                    command.observation_artifact_digest,
-                                )):
-                            return JSONResponse(
-                                status_code=422,
-                                content={"detail": "STAGE_ARTIFACT_NOT_UPLOADED"},
-                            )
-                        saved = household_input_ledger.append_owned_stage_observation(
-                            ref, principal, command,
-                            expected_observation_revision=form_version(
-                                form["observation_revision"],
-                            ),
-                            context_authority=household_stage_context_authority,
-                        )
-                    except StageObservationConflict as exc:
-                        raise HTTPException(
-                            409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
-                        ) from exc
-                    except StageArtifactStoreError as exc:
-                        raise HTTPException(
-                            503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
-                        ) from exc
-                    except (LedgerIntegrityError, sqlite3.Error) as exc:
-                        raise HTTPException(
-                            503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
-                        ) from exc
-                    except ValueError as exc:
-                        raise HTTPException(422, detail="INVALID_STAGE_OBSERVATION") from exc
-                    if saved is None:
-                        raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-                    return RedirectResponse(
-                        "/my-drafts/" + quote(ref) + "/stage-observations",
-                        status_code=303,
-                    )
-
-            @router.post("/my-drafts/{ref}/cultivation-inputs")
-            async def household_cultivation_inputs_submit(
-                ref: str, request: Request,
-                sid: str | None = Cookie(default=None, alias=cookie_name),
-            ) -> RedirectResponse:
-                profile_fields = frozenset(
-                    {"csrf", "action_id", "case_version", "profile_revision"}
-                    | {field.key for field in household_profile_schema.fields}
-                )
-                principal, form = await checked_browser_form(
-                    request, sid, fields=profile_fields,
-                    max_bytes=8192, max_fields=10,
-                    max_value_length=300,
-                )
-                try:
-                    permitted = household_profile_access_authority(
-                        principal, ref, household_profile_schema.schema_ref,
-                    )
-                except Exception as exc:
-                    raise HTTPException(
-                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
-                    ) from exc
-                if permitted is not True:
-                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
-                values = {
-                    field.key: form[field.key]
-                    for field in household_profile_schema.fields
-                }
-                try:
-                    saved = household_input_ledger.append_owned_profile(
-                        ref, principal,
-                        action_id=form["action_id"],
-                        expected_case_version=form_version(
-                            form["case_version"], zero_allowed=False,
-                        ),
-                        expected_revision=form_version(form["profile_revision"]),
-                        values=values,
-                    )
-                except InputRevisionConflict as exc:
-                    raise HTTPException(
-                        409, detail="HOUSEHOLD_PROFILE_VERSION_CONFLICT",
-                    ) from exc
-                except (LedgerIntegrityError, sqlite3.Error) as exc:
-                    raise HTTPException(
-                        503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE",
-                    ) from exc
-                except ValueError as exc:
-                    raise HTTPException(422, detail="INVALID_HOUSEHOLD_PROFILE") from exc
-                if saved is None:
-                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-                return RedirectResponse(
-                    "/my-drafts/" + quote(ref) + "/cultivation-inputs",
-                    status_code=303,
-                )
-
-        @router.post("/my-drafts/{ref}/input-revisions/demo-correction")
-        async def household_demo_correction(
-            ref: str, request: Request,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> RedirectResponse:
-            principal, form = await checked_browser_form(
-                request, sid,
-                fields=frozenset({
-                    "csrf", "action_id", "case_version", "input_revision", "scenario",
-                }),
-            )
-            scenario = form["scenario"]
-            if scenario not in ("DEMO-MANIFEST-ALPHA", "DEMO-MANIFEST-BETA"):
-                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
-            case_version = form_version(form["case_version"], zero_allowed=False)
-            observed = form_version(form["input_revision"])
-            # Private opaque sample digest: no physical cultivation/user data.
-            digest = hashlib.sha256(
-                ("ronas.local-test.manifest.v1:" + ref + ":"
-                 + str(observed) + ":" + scenario).encode("ascii")
-            ).hexdigest() if _synthetic_ref(ref) else ""
-            try:
-                updated = household_input_ledger.append_owned_input_manifest(
-                    ref, principal,
-                    action_id=form["action_id"],
-                    expected_case_version=case_version,
-                    expected_input_revision=observed,
-                    synthetic_manifest_digest=digest,
-                )
-            except InputRevisionConflict as exc:
-                raise HTTPException(
-                    409, detail="SYNTHETIC_INPUT_VERSION_CONFLICT",
-                ) from exc
-            except LedgerIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="SYNTHETIC_INPUT_HISTORY_UNAVAILABLE",
-                ) from exc
-            except ValueError as exc:
-                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
-            if updated is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            return RedirectResponse(
-                "/my-drafts/" + quote(ref) + "/input-revisions",
-                status_code=303,
-            )
-
-
-    if household_surplus_draft_ledger is not None:
-        def current_household_input_revision(ref: str, identity: Principal):
-            if household_input_ledger is None:
-                return None
-            try:
-                snapshot = household_input_ledger.read_owned_input_revisions(
-                    ref, identity,
-                )
-            except LedgerIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="HOUSEHOLD_INPUT_HISTORY_UNAVAILABLE",
-                ) from exc
-            except (sqlite3.Error, RuntimeError) as exc:
-                raise HTTPException(
-                    503, detail="HOUSEHOLD_INPUT_HISTORY_UNAVAILABLE",
-                ) from exc
-            if snapshot is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            return snapshot["current_input_revision"]
-
-        @router.get("/my-drafts/{ref}/surplus-offers/new")
-        def household_start_surplus_draft(
-            ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> RedirectResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            identity = Principal(session.subject, session.roles)
-            if "household" not in identity.roles or not _synthetic_ref(ref):
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            try:
-                permitted = household_profile_access_authority(
-                    identity, ref, household_surplus_draft_ledger.schema.schema_ref,
-                )
-            except Exception as exc:
-                raise HTTPException(
-                    503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",
-                ) from exc
-            if permitted is not True:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            try:
-                existing_refs = {
-                    record.offer_ref
-                    for record in household_surplus_draft_ledger.list_owned(identity, ref)
-                }
-            except LookupError:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND") from None
-            except SurplusDraftIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
-                ) from exc
-            except SurplusDraftStorageError as exc:
-                raise HTTPException(
-                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
-                ) from exc
-            except (RuntimeError, sqlite3.Error) as exc:
-                raise HTTPException(
-                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
-                ) from exc
-            offer_ref = ""
-            for _ in range(8):
-                candidate = "DEMO-OFFER-" + secrets.token_hex(16).upper()
-                if candidate not in existing_refs:
-                    offer_ref = candidate
-                    break
-            if not offer_ref:
-                raise HTTPException(503, detail="SURPLUS_DRAFT_ID_UNAVAILABLE")
-            return RedirectResponse(
-                "/my-drafts/" + quote(ref) + "/surplus-offers?offer_ref="
-                + quote(offer_ref), status_code=303,
-            )
-
-        @router.get(
-            "/my-drafts/{ref}/surplus-offers/{offer_ref}/revisions"
-        )
-        def household_surplus_revision_history(
-            ref: str,
-            offer_ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            identity = Principal(session.subject, session.roles)
-            if ("household" not in identity.roles or not _synthetic_ref(ref)
-                    or not _synthetic_ref(offer_ref)):
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            try:
-                revisions = household_surplus_draft_ledger.history_owned(
-                    identity, ref, offer_ref,
-                )
-            except LookupError:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND") from None
-            except SurplusDraftIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
-                ) from exc
-            except SurplusDraftStorageError as exc:
-                raise HTTPException(
-                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
-                ) from exc
-            except (RuntimeError, sqlite3.Error) as exc:
-                raise HTTPException(
-                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
-                ) from exc
-            entries = []
-            active_digest = household_surplus_draft_ledger.schema.digest
-            current_input_revision = current_household_input_revision(ref, identity)
-            for index, record in enumerate(revisions):
-                schema_matches = record.schema_digest == active_digest
-                previous = revisions[index - 1] if index else None
-                diff_matches = (
-                    schema_matches
-                    and (previous is None or previous.schema_digest == active_digest)
-                )
-                if schema_matches:
-                    values = "<dl>" + "".join(
-                        "<dt>" + escape(key) + "</dt><dd>"
-                        + escape(value) + "</dd>"
-                        for key, value in sorted(record.values.items())
-                    ) + "</dl>"
-                    state = "Ù†Ø³Ø®Ù‡Ù” Ø·Ø±Ø­â€ŒÙˆØ§Ø±Ù‡Ù” Ø¬Ø§Ø±ÛŒ"
-                    if diff_matches:
-                        before = {} if previous is None else previous.values
-                        changes = [
-                            (key, before.get(key), record.values.get(key))
-                            for key in sorted(set(before) | set(record.values))
-                            if before.get(key) != record.values.get(key)
-                        ]
-                        if changes:
-                            diff = "<ul>" + "".join(
-                                "<li><strong>" + escape(key) + "</strong>: "
-                                + ("Ø¨Ø¯ÙˆÙ† Ù…Ù‚Ø¯Ø§Ø±" if old is None else escape(old))
-                                + " â† "
-                                + ("Ø­Ø°Ùâ€ŒØ´Ø¯Ù‡" if new is None else escape(new))
-                                + "</li>"
-                                for key, old, new in changes
-                            ) + "</ul>"
-                        else:
-                            diff = "<p>Ø¯Ø± Ø§ÛŒÙ† Ù†Ø³Ø®Ù‡ ØªØºÛŒÛŒØ±ÛŒ Ù†Ø³Ø¨Øª Ø¨Ù‡ Ù†Ø³Ø®Ù‡Ù” Ù‚Ø¨Ù„ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>"
-                        diff_block = (
-                            '<section aria-label="ØªÙØ§ÙˆØª Ø¨Ø§ Ù†Ø³Ø®Ù‡Ù” Ù‚Ø¨Ù„"><h4>'
-                            'ØªÙØ§ÙˆØª Ø¨Ø§ Ù†Ø³Ø®Ù‡Ù” Ù‚Ø¨Ù„</h4>' + diff + '</section>'
-                        )
-                    else:
-                        diff_block = (
-                            '<p>Ø·Ø±Ø­â€ŒÙˆØ§Ø±Ù‡Ù” Ù†Ø³Ø®Ù‡Ù” Ù‚Ø¨Ù„ Ù…ØªÙØ§ÙˆØª Ø§Ø³ØªØ› ØªÙØ§ÙˆØª Ù…Ù‚Ø§Ø¯ÛŒØ± '
-                            'Ù†Ù…Ø§ÛŒØ´ Ø¯Ø§Ø¯Ù‡ Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>'
-                        )
-                else:
-                    values = "<p>Ø·Ø±Ø­â€ŒÙˆØ§Ø±Ù‡ ØªØºÛŒÛŒØ± Ú©Ø±Ø¯Ù‡Ø› Ù…Ù‚Ø§Ø¯ÛŒØ± Ø§ÛŒÙ† Ù†Ø³Ø®Ù‡ Ù†Ù…Ø§ÛŒØ´ Ø¯Ø§Ø¯Ù‡ Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>"
-                    state = "Ù†ÛŒØ§Ø²Ù…Ù†Ø¯ Ø¨Ø§Ø²Ø¨ÛŒÙ†ÛŒ Ø¯Ø± Ø·Ø±Ø­â€ŒÙˆØ§Ø±Ù‡Ù” Ø¬Ø§Ø±ÛŒ"
-                    diff_block = (
-                        '<p>Ø·Ø±Ø­â€ŒÙˆØ§Ø±Ù‡ ØªØºÛŒÛŒØ± Ú©Ø±Ø¯Ù‡Ø› ØªÙØ§ÙˆØª Ù…Ù‚Ø§Ø¯ÛŒØ± Ù‚Ø§Ø¨Ù„ Ù…Ù‚Ø§ÛŒØ³Ù‡ Ù†ÛŒØ³Øª.</p>'
-                    )
-                entries.append(
-                    '<section><h3>Ù†Ø³Ø®Ù‡ ' + str(record.revision)
-                    + ' Â· Ø·Ø±Ø­â€ŒÙˆØ§Ø±Ù‡ ' + str(record.schema_version) + '</h3>'
-                    + '<p>' + state + '</p>'
-                    + ('<p>' + ('Ø¨Ù‡ Ù†Ø³Ø®Ù‡ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø± Ø¬Ø§Ø±ÛŒ Ù…ØªØµÙ„ Ø§Ø³Øª'
-                       if record.input_revision is not None
-                       and record.input_revision == current_input_revision else
-                       'Ù†Ø³Ø®Ù‡ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø± Ù‚Ø¯ÛŒÙ…ÛŒ ÛŒØ§ Ø«Ø¨Øªâ€ŒÙ†Ø´Ø¯Ù‡Ø› Ø§ÛŒÙ† Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³ Ø¬Ø§Ø±ÛŒ Ù†ÛŒØ³Øª')
-                       + (" Â· Ù†Ø³Ø®Ù‡ ÙˆØ±ÙˆØ¯ÛŒ " + str(record.input_revision)
-                          if record.input_revision is not None else '')
-                       + '</p>' if household_input_ledger is not None else '')
-                    + values + diff_block + '</section>'
-                )
-            body = (
-                '<article class="panel"><h2>ØªØ§Ø±ÛŒØ®Ú†Ù‡Ù” Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³ Ù…Ø§Ø²Ø§Ø¯</h2>'
-                '<p>Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§ ÙÙ‚Ø·â€ŒØ®ÙˆØ§Ù†Ø¯Ù†ÛŒâ€ŒØ§Ù†Ø¯ Ùˆ ØªØºÛŒÛŒØ± ÛŒØ§ Ø­Ø°Ù Ù†Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯.</p>'
-                + ''.join(entries)
-                + '<p><a href="/my-drafts/' + quote(ref)
-                + '/surplus-offers?offer_ref=' + quote(offer_ref)
-                + '">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ ÙˆÛŒØ±Ø§ÛŒØ´</a></p>'
-                + '<p><a href="/my-drafts/' + quote(ref)
-                + '/surplus-offers">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ ÙÙ‡Ø±Ø³Øª</a></p></article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” ØªØ§Ø±ÛŒØ®Ú†Ù‡Ù” Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³ Ù…Ø§Ø²Ø§Ø¯", body,
-                        logged_in=True)
-
-        @router.get("/my-drafts/{ref}/surplus-offers")
-        def household_surplus_draft_page(
-            ref: str,
-            offer_ref: str | None = None,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            identity = Principal(session.subject, session.roles)
-            if ("household" not in identity.roles
-                    or not _synthetic_ref(ref)
-                    or (offer_ref is not None and not _synthetic_ref(offer_ref))):
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            try:
-                permitted = household_profile_access_authority(
-                    identity, ref, household_surplus_draft_ledger.schema.schema_ref,
-                )
-            except Exception as exc:
-                raise HTTPException(
-                    503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",
-                ) from exc
-            if permitted is not True:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            current_input_revision = current_household_input_revision(ref, identity)
-            if offer_ref is None:
-                try:
-                    records = household_surplus_draft_ledger.list_owned(identity, ref)
-                except LookupError:
-                    raise HTTPException(404, detail="DRAFT_NOT_FOUND") from None
-                except SurplusDraftIntegrityError as exc:
-                    raise HTTPException(
-                        503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
-                    ) from exc
-                except SurplusDraftStorageError as exc:
-                    raise HTTPException(
-                        503, detail="SURPLUS_DRAFT_UNAVAILABLE",
-                    ) from exc
-                except (RuntimeError, sqlite3.Error) as exc:
-                    raise HTTPException(503, detail="SURPLUS_DRAFT_UNAVAILABLE") from exc
-                items = []
-                for record in records:
-                    input_matches = (
-                        record.input_revision is not None
-                        and record.input_revision == current_input_revision
-                    )
-                    state = (
-                        "Ø·Ø±Ø­â€ŒÙˆØ§Ø±Ù‡ ØªØºÛŒÛŒØ± Ú©Ø±Ø¯Ù‡Ø› Ø¨Ø§Ø²Ø¨ÛŒÙ†ÛŒ Ù„Ø§Ø²Ù… Ø§Ø³Øª"
-                        if record.schema_digest != household_surplus_draft_ledger.schema.digest
-                        else "Ù†Ø³Ø®Ù‡ " + str(record.revision)
-                        + " Â· Ù…ØªØµÙ„ Ø¨Ù‡ Ù†Ø³Ø®Ù‡ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø± Ø¬Ø§Ø±ÛŒ"
-                        if household_input_ledger is not None and input_matches
-                        else "Ù†Ø³Ø®Ù‡ " + str(record.revision)
-                        + " Â· Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø± ØªØºÛŒÛŒØ± Ú©Ø±Ø¯Ù‡ ÛŒØ§ Ù†Ø³Ø®Ù‡ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡Ø› Ø¨Ø§Ø²Ø¨ÛŒÙ†ÛŒ Ù„Ø§Ø²Ù… Ø§Ø³Øª"
-                        if household_input_ledger is not None
-                        else "Ù†Ø³Ø®Ù‡ " + str(record.revision) + " Â· Ø®ØµÙˆØµÛŒ Ùˆ Ù…Ù†ØªØ´Ø±Ù†Ø´Ø¯Ù‡"
-                    )
-                    href = ("/my-drafts/" + quote(ref)
-                            + "/surplus-offers?offer_ref=" + quote(record.offer_ref))
-                    history_href = (
-                        "/my-drafts/" + quote(ref) + "/surplus-offers/"
-                        + quote(record.offer_ref) + "/revisions"
-                    )
-                    items.append(
-                        '<li><a href="' + escape(href, quote=True) + '">'
-                        + escape(record.offer_ref) + '</a><span>'
-                        + escape(state) + '</span><a href="'
-                        + escape(history_href, quote=True)
-                        + '">ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§</a></li>'
-                    )
-                body = (
-                    '<article class="panel"><h2>Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³â€ŒÙ‡Ø§ÛŒ Ù…Ø§Ø²Ø§Ø¯ Ù…Ù†</h2>'
-                    '<p>ÙÙ‡Ø±Ø³Øª ÙÙ‚Ø· Ø´Ù†Ø§Ø³Ù‡ Ùˆ ÙˆØ¶Ø¹ÛŒØª Ù†Ø³Ø®Ù‡ Ø±Ø§ Ù†Ø´Ø§Ù† Ù…ÛŒâ€ŒØ¯Ù‡Ø¯ Ùˆ Ù…Ù‚Ø¯Ø§Ø± ÙØ±Ù…â€ŒÙ‡Ø§ Ø±Ø§ Ø§ÙØ´Ø§ Ù†Ù…ÛŒâ€ŒÚ©Ù†Ø¯.</p>'
-                    + ('<ul>' + ''.join(items) + '</ul>' if items else
-                       '<p>Ù‡Ù†ÙˆØ² Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³ÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>')
-                    + '<p><a class="button" href="/my-drafts/' + quote(ref)
-                    + '/surplus-offers/new">Ø´Ø±ÙˆØ¹ Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³ Ù…Ø§Ø²Ø§Ø¯ Ø¬Ø¯ÛŒØ¯</a></p>'
-                    '<p><a href="/my-drafts/' + quote(ref)
-                    + '/cultivation-inputs">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡</a></p></article>'
-                )
-                return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³â€ŒÙ‡Ø§ÛŒ Ù…Ø§Ø²Ø§Ø¯", body,
-                            logged_in=True, local_test_form=True)
-            if not _synthetic_ref(offer_ref):
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            current = None
-            try:
-                current = household_surplus_draft_ledger.read_owned(
-                    identity, ref, offer_ref,
-                )
-            except LookupError:
-                pass
-            except SurplusDraftIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
-                ) from exc
-            except SurplusDraftStorageError as exc:
-                raise HTTPException(
-                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
-                ) from exc
-            except RuntimeError as exc:
-                raise HTTPException(
-                    503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",
-                ) from exc
-            except sqlite3.Error as exc:
-                raise HTTPException(503, detail="SURPLUS_DRAFT_UNAVAILABLE") from exc
-            schema_matches = (
-                current is not None
-                and current.schema_digest == household_surplus_draft_ledger.schema.digest
-            )
-            input_matches = (
-                current is not None and current.input_revision is not None
-                and current.input_revision == current_input_revision
-            )
-            values = current.values if schema_matches else {}
-            controls = []
-            for field in household_surplus_draft_ledger.schema.fields:
-                key = escape(field.key, quote=True)
-                label = escape(field.label)
-                value = values.get(field.key, "")
-                safe_value = escape(value, quote=True)
-                required = " required" if field.required else ""
-                if field.kind == "choice":
-                    options = ['<option value="">Ø§Ù†ØªØ®Ø§Ø¨ Ú©Ù†ÛŒØ¯</option>']
-                    options.extend(
-                        '<option value="' + escape(choice, quote=True) + '"'
-                        + (" selected" if choice == value else "") + ">"
-                        + escape(choice) + "</option>"
-                        for choice in field.choices
-                    )
-                    control = '<select id="' + key + '" name="' + key + '"' + required + '>' + ''.join(options) + '</select>'
-                elif field.kind == "text":
-                    control = '<textarea id="' + key + '" name="' + key + '" maxlength="' + str(field.max_length) + '"' + required + '>' + escape(value) + '</textarea>'
-                else:
-                    control = '<input id="' + key + '" name="' + key + '" type="' + field.kind + '" maxlength="' + str(field.max_length) + '" value="' + safe_value + '"' + required + '>'
-                controls.append('<label for="' + key + '">' + label + '</label>' + control)
-            expected_revision = 0 if current is None else current.revision
-            state = (
-                "Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³ Ø¬Ø¯ÛŒØ¯ Ùˆ Ø®ØµÙˆØµÛŒ" if current is None else
-                "Ù†Ø³Ø®Ù‡ " + str(current.revision) + " Â· Ø®ØµÙˆØµÛŒ Ùˆ Ù…Ù†ØªØ´Ø±Ù†Ø´Ø¯Ù‡"
-                if schema_matches else
-                "Ù†Ø³Ø®Ù‡ " + str(current.revision)
-                + " Â· Ø·Ø±Ø­â€ŒÙˆØ§Ø±Ù‡ ØªØºÛŒÛŒØ± Ú©Ø±Ø¯Ù‡Ø› Ù…Ù‚Ø§Ø¯ÛŒØ± Ù†Ø³Ø®Ù‡ Ù‚Ø¨Ù„ÛŒ Ù†Ù…Ø§ÛŒØ´ Ø¯Ø§Ø¯Ù‡ Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯"
-            )
-            if current is not None and household_input_ledger is not None:
-                state += (
-                    " Â· Ù…ØªØµÙ„ Ø¨Ù‡ Ù†Ø³Ø®Ù‡ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø± Ø¬Ø§Ø±ÛŒ"
-                    if input_matches else
-                    " Â· Ù†Ø³Ø®Ù‡ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø± Ù‚Ø¯ÛŒÙ…ÛŒ ÛŒØ§ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡Ø› Ù¾Ø³ Ø§Ø² Ø¨Ø§Ø²Ø¨ÛŒÙ†ÛŒØŒ "
-                    "Ø°Ø®ÛŒØ±Ù‡ Ù†Ø³Ø®Ù‡ ØªØ§Ø²Ù‡ Ø¢Ù† Ø±Ø§ Ø¨Ù‡ ÙˆØ±ÙˆØ¯ÛŒ Ø¬Ø§Ø±ÛŒ Ù…ØªØµÙ„ Ù…ÛŒâ€ŒÚ©Ù†Ø¯"
-                )
-            body = (
-                '<article class="panel"><h2>Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³ Ù…Ø§Ø²Ø§Ø¯ Ø®Ø§Ù†ÙˆØ§Ø±</h2>'
-                '<p>' + state + '</p>'
-                '<p>ÙÙ‚Ø· ÙÛŒÙ„Ø¯Ù‡Ø§ÛŒ ØªØ¹Ø±ÛŒÙâ€ŒØ´Ø¯Ù‡ Ø¯Ø± Ø·Ø±Ø­â€ŒÙˆØ§Ø±Ù‡Ù” Ø¬Ø§Ø±ÛŒ Ø¯Ø±ÛŒØ§ÙØª Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯Ø› '
-                'Ø§ÛŒÙ† Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³ Ø¨Ø±Ø§ÛŒ Ø®Ø±ÛŒØ¯Ø§Ø±Ø§Ù† Ù‚Ø§Ø¨Ù„ Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ù†ÛŒØ³Øª.</p>'
-                '<form method="post" action="/my-drafts/' + quote(ref)
-                + '/surplus-offers"><input type="hidden" name="csrf" value="'
-                + escape(session.csrf, quote=True) + '">'
-                '<input type="hidden" name="offer_ref" value="'
-                + escape(offer_ref, quote=True) + '">'
-                '<input type="hidden" name="action_id" value="DEMO-OFFER-UI-'
-                + secrets.token_hex(10).upper() + '">'
-                '<input type="hidden" name="expected_revision" value="'
-                + str(expected_revision) + '">'
-                '<input type="hidden" name="input_revision" value="'
-                + ('' if current_input_revision is None else str(current_input_revision))
-                + '">'
-                + ''.join(controls)
-                + '<button type="submit">Ø°Ø®ÛŒØ±Ù‡ Ù†Ø³Ø®Ù‡ Ø®ØµÙˆØµÛŒ</button></form>'
-                '<p>Ø«Ø¨Øª Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³ Ø¨Ù‡â€ŒÙ…Ø¹Ù†ÛŒ ØªØ£ÛŒÛŒØ¯ Ú©ÛŒÙÛŒØªØŒ Ø¹Ø±Ø¶Ù‡ØŒ Ù‚ÛŒÙ…Øª ÛŒØ§ Ù…Ø¹Ø§Ù…Ù„Ù‡ Ù†ÛŒØ³Øª.</p>'
-                '<p><a href="/my-drafts/' + quote(ref)
-                + '/cultivation-inputs">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡</a></p>'
-                + ('<p><a href="/my-drafts/' + quote(ref)
-                   + '/surplus-offers/' + quote(offer_ref)
-                   + '/revisions">Ù…Ø´Ø§Ù‡Ø¯Ù‡ ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§</a></p>'
-                   if current is not None else
-                   '<p><a href="/my-drafts/' + quote(ref)
-                   + '/surplus-offers">Ø§Ù†ØµØ±Ø§Ù Ùˆ Ø¯ÙˆØ± Ø§Ù†Ø¯Ø§Ø®ØªÙ† ÙØ±Ù… Ø°Ø®ÛŒØ±Ù‡â€ŒÙ†Ø´Ø¯Ù‡</a></p>')
-                + '</article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³ Ù…Ø§Ø²Ø§Ø¯ Ø®Ø§Ù†ÙˆØ§Ø±", body,
-                        logged_in=True, local_test_form=True)
-
-        @router.post("/my-drafts/{ref}/surplus-offers")
-        async def household_surplus_draft_submit(
-            ref: str, request: Request,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> RedirectResponse:
-            fields = frozenset(
-                {"csrf", "offer_ref", "action_id", "expected_revision"}
-                | {field.key for field in household_surplus_draft_ledger.schema.fields}
-            )
-            principal, form = await checked_browser_form(
-                request, sid, fields=fields,
-                optional_fields=frozenset({"input_revision"}),
-                max_bytes=8192, max_fields=11,
-                max_value_length=300, value_encoding="utf-8",
-            )
-            if not _synthetic_ref(ref) or not _synthetic_ref(form["offer_ref"]):
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            current_input_revision = current_household_input_revision(ref, principal)
-            submitted_input_revision = (
-                form_version(form.get("input_revision", ""), zero_allowed=False)
-                if form.get("input_revision", "") else None
-            )
-            if submitted_input_revision != current_input_revision:
-                raise HTTPException(
-                    409, detail="HOUSEHOLD_INPUT_REVISION_CHANGED",
-                )
-            try:
-                household_surplus_draft_ledger.save(
-                    principal, ref, form["offer_ref"],
-                    action_id=form["action_id"],
-                    expected_revision=form_version(form["expected_revision"]),
-                    input_revision=current_input_revision,
-                    values={
-                        field.key: form[field.key]
-                        for field in household_surplus_draft_ledger.schema.fields
-                    },
-                )
-            except SurplusDraftConflict as exc:
-                raise HTTPException(
-                    409, detail="SURPLUS_DRAFT_VERSION_CONFLICT",
-                ) from exc
-            except LookupError as exc:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND") from exc
-            except SurplusDraftIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
-                ) from exc
-            except SurplusDraftStorageError as exc:
-                raise HTTPException(
-                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
-                ) from exc
-            except RuntimeError as exc:
-                raise HTTPException(
-                    503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",
-                ) from exc
-            except sqlite3.Error as exc:
-                raise HTTPException(503, detail="SURPLUS_DRAFT_UNAVAILABLE") from exc
-            except ValueError as exc:
-                raise HTTPException(422, detail="INVALID_SURPLUS_DRAFT") from exc
-            return RedirectResponse(
-                "/my-drafts/" + quote(ref) + "/surplus-offers",
-                status_code=303,
-            )
-
-    if household_surplus_publication_authority is not None:
-        @router.get("/my-drafts/{ref}/surplus-publication-readiness")
-        def household_surplus_readiness_page(
-            ref: str,
-            offer_ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            identity = Principal(session.subject, session.roles)
-            try:
-                result = publication_readiness_snapshot(
-                    household_surplus_publication_authority,
-                    identity, ref, offer_ref, household_surplus_draft_ledger,
-                    (household_input_ledger.read_owned_input_revisions
-                     if household_input_ledger is not None else None),
-                    household_surplus_producer_consent_ledger,
-                )
-            except HTTPException as exc:
-                if exc.status_code == 404:
-                    return page(
-                        "Ø±ÙˆÙ†Ø§Ø³ â€” Ø¢Ù…Ø§Ø¯Ú¯ÛŒ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ù…Ø§Ø²Ø§Ø¯",
-                        '<p>Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ø¯Ø± Ø¯Ø³ØªØ±Ø³ Ù†ÛŒØ³Øª.</p>'
-                        '<p><a href="/my-drafts/' + quote(ref) + '/surplus-offers">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ ÙÙ‡Ø±Ø³Øª Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯Ù‡Ø§</a></p>',
-                        logged_in=True, code=404,
-                    )
-                return page(
-                    "Ø±ÙˆÙ†Ø§Ø³ â€” Ø¢Ù…Ø§Ø¯Ú¯ÛŒ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ù…Ø§Ø²Ø§Ø¯",
-                    '<p role="status">ÙˆØ¶Ø¹ÛŒØª Ø¢Ù…Ø§Ø¯Ú¯ÛŒ Ø§Ú©Ù†ÙˆÙ† Ù‚Ø§Ø¨Ù„ Ø¯Ø±ÛŒØ§ÙØª Ù†ÛŒØ³ØªØ› Ø¨Ø¹Ø¯Ø§Ù‹ Ø¯ÙˆØ¨Ø§Ø±Ù‡ ØªÙ„Ø§Ø´ Ú©Ù†ÛŒØ¯.</p>'
-                    '<p><a href="/my-drafts/' + quote(ref) + '/surplus-offers">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ ÙÙ‡Ø±Ø³Øª Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯Ù‡Ø§</a></p>',
-                    logged_in=True, code=503,
-                )
-            blocker_labels = {
-                "CURRENT_OFFER_UNAVAILABLE": "Ù†Ø³Ø®Ù‡ Ø¬Ø§Ø±ÛŒ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ø¯Ø± Ø¯Ø³ØªØ±Ø³ Ù†ÛŒØ³Øª",
-                "OFFER_SCHEMA_CHANGED": "Ø³Ø§Ø®ØªØ§Ø± Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ ØªØºÛŒÛŒØ± Ú©Ø±Ø¯Ù‡ Ùˆ Ø¨Ø§Ø²Ø¨ÛŒÙ†ÛŒ Ù„Ø§Ø²Ù… Ø§Ø³Øª",
-                "OFFER_VERSION_CHANGED": "Ù†Ø³Ø®Ù‡ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ ØªØºÛŒÛŒØ± Ú©Ø±Ø¯Ù‡ Ø§Ø³Øª",
-                "PRODUCER_APPROVAL_REQUIRED": "ØªØ£ÛŒÛŒØ¯ ØªÙˆÙ„ÛŒØ¯Ú©Ù†Ù†Ø¯Ù‡ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª",
-                "PRODUCER_APPROVAL_STALE": "ØªØ£ÛŒÛŒØ¯ ØªÙˆÙ„ÛŒØ¯Ú©Ù†Ù†Ø¯Ù‡ Ø¨Ø§ Ù†Ø³Ø®Ù‡ Ø¬Ø§Ø±ÛŒ Ù‡Ù…â€ŒØ®ÙˆØ§Ù† Ù†ÛŒØ³Øª",
-                "QUALITY_SAFETY_VERIFICATION_REQUIRED": "Ø¨Ø±Ø±Ø³ÛŒ Ù…Ø³ØªÙ‚Ù„ Ú©ÛŒÙÛŒØª Ùˆ Ø§ÛŒÙ…Ù†ÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª",
-                "QUALITY_SAFETY_VERIFICATION_STALE": "Ø¨Ø±Ø±Ø³ÛŒ Ú©ÛŒÙÛŒØª Ùˆ Ø§ÛŒÙ…Ù†ÛŒ Ø¨Ø§ Ù†Ø³Ø®Ù‡ Ø¬Ø§Ø±ÛŒ Ù‡Ù…â€ŒØ®ÙˆØ§Ù† Ù†ÛŒØ³Øª",
-                "SELLER_ELIGIBILITY_UNVERIFIED": "ÙˆØ¶Ø¹ÛŒØª ØµÙ„Ø§Ø­ÛŒØª ÙØ±ÙˆØ´Ù†Ø¯Ù‡ Ø§Ø­Ø±Ø§Ø² Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª",
-                "HOUSEHOLD_PERMISSION_INACTIVE": "Ù…Ø¬ÙˆØ² Ø®Ø§Ù†ÙˆØ§Ø± ÙØ¹Ø§Ù„ Ù†ÛŒØ³Øª",
-                "MARKETPLACE_GATE_CLOSED": "Ø¯Ø±Ú¯Ø§Ù‡ ÙÙ†ÛŒ Ø¨Ø§Ø²Ø§Ø±Ú¯Ø§Ù‡ Ø¨Ø§Ø² Ù†ÛŒØ³Øª",
-                "HOUSEHOLD_INPUT_REVISION_UNBOUND":
-                    "Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³ Ø¨Ù‡ Ù†Ø³Ø®Ù‡ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø± Ù…ØªØµÙ„ Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª",
-                "HOUSEHOLD_INPUT_REVISION_CHANGED":
-                    "Ù†Ø³Ø®Ù‡ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø± ØªØºÛŒÛŒØ± Ú©Ø±Ø¯Ù‡ Ø§Ø³Øª",
-                "HOUSEHOLD_INPUT_REVISION_UNAVAILABLE":
-                    "Ù†Ø³Ø®Ù‡ Ø¬Ø§Ø±ÛŒ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø± Ø¯Ø± Ø¯Ø³ØªØ±Ø³ Ù†ÛŒØ³Øª",
-            }
-            blockers = result.get("blockers")
-            if (not isinstance(blockers, list)
-                    or any(code not in blocker_labels for code in blockers)
-                    or result.get("published") is not False
-                    or result.get("real_data") is not False):
-                return page(
-                    "Ø±ÙˆÙ†Ø§Ø³ â€” Ø¢Ù…Ø§Ø¯Ú¯ÛŒ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ù…Ø§Ø²Ø§Ø¯",
-                    '<p role="status">ÙˆØ¶Ø¹ÛŒØª Ø¢Ù…Ø§Ø¯Ú¯ÛŒ Ù‚Ø§Ø¨Ù„ Ù†Ù…Ø§ÛŒØ´ Ù†ÛŒØ³Øª.</p>',
-                    logged_in=True, code=503,
-                )
-            state = (
-                "Ø§Ù„Ø²Ø§Ù…Ø§Øª ÙÙ†ÛŒÙ ØªØ¹Ø±ÛŒÙâ€ŒØ´Ø¯Ù‡ Ø¨Ø±Ø§ÛŒ Ø§ÛŒÙ† Ù†Ø³Ø®Ù‡ Ø¨Ø±Ù‚Ø±Ø§Ø± Ø§Ø³Øª"
-                if result.get("can_publish") is True
-                and result.get("state") == "PUBLICATION_AUTHORIZED"
-                else "Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ù‡Ù†ÙˆØ² Ø¯Ø± ÙˆØ¶Ø¹ÛŒØª Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³ ØºÛŒØ±Ø¹Ù…ÙˆÙ…ÛŒ Ø§Ø³Øª"
-            )
-            items = ''.join(
-                '<li>' + blocker_labels[code] + '</li>' for code in blockers
-            ) or '<li>Ù…Ø§Ù†Ø¹ÛŒ Ø¯Ø± Ú©Ù†ØªØ±Ù„â€ŒÙ‡Ø§ÛŒ ÙÙ†ÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª</li>'
-            consent_state = result.get("producer_consent_state", "NOT_RECORDED")
-            consent_form = ""
-            if household_surplus_producer_consent_ledger is not None:
-                if consent_state not in ("NOT_RECORDED", "APPROVED", "WITHDRAWN"):
-                    return page(
-                        "Ø±ÙˆÙ†Ø§Ø³ â€” Ø¢Ù…Ø§Ø¯Ú¯ÛŒ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ù…Ø§Ø²Ø§Ø¯",
-                        '<p role="status">ÙˆØ¶Ø¹ÛŒØª Ù…ÙˆØ§ÙÙ‚Øª Ù‚Ø§Ø¨Ù„ Ù†Ù…Ø§ÛŒØ´ Ù†ÛŒØ³Øª.</p>',
-                        logged_in=True, code=503,
-                    )
-                next_approval = consent_state != "APPROVED"
-                button = (
-                    "Ù…ÙˆØ§ÙÙ‚Øª Ø¨Ø§ Ø§Ù†ØªØ´Ø§Ø± Ù‡Ù…ÛŒÙ† Ù†Ø³Ø®Ù‡" if next_approval
-                    else "Ù¾Ø³â€ŒÚ¯Ø±ÙØªÙ† Ù…ÙˆØ§ÙÙ‚Øª Ø§Ù†ØªØ´Ø§Ø± Ù‡Ù…ÛŒÙ† Ù†Ø³Ø®Ù‡"
-                )
-                consent_form = (
-                    '<h3>Ù…ÙˆØ§ÙÙ‚Øª ØªÙˆÙ„ÛŒØ¯Ú©Ù†Ù†Ø¯Ù‡</h3><p>ÙˆØ¶Ø¹ÛŒØª Ù†Ø³Ø®Ù‡ Ø¬Ø§Ø±ÛŒ: '
-                    + escape(consent_state) + '</p>'
-                    '<p>Ø§ÛŒÙ† Ø§Ù‚Ø¯Ø§Ù… ÙÙ‚Ø· Ù…ÙˆØ§ÙÙ‚Øª ÛŒØ§ Ù¾Ø³â€ŒÚ¯Ø±ÙØªÙ† Ù…ÙˆØ§ÙÙ‚Øª Ø¨Ø±Ø§ÛŒ Ù‡Ù…ÛŒÙ† Ù†Ø³Ø®Ù‡ Ø§Ø³ØªØ› '
-                    'Ø¨Ù‡â€ŒØªÙ†Ù‡Ø§ÛŒÛŒ Ø¨Ø§Ø¹Ø« Ø§Ù†ØªØ´Ø§Ø± Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>'
-                    '<form method="post" action="/my-drafts/'
-                    + quote(ref) + '/surplus-offers/' + quote(offer_ref)
-                    + '/publication-consent">'
-                    '<input type="hidden" name="csrf" value="'
-                    + escape(session.csrf, quote=True) + '">'
-                    '<input type="hidden" name="action_id" value="DEMO-CONSENT-'
-                    + secrets.token_hex(10).upper() + '">'
-                    '<input type="hidden" name="offer_revision" value="'
-                    + str(result["revision"]) + '">'
-                    '<input type="hidden" name="payload_digest" value="'
-                    + escape(result["payload_digest"], quote=True) + '">'
-                    '<input type="hidden" name="approved" value="'
-                    + ("true" if next_approval else "false") + '">'
-                    '<button type="submit">' + button + '</button></form>'
-                )
-            body = (
-                '<article class="panel"><h2>Ø¢Ù…Ø§Ø¯Ú¯ÛŒ ÙÙ†ÛŒ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ù…Ø§Ø²Ø§Ø¯</h2>'
-                '<p>' + state + '</p>'
-                '<p>Ø§ÛŒÙ† Ù†ØªÛŒØ¬Ù‡ ÙÙ‚Ø· Ø¨Ø±Ø±Ø³ÛŒ ÙÙ†ÛŒÙ Ù†Ø³Ø®Ù‡ Ø¬Ø§Ø±ÛŒ Ø§Ø³ØªØ› Ø¨Ù‡â€ŒÙ…Ø¹Ù†Ø§ÛŒ Ø§Ù†ØªØ´Ø§Ø±ØŒ '
-                'Ù†Ù…Ø§ÛŒØ´ Ø¨Ù‡ Ø®Ø±ÛŒØ¯Ø§Ø±ØŒ Ù…Ø¬ÙˆØ² ÙØ±ÙˆØ´ØŒ ØªØ£ÛŒÛŒØ¯ Ø¹Ù„Ù…ÛŒ Ú©ÛŒÙÛŒØª ÛŒØ§ Ø§Ù‚Ø¯Ø§Ù… Ù…Ø§Ù„ÛŒ Ù†ÛŒØ³Øª.</p>'
-                '<p>ÙˆØ¶Ø¹ÛŒØª Ø§Ù†ØªØ´Ø§Ø±: Ù…Ù†ØªØ´Ø± Ù†Ø´Ø¯Ù‡</p>'
-                '<h3>Ù…ÙˆØ§Ø±Ø¯ Ù†ÛŒØ§Ø²Ù…Ù†Ø¯ ØªÙˆØ¬Ù‡</h3><ul>' + items + '</ul>'
-                + consent_form
-                + '<p><a href="/my-drafts/' + quote(ref)
-                + '/surplus-offers">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ ÙÙ‡Ø±Ø³Øª Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯Ù‡Ø§</a></p></article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ø¢Ù…Ø§Ø¯Ú¯ÛŒ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ù…Ø§Ø²Ø§Ø¯", body, logged_in=True)
-
-        if household_surplus_producer_consent_ledger is not None:
-            @router.post(
-                "/my-drafts/{ref}/surplus-offers/{offer_ref}/publication-consent",
-            )
-            async def household_surplus_publication_consent_submit(
-                ref: str, offer_ref: str, request: Request,
-                sid: str | None = Cookie(default=None, alias=cookie_name),
-            ) -> RedirectResponse:
-                principal, form = await checked_browser_form(
-                    request, sid,
-                    fields=frozenset({"csrf", "action_id", "offer_revision",
-                                      "payload_digest", "approved"}),
-                    max_bytes=4096, max_fields=5, max_value_length=128,
-                )
-                if form["approved"] not in ("true", "false"):
-                    raise HTTPException(422, detail="INVALID_PRODUCER_CONSENT")
-                try:
-                    household_surplus_producer_consent_ledger.record(
-                        principal, ref, offer_ref,
-                        expected_offer_revision=form_version(
-                            form["offer_revision"], zero_allowed=False,
-                        ),
-                        expected_payload_digest=form["payload_digest"],
-                        action_id=form["action_id"],
-                        approved=form["approved"] == "true",
-                    )
-                except ProducerConsentConflict as exc:
-                    raise HTTPException(409, detail="PRODUCER_CONSENT_STALE") from exc
-                except LookupError as exc:
-                    raise HTTPException(404, detail="OFFER_NOT_FOUND") from exc
-                except ProducerConsentIntegrityError as exc:
-                    raise HTTPException(503, detail="PRODUCER_CONSENT_INTEGRITY_FAILURE") from exc
-                except (sqlite3.Error, RuntimeError) as exc:
-                    raise HTTPException(503, detail="PRODUCER_CONSENT_UNAVAILABLE") from exc
-                except ValueError as exc:
-                    raise HTTPException(422, detail="INVALID_PRODUCER_CONSENT") from exc
-                return RedirectResponse(
-                    "/my-drafts/" + quote(ref)
-                    + "/surplus-publication-readiness?offer_ref=" + quote(offer_ref),
-                    status_code=303,
-                )
-
-    if isinstance(household_input_ledger, SqliteSyntheticExpertQuestionLedger):
-        @router.get("/my-drafts/{ref}/question-responses")
-        def household_question_response_history(
-            ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            try:
-                notes = household_input_ledger.read_owned_question_responses(
-                    ref, Principal(session.subject, session.roles),
-                )
-            except LedgerIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="SYNTHETIC_QUESTION_RESPONSE_UNAVAILABLE",
-                ) from exc
-            if notes is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            if (notes["engine"] != "DOMESTIC"
-                    or notes["purpose_consent_verified"] is not False
-                    or notes["expert_review_recorded"] is not False
-                    or notes["plan_accepted"] is not False
-                    or notes["real_data"] is not False):
-                raise HTTPException(
-                    503, detail="SYNTHETIC_QUESTION_RESPONSE_UNAVAILABLE",
-                )
-            # Only the latest question on the CURRENT owner's input
-            # revision may be answered. Historical lines remain visible.
-            current_items = [
-                q for q in notes["questions"]
-                if q["is_current_input_version"]
-            ]
-            active_question = (
-                max(current_items, key=lambda item: item["question_revision"])
-                if current_items else None
-            )
-            reply_form = ""
-            if (active_question is not None
-                    and active_question["response_state"] == "MISSING_RESPONSE"
-                    and active_question["bound_input_revision"] > 0):
-                reply_form = (
-                    '<section id="owner-demo-reply" aria-label="Ù¾Ø§Ø³Ø® Ø³Ø§Ø®ØªØ§Ø±ÛŒ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ø®Ø§Ù†ÙˆØ§Ø±">'
-                    '<h3>Ø«Ø¨Øª Ù…Ø±Ø¬Ø¹ Ù¾Ø§Ø³Ø® DEMO</h3>'
-                    '<p>Ù¾Ø§Ø³Ø® ÙˆØ§Ù‚Ø¹ÛŒ ÛŒØ§ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø´Ø®ØµÛŒ Ø¯Ø±ÛŒØ§ÙØª Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯. '
-                    'Ø§ÛŒÙ† Ø¹Ù…Ù„ ØªØ£ÛŒÛŒØ¯ Ù…ØªØ®ØµØµ Ù†ÛŒØ³Øª.</p>'
-                    '<form method="post" action="/my-drafts/'
-                    + quote(ref) + '/question-responses/demo-reply">'
-                    '<input type="hidden" name="csrf" value="'
-                    + escape(session.csrf, quote=True) + '">'
-                    '<input type="hidden" name="action_id" value="DEMO-UI-R-'
-                    + secrets.token_hex(10).upper() + '">'
-                    '<input type="hidden" name="case_version" value="'
-                    + str(notes["case_version"]) + '">'
-                    '<input type="hidden" name="input_revision" value="'
-                    + str(active_question["bound_input_revision"]) + '">'
-                    '<input type="hidden" name="question_revision" value="'
-                    + str(active_question["question_revision"]) + '">'
-                    '<label for="owner-demo-answer">Ù¾Ø§Ø³Ø® Ù…Ø±Ø¬Ø¹ÛŒ Ù†Ù…ÙˆÙ†Ù‡</label>'
-                    '<select id="owner-demo-answer" name="scenario">'
-                    + sample_choice_options(prefix="DEMO-REPLY-")
-                    + '</select><button type="submit">Ø«Ø¨Øª Ù¾Ø§Ø³Ø® DEMO</button>'
-                    '</form></section>'
-                )
-            rows = ''.join(
-                '<li>Ù¾Ø±Ø³Ø´ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ ' + str(q["question_revision"])
-                + ' Â· Ù†Ø³Ø®Ù‡ ÙˆØ±ÙˆØ¯ÛŒ ' + str(q["bound_input_revision"])
-                + ' Â· ÙˆØ¶Ø¹ÛŒØª ' + escape(q["response_state"])
-                + (' Â· Ø§Ø±Ø¬Ø§Ø¹ Ù¾Ø§Ø³Ø® ' + escape(q["response_ref"])
-                   if q["response_ref"] else '')
-                + (' Â· Ø§Ø±Ø¬Ø§Ø¹ Ø´Ø§Ù‡Ø¯ ' + escape(q["evidence_ref"])
-                   if q["evidence_ref"] else '')
-                + (' Â· Ù…ØªØµÙ„ Ø¨Ù‡ Ø±Ø³ÛŒØ¯ Ù…Ø±Ø­Ù„Ù‡ ' + escape(q["stage_ref"])
-                   + ' Â· Ù†Ø³Ø®Ù‡ Ø±Ø³ÛŒØ¯ ' + str(q["stage_observation_revision"])
-                   if q.get("stage_ref") else '')
-                + (' Â· Ù†Ø³Ø®Ù‡ ÙØ¹Ù„ÛŒ' if q["is_current_input_version"]
-                   else ' Â· Ù†Ø³Ø®Ù‡ ØªØ§Ø±ÛŒØ®ÛŒ')
-                + '</li>'
-                for q in notes["questions"]
-            )
-            body = (
-                '<article class="panel"><h2>ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù¾Ø§Ø³Ø®â€ŒÙ‡Ø§ÛŒ Ø³Ø§Ø®ØªØ§Ø±ÛŒ Ø®Ø§Ù†ÙˆØ§Ø± '
-                '(ÙÙ‚Ø· DEMO)</h2>'
-                '<p>Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ' + escape(notes["case_ref"])
-                + ' Â· Ù†Ø³Ø®Ù‡ ' + str(notes["case_version"]) + '</p>'
-                + ('<ul>' + rows + '</ul>' if rows else
-                   '<p>Ù‡Ù†ÙˆØ² Ù¾Ø±Ø³Ø´ÛŒ Ø¯Ø±Ø¨Ø§Ø±Ù‡ ÙˆØ±ÙˆØ¯ÛŒ Ø®Ø§Ù†ÙˆØ§Ø± Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>')
-                + '<p>Ø§ÛŒÙ† Ù¾Ø§Ø³Ø®â€ŒÙ‡Ø§ ØµØ±ÙØ§Ù‹ Ø§Ø±Ø¬Ø§Ø¹ Ù…ØµÙ†ÙˆØ¹ÛŒ Ù‡Ø³ØªÙ†Ø¯Ø› '
-                'Ø±Ø¶Ø§ÛŒØª Ø®Ø§Ù†ÙˆØ§Ø±ØŒ Ø¨Ø±Ø±Ø³ÛŒ Ú©ÙØ§ÛŒØª Ø¯Ø§Ø¯Ù‡ØŒ ØªØµÙ…ÛŒÙ… Ù…ØªØ®ØµØµ ÛŒØ§ '
-                'Ø¨Ø±Ù†Ø§Ù…Ù‡ Ù¾Ø°ÛŒØ±ÙØªÙ‡â€ŒØ´Ø¯Ù‡ Ù…Ø­Ø³ÙˆØ¨ Ù†Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯.</p>'
-                '<p>Ø¯Ø± Ø§ÛŒÙ† ØµÙØ­Ù‡ ÙØ±Ù… Ø¯Ø±ÛŒØ§ÙØª Ø§Ø·Ù„Ø§Ø¹Ø§Øª ÙˆØ§Ù‚Ø¹ÛŒ ÛŒØ§ '
-                'ÙØ±Ù…Ø§Ù† ØªØ£ÛŒÛŒØ¯/Ø±Ø¯ ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.</p>'
-                + reply_form
-                + '<p><a href="/my-drafts/' + quote(ref)
-                + '/input-revisions">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§</a></p>'
-                '</article>'
-            )
-            return page(
-                "Ø±ÙˆÙ†Ø§Ø³ â€” Ù¾Ø§Ø³Ø®â€ŒÙ‡Ø§ÛŒ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ø®Ø§Ù†ÙˆØ§Ø±",
-                body, logged_in=True, local_test_form=True,
-            )
-
-        @router.post("/my-drafts/{ref}/question-responses/demo-reply")
-        async def household_demo_reply(
-            ref: str, request: Request,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> RedirectResponse:
-            principal, form = await checked_browser_form(
-                request, sid, fields=frozenset({
-                    "csrf", "action_id", "case_version", "input_revision",
-                    "question_revision", "scenario",
-                }),
-            )
-            if form["scenario"] not in ("DEMO-REPLY-ALPHA", "DEMO-REPLY-BETA"):
-                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
-            try:
-                saved = household_input_ledger.append_owned_question_response(
-                    ref, principal,
-                    action_id=form["action_id"],
-                    track="HOUSEHOLD_INPUT_ADEQUACY",
-                    expected_case_version=form_version(
-                        form["case_version"], zero_allowed=False,
-                    ),
-                    expected_input_revision=form_version(
-                        form["input_revision"], zero_allowed=False,
-                    ),
-                    expected_question_revision=form_version(
-                        form["question_revision"], zero_allowed=False,
-                    ),
-                    answer_ref=form["scenario"],
-                    evidence_ref="DEMO-OWNER-PENDING-REF",
-                )
-            except ReviewQuestionConflict as exc:
-                raise HTTPException(
-                    409, detail="SYNTHETIC_RESPONSE_VERSION_CONFLICT",
-                ) from exc
-            except LedgerIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="SYNTHETIC_QUESTION_RESPONSE_UNAVAILABLE",
-                ) from exc
-            except ValueError as exc:
-                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
-            if saved is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            return RedirectResponse(
-                "/my-drafts/" + quote(ref) + "/question-responses",
-                status_code=303,
-            )
-
-    if (technical_review_ledger is not None
-            and owned_case_ledger is technical_review_ledger):
-        @router.get("/my-drafts/{ref}")
-        def household_detail(
-            ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            principal = Principal(session.subject, session.roles)
-            # The owner-specific facade checks exact immutable ownership,
-            # review integrity and records the read atomically.
-            result = technical_review_ledger.read_owned_domestic_status(
-                ref, principal,
-            )
-            if result is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            states = {
-                "UNREQUESTED": "Ø¯Ø±Ø®ÙˆØ§Ø³ØªÛŒ Ø¨Ø±Ø§ÛŒ Ø¨Ø±Ø±Ø³ÛŒ ÙÙ†ÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.",
-                "EVIDENCE_REVIEW_REQUESTED": "Ø¯Ø±Ø®ÙˆØ§Ø³Øª Ø¨Ø±Ø±Ø³ÛŒ Ø´ÙˆØ§Ù‡Ø¯ Ø«Ø¨Øª Ø´Ø¯Ù‡ Ø§Ø³Øª.",
-                "HUMAN_RESPONSE_RECORDED":
-                    "Ù…Ø±Ø¬Ø¹ Ù¾Ø§Ø³Ø® Ø§Ù†Ø³Ø§Ù†ÛŒ Ø«Ø¨Øª Ø´Ø¯Ù‡Ø› Ø§ÛŒÙ† ÙˆØ¶Ø¹ÛŒØª ØªØ£ÛŒÛŒØ¯ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ù†ÛŒØ³Øª.",
-            }
-            state = states[result["technical_review_state"]]
-            journey_html = ""
-            if isinstance(household_input_ledger,
-                          SqliteSyntheticHouseholdInputLedger):
-                input_info = household_input_ledger.read_owned_input_revisions(
-                    ref, principal,
-                )
-                question_info = (
-                    household_input_ledger.read_owned_question_responses(
-                        ref, principal,
-                    )
-                    if isinstance(household_input_ledger,
-                                  SqliteSyntheticExpertQuestionLedger)
-                    else None
-                )
-                if (input_info is None or
-                        (isinstance(household_input_ledger,
-                                    SqliteSyntheticExpertQuestionLedger)
-                         and question_info is None)):
-                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-                try:
-                    next_step = owner_next_action(input_info, question_info)
-                except JourneyEvidenceMismatch as exc:
-                    raise HTTPException(
-                        503, detail="SYNTHETIC_JOURNEY_UNAVAILABLE",
-                    ) from exc
-                next_page = (
-                    "/my-drafts/" + quote(ref) +
-                    ("/question-responses#owner-demo-reply"
-                     if next_step == "RESPOND_TO_EXPERT_QUESTION_DEMO" else
-                     "/question-responses"
-                     if next_step == "RESPONSE_RECORDED_WAIT_FOR_EXPERT_DEMO" else
-                     "/input-revisions#domestic-demo-correction")
-                )
-                guidance = {
-                    "RESPOND_TO_EXPERT_QUESTION_DEMO":
-                        "Ù¾Ø±Ø³Ø´ Ø³Ø§Ø®ØªØ§Ø±ÛŒ Ø¬Ø§Ø±ÛŒ Ù…Ù†ØªØ¸Ø± Ù¾Ø§Ø³Ø® Ù…Ø±Ø¬Ø¹ÛŒ Ù†Ù…ÙˆÙ†Ù‡ Ø§Ø³Øª",
-                    "RESPONSE_RECORDED_WAIT_FOR_EXPERT_DEMO":
-                        "Ù¾Ø§Ø³Ø® Ø«Ø¨Øª Ø´Ø¯Ù‡Ø› Ø¨Ø±Ø±Ø³ÛŒ Ùˆ ØªØ£ÛŒÛŒØ¯ ØªØ®ØµØµÛŒ Ù‡Ù†ÙˆØ² Ø§Ù†Ø¬Ø§Ù… Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª",
-                    "PREPARE_OR_REVISE_INPUT_DEMO":
-                        "Ù†Ø³Ø®Ù‡ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ø±Ø§ Ø¨Ø±Ø±Ø³ÛŒ ÛŒØ§ Ø§ØµÙ„Ø§Ø­ Ú©Ù†ÛŒØ¯",
-                }[next_step]
-                journey_html = (
-                    '<nav class="journey" aria-label="Ø§Ù‚Ø¯Ø§Ù… Ø¨Ø¹Ø¯ÛŒ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø®Ø§Ù†ÙˆØ§Ø±">'
-                    '<h3>Ø§Ù‚Ø¯Ø§Ù… Ø¨Ø¹Ø¯ÛŒ Ø¯Ø± Ù¾Ø±ÙˆÙ†Ø¯Ù‡</h3><p>'
-                    + escape(guidance) + '</p><p><a href="'
-                    + escape(next_page, quote=True) +
-                    '">Ø±ÙØªÙ† Ø¨Ù‡ Ù…Ø±Ø­Ù„Ù‡ Ù…Ø±ØªØ¨Ø·</a></p>'
-                    '<p>Ø§ÛŒÙ† Ø±Ø§Ù‡Ù†Ù…Ø§ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ù†Ø§ÙˆØ¨Ø±ÛŒ Ø§Ø³ØªØ› '
-                    'Ø±Ø¶Ø§ÛŒØªØŒ Ø·Ø±Ø­ Ú©Ø´Øª ÛŒØ§ ØªØ£ÛŒÛŒØ¯ Ø¹Ù„Ù…ÛŒ Ù†ÛŒØ³Øª.</p></nav>'
-                )
-            body = (
-                '<article class="panel"><h2>Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø³Ø§Ø®ØªÚ¯ÛŒ '
-                + escape(result["ref"]) + '</h2>'
-                '<p>Ù†Ø³Ø®Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡: ' + str(result["version"]) + '</p>'
-                '<p>ÙˆØ¶Ø¹ÛŒØª Ù¾Ø±ÙˆÙ†Ø¯Ù‡: DRAFT_ONLY</p>'
-                '<p>Ù¾ÛŒÚ¯ÛŒØ±ÛŒ ÙÙ†ÛŒ: ' + escape(state) + '</p>'
-                + journey_html
-                + readonly_domestic_preparation_html(
-                    result["cultivation_preparation"]
-                )
-                + '<p>Ù‡ÛŒÚ† ØªØµÙ…ÛŒÙ… ØªØ¬Ø§Ø±ÛŒ ÛŒØ§ Ø¹Ù…Ù„ÛŒØ§ØªÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>'
-                '<p><a href="/my-drafts/' +
-                escape(result["ref"], quote=True) +
-                '/versions">Ù…Ø´Ø§Ù‡Ø¯Ù‡ ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§</a></p>'
-                + ('<p><a href="/my-drafts/'
-                   + quote(ref) + '/input-revisions">'
-                   'ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ø§ØµÙ„Ø§Ø­ Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø®Ø§Ù†ÙˆØ§Ø±</a></p>'
-                   if household_input_ledger is not None else '')
-                + ('<p><a href="/my-drafts/' + quote(ref)
-                   + '/cultivation-inputs">Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ø³Ø§Ø®ØªØ§Ø±ÛŒØ§ÙØªÙ‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ú©Ø´Øª</a></p>'
-                   if (household_profile_schema is not None
-                       and household_profile_access_authority is not None) else '')
-                + ('<p><a href="/my-drafts/' + quote(ref)
-                   + '/progress-notes">ÛŒØ§Ø¯Ø¯Ø§Ø´Øª Ù¾ÛŒØ´Ø±ÙØª Ø³Ø§Ø®ØªÚ¯ÛŒ (DEMO)</a></p>'
-                   if household_input_ledger is not None else '')
-                + ('<form method="get" action="/my-drafts/' + quote(ref)
-                   + '/surplus-publication-readiness">'
-                   '<label for="surplus-offer-ref">Ø´Ù†Ø§Ø³Ù‡ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ Ù…Ø§Ø²Ø§Ø¯ (DEMO)</label>'
-                   '<input id="surplus-offer-ref" name="offer_ref" required '
-                   'pattern="DEMO-[A-Za-z0-9._:-]{1,96}" maxlength="101">'
-                   '<button type="submit">Ø¨Ø±Ø±Ø³ÛŒ Ø¢Ù…Ø§Ø¯Ú¯ÛŒ ÙÙ†ÛŒ</button></form>'
-                   if household_surplus_publication_authority is not None else '')
-                + ('<p><a href="/my-drafts/' + quote(ref)
-                   + '/question-responses">'
-                   'Ù¾Ø±Ø³Ø´ Ùˆ Ù¾Ø§Ø³Ø® Ù…Ø±Ø¬Ø¹ÛŒ Ø®Ø§Ù†ÙˆØ§Ø± (ÙÙ‚Ø· DEMO)</a></p>'
-                   if isinstance(household_input_ledger,
-                                 SqliteSyntheticExpertQuestionLedger) else '')
-                + '<p><a href="/">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ù…Ù†</a></p>'
-                '</article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” ÙˆØ¶Ø¹ÛŒØª Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ù…Ù† (Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ)",
-                        body, logged_in=True)
-
-
-    def technical_worklist(engine: str, principal: Principal,
-                           after_ref: str | None) -> str:
-        if technical_review_ledger is None:
-            return ""
-        try:
-            result = technical_review_ledger.list_technical_review_worklist(
-                engine, principal, after_ref=after_ref, limit=20
-            )
-        except LedgerIntegrityError:
-            # The application owns the fail-closed 503 for corrupted audit.
-            raise
-        except ValueError as exc:
-            raise HTTPException(422, detail="INVALID_WORKLIST_QUERY") from exc
-        links = []
-        for item in result["items"]:
-            ref = escape(item["ref"])
-            url = "/admin/technical-review/" + engine.lower() + "/"
-            links.append(
-                '<li><a href="' + url + ref + '">'
-                + ref + '</a> â€” ' + escape(item["technical_review_state"])
-                + ' Â· DRAFT_ONLY'
-                + (' Â· <a href="/admin/export/research/drafts/'
-                   + quote(item["ref"]) + '">ÙØ¶Ø§ÛŒ Ù¾Ú˜ÙˆÙ‡Ø´ ØµØ§Ø¯Ø±Ø§Øª</a>'
-                   if engine == "EXPORT" else '')
-                + '</li>'
-            )
-        body = ('<ul>' + ''.join(links) + '</ul>' if links
-                else '<p>Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø³Ø§Ø®ØªÚ¯ÛŒ ØªØ®ØµÛŒØµâ€ŒÛŒØ§ÙØªÙ‡â€ŒØ§ÛŒ Ø¨Ø±Ø§ÛŒ Ø§ÛŒÙ† Ø¨Ø®Ø´ ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.</p>')
-        if result["next_cursor"]:
-            parameter = ("domestic_after_ref" if engine == "DOMESTIC"
-                         else "export_after_ref")
-            body += ('<a href="/admin?' + parameter + '='
-                     + quote(result["next_cursor"]) + '">Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ø¨Ø¹Ø¯ÛŒ</a>')
-        return ('<section class="section"><h3>ÙÙ‡Ø±Ø³Øª ÙÙ†ÛŒ Ø¨Ø±Ø±Ø³ÛŒ Ø´ÙˆØ§Ù‡Ø¯'
-                ' (ÙÙ‚Ø· Ù†Ù…ÙˆÙ†Ù‡ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ)</h3>' + body + '</section>')
-
-    if technical_review_ledger is not None:
-        @router.get("/admin/technical-review/{engine}/{ref}")
-        def technical_review_detail(
-            engine: str, ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            engine_key = engine.upper()
-            if engine_key not in ("DOMESTIC", "EXPORT"):
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            principal = Principal(session.subject, session.roles)
-            try:
-                review = technical_review_ledger.read_review_for_operator(
-                    engine_key, ref, principal,
-                )
-            except (LedgerIntegrityError, sqlite3.Error) as exc:
-                raise HTTPException(
-                    503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
-                ) from exc
-            if review is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            history = ''.join(
-                '<li>Ú¯Ø§Ù… ' + str(item["revision"]) + ': '
-                + escape(item["stage"]) + ' Â· Ù…Ø±Ø¬Ø¹ Ø¯Ø±Ø®ÙˆØ§Ø³Øª '
-                + escape(item["request_ref"]) + ' Â· Ù…Ø±Ø¬Ø¹ Ø´Ø§Ù‡Ø¯ '
-                + escape(item["evidence_ref"])
-                + (' Â· Ù…Ø±Ø¬Ø¹ Ù¾Ø§Ø³Ø® ' + escape(item["decision_ref"])
-                   if item["decision_ref"] else '') + '</li>'
-                for item in review["history"]
-            ) or '<li>Ù‡Ù†ÙˆØ² Ú¯Ø§Ù… ÙÙ†ÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</li>'
-            action_id = 'DEMO-UI-REVIEW-' + secrets.token_hex(10).upper()
-            form = ''
-            if (review["technical_review_state"]
-                    in ("UNREQUESTED", "HUMAN_RESPONSE_RECORDED")):
-                review_revision = review["review_revision"]
-                form = (
-                    '<form method="post" action="/admin/technical-review/'
-                    + engine.lower() + '/' + quote(ref) + '/request">'
-                    '<input type="hidden" name="csrf" value="'
-                    + escape(session.csrf, quote=True) + '">'
-                    '<input type="hidden" name="action_id" value="'
-                    + action_id + '">'
-                    '<input type="hidden" name="case_version" value="'
-                    + str(review["case_version"]) + '">'
-                    '<input type="hidden" name="review_revision" value="'
-                    + str(review_revision) + '">'
-                    '<label>Ù…Ø±Ø¬Ø¹ Ø¯Ø±Ø®ÙˆØ§Ø³Øª DEMO <input name="request_ref" '
-                    'required pattern="DEMO-[A-Za-z0-9._:-]{1,96}" '
-                    'maxlength="101"></label>'
-                    '<label>Ù…Ø±Ø¬Ø¹ Ø´Ø§Ù‡Ø¯ DEMO <input name="evidence_ref" '
-                    'required pattern="DEMO-[A-Za-z0-9._:-]{1,96}" '
-                    'maxlength="101"></label>'
-                    '<button type="submit">Ø«Ø¨Øª Ø¯Ø±Ø®ÙˆØ§Ø³Øª Ø¨Ø±Ø±Ø³ÛŒ Ø´ÙˆØ§Ù‡Ø¯</button></form>'
-                )
-            elif review["technical_review_state"] == "EVIDENCE_REVIEW_REQUESTED":
-                review_revision = review["review_revision"]
-                request_ref = review["history"][-1]["request_ref"]
-                form = (
-                    '<form method="post" action="/admin/technical-review/'
-                    + engine.lower() + '/' + quote(ref) + '/human-response">'
-                    '<input type="hidden" name="csrf" value="'
-                    + escape(session.csrf, quote=True) + '">'
-                    '<input type="hidden" name="action_id" value="'
-                    + action_id + '">'
-                    '<input type="hidden" name="case_version" value="'
-                    + str(review["case_version"]) + '">'
-                    '<input type="hidden" name="review_revision" value="'
-                    + str(review_revision) + '">'
-                    '<input type="hidden" name="request_ref" value="'
-                    + escape(request_ref, quote=True) + '">'
-                    '<label>Ù…Ø±Ø¬Ø¹ Ø´Ø§Ù‡Ø¯ Ù¾Ø§Ø³Ø® DEMO <input name="evidence_ref" '
-                    'required pattern="DEMO-[A-Za-z0-9._:-]{1,96}" '
-                    'maxlength="101"></label>'
-                    '<label>Ù…Ø±Ø¬Ø¹ ÛŒØ§Ø¯Ø¯Ø§Ø´Øª Ø§Ù†Ø³Ø§Ù†ÛŒ DEMO <input name="decision_ref" '
-                    'required pattern="DEMO-[A-Za-z0-9._:-]{1,96}" '
-                    'maxlength="101"></label>'
-                    '<button type="submit">Ø«Ø¨Øª Ù…Ø±Ø¬Ø¹ Ù¾Ø§Ø³Ø® Ø§Ù†Ø³Ø§Ù†ÛŒ</button></form>'
-                )
-            body = (
-                '<section class="section"><h2>' + escape(ref) + '</h2>'
-                '<p>Ù…ÙˆØª×•×¨: ' + escape(engine_key) + ' Â· Ù¾Ø±ÙˆÙ†Ø¯Ù‡ DRAFT_ONLY</p>'
-                '<p>ÙˆØ¶Ø¹ÛŒØª ÙÙ†ÛŒ: ' + escape(review["technical_review_state"])
-                + ' Â· Ù†Ø³Ø®Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ' + str(review["case_version"]) + '</p>'
-                '<ol>' + history + '</ol>' + form
-                + '<p>Ù…Ø±Ø¬Ø¹ Ù¾Ø§Ø³Ø® Ø§Ù†Ø³Ø§Ù†ÛŒ Ù…Ø­ØªÙˆØ§ÛŒ ÛŒØ§Ø¯Ø¯Ø§Ø´Øª ÛŒØ§ ØªØ£ÛŒÛŒØ¯ Ø¹Ù„Ù…ÛŒØŒ Ø·Ø±Ø­ Ú©Ø´ØªØŒ '
-                'Ù…Ø¬ÙˆØ² Ù…Ù†Ø¨Ø¹ ÛŒØ§ ØªØµÙ…ÛŒÙ… ØªØ¬Ø§Ø±ÛŒ Ø±Ø§ Ø§ÛŒØ¬Ø§Ø¯ Ù†Ù…ÛŒâ€ŒÚ©Ù†Ø¯.</p>'
-                '<p><a href="/admin">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù…Ø¯ÛŒØ±ÛŒØª</a></p></section>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ù¾ÛŒÚ¯ÛŒØ±ÛŒ ÙÙ†ÛŒ Ø¨Ø±Ø±Ø³ÛŒ Ø´ÙˆØ§Ù‡Ø¯", body,
-                        logged_in=True, local_test_form=True)
-
-        @router.post("/admin/technical-review/{engine}/{ref}/{operation}")
-        async def technical_review_submit(
-            engine: str, ref: str, operation: str, request: Request,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> RedirectResponse:
-            engine_key = engine.upper()
-            if engine_key not in ("DOMESTIC", "EXPORT") or operation not in (
-                    "request", "human-response"):
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            required = {"csrf", "action_id", "case_version", "review_revision",
-                        "request_ref", "evidence_ref"}
-            if operation == "human-response":
-                required.add("decision_ref")
-            principal, form = await checked_browser_form(
-                request, sid, fields=frozenset(required), max_bytes=1200,
-                max_fields=8, max_value_length=120,
-            )
-            try:
-                if operation == "request":
-                    expected_revision = form_version(form["review_revision"])
-                    if expected_revision % 2:
-                        raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
-                    technical_review_ledger.request_evidence_review(
-                        engine=engine_key, ref=ref, actor=principal,
-                        expected_case_version=form_version(
-                            form["case_version"], zero_allowed=False,
-                        ), expected_review_revision=expected_revision,
-                        action_id=form["action_id"], request_ref=form["request_ref"],
-                        evidence_ref=form["evidence_ref"],
-                    )
-                else:
-                    expected_revision = form_version(form["review_revision"])
-                    if expected_revision % 2 != 1:
-                        raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
-                    technical_review_ledger.record_human_response(
-                        engine=engine_key, ref=ref, actor=principal,
-                        expected_case_version=form_version(
-                            form["case_version"], zero_allowed=False,
-                        ), expected_review_revision=expected_revision,
-                        action_id=form["action_id"], request_ref=form["request_ref"],
-                        evidence_ref=form["evidence_ref"],
-                        decision_ref=form["decision_ref"],
-                    )
-            except GrantNotAuthorized as exc:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND") from exc
-            except GrantConflict as exc:
-                raise HTTPException(409, detail="TECHNICAL_REVIEW_CHANGED") from exc
-            except (LedgerIntegrityError, sqlite3.Error) as exc:
-                raise HTTPException(
-                    503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
-                ) from exc
-            except ValueError as exc:
-                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
-            return RedirectResponse(
-                "/admin/technical-review/" + engine.lower() + "/" + quote(ref),
-                status_code=303,
-            )
-
-    if technical_review_ledger is not None:
-        @router.get("/admin/export/research")
-        def export_research_cases_page(
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-            technical_state: str = "ALL",
-            after_ref: str | None = None,
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            try:
-                research = technical_review_ledger.list_export_research_cases(
-                    Principal(session.subject, session.roles),
-                    technical_state=technical_state, after_ref=after_ref,
-                    limit=20,
-                )
-            except LedgerIntegrityError:
-                raise  # integrity failures must stay 503, never validation 422
-            except ValueError as exc:
-                raise HTTPException(
-                    422, detail="INVALID_EXPORT_RESEARCH_QUEUE",
-                ) from exc
-            # A role alone cannot expose any cases. An unrelated admin
-            # role must not gain a portal into Export by guessing the URL.
-            if "export_ops" not in session.roles:
-                raise HTTPException(404, detail="RESEARCH_QUEUE_NOT_FOUND")
-            labels = {
-                "ALL": "Ù‡Ù…Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ ØªØ®ØµÛŒØµâ€ŒÛŒØ§ÙØªÙ‡",
-                "UNREQUESTED": "Ø¨Ø¯ÙˆÙ† Ø¯Ø±Ø®ÙˆØ§Ø³Øª Ø¨Ø±Ø±Ø³ÛŒ",
-                "EVIDENCE_REVIEW_REQUESTED": "Ø¯Ø±Ø®ÙˆØ§Ø³Øª Ø¨Ø±Ø±Ø³ÛŒ Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡",
-                "HUMAN_RESPONSE_RECORDED": "Ù…Ø±Ø¬Ø¹ Ù¾Ø§Ø³Ø® ÙÙ†ÛŒ Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡",
-            }
-            filters = ' Â· '.join(
-                ('<strong>' + escape(label) + '</strong>'
-                 if state == technical_state else
-                 '<a href="/admin/export/research?technical_state='
-                 + quote(state) + '">' + escape(label) + '</a>')
-                for state, label in labels.items()
-            )
-            rows = ''.join(
-                '<li><a href="/admin/export/research/drafts/'
-                + quote(item["ref"]) + '?'
-                + export_navigation_query(technical_state, after_ref) + '">'
-                + escape(item["ref"]) + '</a>'
-                ' â€” Ù†Ø³Ø®Ù‡ ' + str(item["case_version"])
-                + ' â€” ' + escape(labels[item["technical_review_state"]])
-                + ' â€” Ù¾Ø±Ø³Ø´ Ø¨Ø§Ø²Ø§Ø± Ùˆ Ø­Ù‚ÙˆÙ‚ Ù…Ù†Ø¨Ø¹ Ù‡Ù†ÙˆØ² Ø§Ø­Ø±Ø§Ø² Ù†Ø´Ø¯Ù‡â€ŒØ§Ù†Ø¯.</li>'
-                for item in research["items"]
-            )
-            more = (
-                '<p><a href="/admin/export/research?technical_state='
-                + quote(technical_state) + '&after_ref='
-                + quote(research["next_cursor"])
-                + '">Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ø¨Ø¹Ø¯ÛŒ</a></p>'
-                if research["next_cursor"] is not None else ''
-            )
-            content = (
-                '<article class="panel"><h2>Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ù¾Ú˜ÙˆÙ‡Ø´ ØµØ§Ø¯Ø±Ø§Øª '
-                '(ÙÙ‚Ø· DEMO)</h2>'
-                '<p>ÙÙ‚Ø· Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ø¯Ø§Ø±Ø§ÛŒ ØªØ®ØµÛŒØµ ÙØ¹Ù„ÛŒ Ù†Ù…Ø§ÛŒØ´ Ø¯Ø§Ø¯Ù‡ Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯. '
-                'Ø§ÛŒÙ† ÙÛŒÙ„ØªØ± ÙˆØ¶Ø¹ÛŒØª Ø¨Ø±Ø±Ø³ÛŒ ÙÙ†ÛŒ Ø§Ø³ØªØ› ÙˆØ¶Ø¹ÛŒØª Ú¯Ø²Ø§Ø±Ø´ Ù…Ø¹ØªØ¨Ø± Ø¨Ø§Ø²Ø§Ø± Ù†ÛŒØ³Øª.</p>'
-                '<nav aria-label="ÙÛŒÙ„ØªØ± ÙˆØ¶Ø¹ÛŒØª ÙÙ†ÛŒ Ù¾Ú˜ÙˆÙ‡Ø´">'
-                + filters + '</nav>'
-                + ('<ol>' + rows + '</ol>' if rows else
-                   '<p>Ù¾Ø±ÙˆÙ†Ø¯Ù‡ ØªØ®ØµÛŒØµâ€ŒÛŒØ§ÙØªÙ‡â€ŒØ§ÛŒ Ø¯Ø± Ø§ÛŒÙ† ÙˆØ¶Ø¹ÛŒØª ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.</p>')
-                + more
-                + '<p>Ù…Ø­ØµÙˆÙ„ØŒ Ú©Ø´ÙˆØ± Ù…Ù‚ØµØ¯ØŒ Ù‚ÛŒÙ…ØªØŒ Ø®Ø±ÛŒØ¯Ø§Ø± Ùˆ Ù‚Ø±Ø§Ø±Ø¯Ø§Ø¯ '
-                'Ø§Ø² Ø§ÛŒÙ† ÙÙ‡Ø±Ø³Øª Ø§Ø³ØªÙ†ØªØ§Ø¬ Ù†Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯.</p>'
-                '<p><a href="/admin">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù…Ø¯ÛŒØ±ÛŒØª Ø±ÙˆÙ†Ø§Ø³</a></p>'
-                '</article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” ØµÙ Ù¾Ú˜ÙˆÙ‡Ø´ ØµØ§Ø¯Ø±Ø§Øª Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ",
-                        content, logged_in=True)
-
-    if technical_review_ledger is not None:
-        @router.get("/admin/export/research/drafts/{ref}/versions")
-        def export_research_versions_page(
-            ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-            technical_state: str = "ALL",
-            after_ref: str | None = None,
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            navigation = export_navigation_query(technical_state, after_ref)
-            data = technical_review_ledger.read_export_research_version_history(
-                ref, Principal(session.subject, session.roles),
-            )
-            if data is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            versions = ''.join(
-                '<li>Ù†Ø³Ø®Ù‡ ' + str(item["version"])
-                + (' â€” Ù†Ø³Ø®Ù‡ ÙØ¹Ù„ÛŒ DEMO' if item["is_current"]
-                   else ' â€” Ù†Ø³Ø®Ù‡ Ù¾ÛŒØ´ÛŒÙ† DEMO')
-                + '</li>' for item in data["versions"]
-            )
-            body = (
-                '<article class="panel"><h2>ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§ÛŒ Ù¾Ú˜ÙˆÙ‡Ø´ ØµØ§Ø¯Ø±Ø§Øª: '
-                + escape(data["ref"]) + '</h2>'
-                '<p>ÙÙ‚Ø· Ø´Ù…Ø§Ø±Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§ÛŒ Ø§Ø² Ù¾ÛŒØ´ Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡ Ùˆ ØªØ£ÛŒÛŒØ¯ ÛŒÚ©Ù¾Ø§Ø±Ú†Ú¯ÛŒâ€ŒØ´Ø¯Ù‡ '
-                'Ù†Ù…ÙˆÙ†Ù‡ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ù†Ù…Ø§ÛŒØ´ Ø¯Ø§Ø¯Ù‡ Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯. ØªØ§Ø±ÛŒØ® Ùˆ Ù…Ø­ØªÙˆØ§ÛŒ ØªØºÛŒÛŒØ±Ø§Øª '
-                'Ø§Ø² Ø´Ù…Ø§Ø±Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§ Ø§Ø³ØªÙ†ØªØ§Ø¬ Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>'
-                '<p>Ù‡Ù…Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§ DRAFT_ONLYØ› Ù‡ÛŒÚ† Ù…Ø¬ÙˆØ² Ø§Ø³ØªÙØ§Ø¯Ù‡ Ø§Ø² Ù…Ù†Ø¨Ø¹ØŒ '
-                'Ú¯Ø²Ø§Ø±Ø´ ØªØ£ÛŒÛŒØ¯Ø´Ø¯Ù‡ØŒ Ø®Ø±ÛŒØ¯Ø§Ø± ÛŒØ§ Ù‚Ø±Ø§Ø±Ø¯Ø§Ø¯ ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.</p>'
-                '<ol>' + versions + '</ol>'
-                '<p><a href="/admin/export/research/drafts/'
-                + quote(data["ref"]) + '?' + navigation
-                + '">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ø¬Ø²Ø¦ÛŒØ§Øª Ù¾Ø±ÙˆÙ†Ø¯Ù‡</a></p>'
-                '<p><a href="/admin/export/research?'
-                + navigation + '">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ ÙÙ‡Ø±Ø³Øª ÙÛŒÙ„ØªØ±Ø´Ø¯Ù‡</a></p>'
-                '</article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù¾Ú˜ÙˆÙ‡Ø´ ØµØ§Ø¯Ø±Ø§Øª (DEMO)",
-                        body, logged_in=True)
-
-    if technical_review_ledger is not None:
-        @router.get("/admin/export/research/drafts/{ref}")
-        def export_research_detail(
-            ref: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-            technical_state: str = "ALL",
-            after_ref: str | None = None,
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            navigation = export_navigation_query(technical_state, after_ref)
-            data = technical_review_ledger.read_export_research_workspace(
-                ref, Principal(session.subject, session.roles),
-            )
-            if data is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            question = data["local_test_draft_question"]
-            try:
-                export_step = export_next_action(data)
-            except JourneyEvidenceMismatch as exc:
-                raise HTTPException(
-                    503, detail="SYNTHETIC_JOURNEY_UNAVAILABLE",
-                ) from exc
-            next_action = (
-                "Ù¾Ø±Ø³Ø´ Ù…Ø­ØµÙˆÙ„â€“Ù…Ù‚ØµØ¯ ØµØ±ÙØ§Ù‹ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ù‡Ù†ÙˆØ² ØªØ¹Ø±ÛŒÙ Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª"
-                if export_step == "DEFINE_INITIAL_RESEARCH_QUESTION_DEMO"
-                else "Ù¾Ø±Ø³Ø´ Ù†Ø³Ø®Ù‡â€ŒØ¯Ø§Ø± Ù…ÙˆØ¬ÙˆØ¯ Ø§Ø³ØªØ› Ø­Ù‚ÙˆÙ‚ Ù…Ù†Ø¨Ø¹ Ùˆ Ú¯Ø²Ø§Ø±Ø´ Ù‡Ù†ÙˆØ² Ù…Ø¹ØªØ¨Ø± Ù†ÛŒØ³ØªÙ†Ø¯"
-            )
-            export_journey_html = (
-                '<nav class="journey" aria-label="Ø§Ù‚Ø¯Ø§Ù… Ø¨Ø¹Ø¯ÛŒ Ù¾Ú˜ÙˆÙ‡Ø´ ØµØ§Ø¯Ø±Ø§Øª">'
-                '<h3>Ø§Ù‚Ø¯Ø§Ù… Ø¨Ø¹Ø¯ÛŒ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ù¾Ú˜ÙˆÙ‡Ø´</h3><p>'
-                + escape(next_action) + '</p>'
-                '<p><a href="#export-demo-question-form">'
-                'Ø±ÙØªÙ† Ø¨Ù‡ ØªØ¹Ø±ÛŒÙ ÛŒØ§ Ø§ØµÙ„Ø§Ø­ Ù¾Ø±Ø³Ø´ Ù†Ù…ÙˆÙ†Ù‡</a></p>'
-                '<p>Ø«Ø¨Øª Ù¾Ø±Ø³Ø´ØŒ Ù…Ø¬ÙˆØ² Ù…Ù†Ø¨Ø¹ØŒ Ù‚Ø±Ø§Ø±Ø¯Ø§Ø¯ ÛŒØ§ Ú¯Ø²Ø§Ø±Ø´ ØµØ§Ø¯Ø±Ø§Øª Ù†ÛŒØ³Øª.</p>'
-                '</nav>'
-            )
-            demo_question = (
-                '<h3>Ù¾Ø±Ø³Ø´ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡ Ø¯Ø± Ù‡Ù…ÛŒÙ† Ù¾Ø±ÙˆÙ†Ø¯Ù‡</h3>'
-                '<p>Ù†Ø³Ø®Ù‡ Ù¾Ø±Ø³Ø´ ' + str(question["question_revision"])
-                + ' â€” Ù…Ø±Ø¬Ø¹ Ù…Ø­ØµÙˆÙ„ ' + escape(question["product_ref"])
-                + ' Â· Ù…Ø±Ø¬Ø¹ Ù…Ù‚ØµØ¯ ' + escape(question["destination_ref"])
-                + '</p><p>ØµØ±ÙØ§Ù‹ DEMO Ùˆ ØªØ£ÛŒÛŒØ¯Ù†Ø´Ø¯Ù‡Ø› Ù…Ù†Ø¨Ø¹ØŒ Ù…Ø­ØµÙˆÙ„ØŒ Ù…Ù‚ØµØ¯ØŒ '
-                'Ø­Ù‚ Ø§Ø³ØªÙØ§Ø¯Ù‡ ÛŒØ§ ÛŒØ§ÙØªÙ‡ Ù…Ø¹ØªØ¨Ø± Ø¨Ø§Ø²Ø§Ø± Ø§Ø­Ø±Ø§Ø² Ù†Ø´Ø¯Ù‡â€ŒØ§Ù†Ø¯.</p>'
-                if question is not None else
-                '<p>Ù‡Ù†ÙˆØ² Ù‡ÛŒÚ† Ù¾Ø±Ø³Ø´ DEMO Ù†Ø³Ø®Ù‡â€ŒØ¯Ø§Ø±ÛŒ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>'
-            )
-            previous_demo_questions = data["local_test_question_history"]
-            history_section = (
-                '<section aria-label="ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù¾Ø±Ø³Ø´â€ŒÙ‡Ø§ÛŒ DEMO">'
-                '<h3>ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ø§ØµÙ„Ø§Ø­ Ù¾Ø±Ø³Ø´â€ŒÙ‡Ø§ÛŒ DEMO</h3>'
-                '<ol>' + ''.join(
-                    '<li>Ù†Ø³Ø®Ù‡ Ù¾Ø±Ø³Ø´ ' + str(item["question_revision"])
-                    + (' (Ù†Ø³Ø®Ù‡ Ø¬Ø§Ø±ÛŒ)' if item["is_current"] else ' (ØªØ§Ø±ÛŒØ®ÛŒ)')
-                    + ' Â· Ù…Ø±Ø¬Ø¹ Ù…Ø­ØµÙˆÙ„ ' + escape(item["product_ref"])
-                    + ' Â· Ù…Ø±Ø¬Ø¹ Ù…Ù‚ØµØ¯ ' + escape(item["destination_ref"])
-                    + ' Â· Ø­Ù‚ÙˆÙ‚ Ùˆ ÛŒØ§ÙØªÙ‡â€ŒÙ‡Ø§ ØªØ£ÛŒÛŒØ¯Ù†Ø´Ø¯Ù‡</li>'
-                    for item in previous_demo_questions
-                ) + '</ol></section>'
-                if previous_demo_questions else
-                '<p>Ø³Ø§Ø¨Ù‚Ù‡â€ŒØ§ÛŒ Ø§Ø² Ø§ØµÙ„Ø§Ø­ Ù¾Ø±Ø³Ø´â€ŒÙ‡Ø§ÛŒ DEMO Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>'
-            )
-            version = (
-                question["question_revision"] if question is not None else 0
-            )
-            demo_form = (
-                '<section id="export-demo-question-form" aria-label="ÙˆÛŒØ±Ø§ÛŒØ´ Ù¾Ø±Ø³Ø´ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ ØµØ§Ø¯Ø±Ø§Øª">'
-                '<h3>ØªØ¹Ø±ÛŒÙ ÛŒØ§ Ø§ØµÙ„Ø§Ø­ Ù¾Ø±Ø³Ø´ DEMO</h3>'
-                '<p>ØµØ±ÙØ§Ù‹ Ø´Ù†Ø§Ø³Ù‡â€ŒÙ‡Ø§ÛŒ Ù†Ù…ÙˆÙ†Ù‡Ø› Ù‡ÛŒÚ† Ù…Ø­ØµÙˆÙ„ØŒ Ú©Ø´ÙˆØ± ÛŒØ§ Ù…Ø£Ø®Ø° ÙˆØ§Ù‚Ø¹ÛŒ '
-                'Ø¯Ø± Ø§ÛŒÙ† ØµÙØ­Ù‡ Ø«Ø¨Øª ÛŒØ§ ØªØ£ÛŒÛŒØ¯ Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>'
-                '<form method="post" action="/admin/export/research/drafts/'
-                + quote(ref) + '/local-test-question">'
-                '<input type="hidden" name="csrf" value="'
-                + escape(session.csrf, quote=True) + '">'
-                '<input type="hidden" name="action_id" value="DEMO-UI-E-'
-                + secrets.token_hex(10).upper() + '">'
-                '<input type="hidden" name="case_version" value="'
-                + str(data["case_version"]) + '">'
-                '<input type="hidden" name="question_revision" value="'
-                + str(version) + '">'
-                '<label for="export-demo-product">Ù…Ø±Ø¬Ø¹ Ù…Ø­ØµÙˆÙ„ DEMO</label>'
-                '<select id="export-demo-product" name="product_ref">'
-                + sample_choice_options(prefix="DEMO-PRODUCT-")
-                + '</select>'
-                '<label for="export-demo-destination">Ù…Ø±Ø¬Ø¹ Ù…Ù‚ØµØ¯ DEMO</label>'
-                '<select id="export-demo-destination" name="destination_ref">'
-                + sample_choice_options(prefix="DEMO-DEST-")
-                + '</select><button type="submit">Ø«Ø¨Øª Ù¾Ø±Ø³Ø´ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ</button>'
-                '</form></section>'
-            )
-            stage_labels = {
-                "UNREQUESTED": "Ø¯Ø±Ø®ÙˆØ§Ø³Øª Ø¨Ø±Ø±Ø³ÛŒ ÙÙ†ÛŒ Ù‡Ù†ÙˆØ² Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª",
-                "EVIDENCE_REVIEW_REQUESTED": "Ù…Ø±Ø¬Ø¹ Ø¯Ø±Ø®ÙˆØ§Ø³Øª Ø¨Ø±Ø±Ø³ÛŒ ÙÙ†ÛŒ Ø«Ø¨Øª Ø´Ø¯Ù‡ Ø§Ø³Øª",
-                "HUMAN_RESPONSE_RECORDED":
-                    "Ù…Ø±Ø¬Ø¹ Ù¾Ø§Ø³Ø® Ù…Ø³ØªÙ‚Ù„ Ø«Ø¨Øª Ø´Ø¯Ù‡Ø› Ù†ØªÛŒØ¬Ù‡ Ù¾Ú˜ÙˆÙ‡Ø´ ØªØ£ÛŒÛŒØ¯ Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª",
-            }
-            stage_events = {
-                "TECH_REVIEW_REQUESTED": "Ø¯Ø±Ø®ÙˆØ§Ø³Øª Ø¨Ø±Ø±Ø³ÛŒ ÙÙ†ÛŒ Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡",
-                "TECH_HUMAN_RESPONSE_RECORDED":
-                    "Ù…Ø±Ø¬Ø¹ Ù¾Ø§Ø³Ø® Ø§Ù†Ø³Ø§Ù†ÛŒ Ø«Ø¨Øªâ€ŒØ´Ø¯Ù‡ (Ù†Ù‡ ØªØ£ÛŒÛŒØ¯ Ú¯Ø²Ø§Ø±Ø´)",
-            }
-            steps = ''.join(
-                '<li>Ù…Ø±Ø­Ù„Ù‡ ÙÙ†ÛŒ ' + str(item["revision"]) + ': '
-                + escape(stage_events[item["stage"]]) + '</li>'
-                for item in data["technical_review_steps"]
-            )
-            if not steps:
-                steps = '<li>Ù‡ÛŒÚ† Ø¨Ø±Ø±Ø³ÛŒ ÙÙ†ÛŒ Ø¨Ø±Ø§ÛŒ Ø§ÛŒÙ† Ù†Ù…ÙˆÙ†Ù‡ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</li>'
-            versions = 'ØŒ '.join(str(v) for v in data["known_versions"])
-            body = (
-                '<article class="panel"><h2>Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ù¾Ú˜ÙˆÙ‡Ø´ ØµØ§Ø¯Ø±Ø§Øª (Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ): '
-                + escape(data["ref"]) + '</h2>'
-                '<p>ÙˆØ¶Ø¹ÛŒØª Ù¾Ø±ÙˆÙ†Ø¯Ù‡: DRAFT_ONLY Â· Ù†Ø³Ø®Ù‡ ÙØ¹Ù„ÛŒ '
-                + str(data["case_version"]) + '</p>'
-                '<p>Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§ÛŒ Ù…Ø³ØªÙ†Ø¯ Ø¯Ø± Ù†Ù…ÙˆÙ†Ù‡: ' + escape(versions) + '</p>'
-                '<p><a href="/admin/export/research/drafts/'
-                + quote(data["ref"]) + '/versions?' + navigation
-                + '">ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ù†Ø³Ø®Ù‡â€ŒÙ‡Ø§ÛŒ Ø§ÛŒÙ† Ù¾Ø±ÙˆÙ†Ø¯Ù‡</a></p>'
-                '<h3>ØªØ¹Ø±ÛŒÙ Ù…Ø³Ø¦Ù„Ù‡ Ù¾Ú˜ÙˆÙ‡Ø´</h3>'
-                '<p>Ù…Ø­ØµÙˆÙ„: ØªØ¹ÛŒÛŒÙ† Ù†Ø´Ø¯Ù‡ Â· Ù…Ù‚ØµØ¯: ØªØ¹ÛŒÛŒÙ† Ù†Ø´Ø¯Ù‡ '
-                'Â· HS: ØªØ¹ÛŒÛŒÙ† Ù†Ø´Ø¯Ù‡</p>'
-                '<p>Ù…Ø­ØµÙˆÙ„ Ùˆ Ù…Ù‚ØµØ¯ ÙˆØ§Ù‚Ø¹ÛŒ Ù‡Ù…Ú†Ù†Ø§Ù† ØªØ¹ÛŒÛŒÙ† Ùˆ Ø§Ø¹ØªØ¨Ø§Ø±Ø³Ù†Ø¬ÛŒ Ù†Ø´Ø¯Ù‡â€ŒØ§Ù†Ø¯.</p>'
-                + export_journey_html
-                + demo_question
-                + history_section
-                + demo_form
-                + '<section aria-label="Ø§Ø±Ø¬Ø§Ø¹â€ŒÙ‡Ø§ÛŒ Ù…Ù†Ø¨Ø¹ Ù†Ø³Ø®Ù‡â€ŒØ¯Ø§Ø±"><h3>Ø§Ø±Ø¬Ø§Ø¹â€ŒÙ‡Ø§ÛŒ ÙÙ†ÛŒ Ù…Ù†Ø¨Ø¹</h3>'
-                '<p>ÙÙ‚Ø· Ø´Ù†Ø§Ø³Ù‡ Ùˆ fingerprint Ø¯Ø±ÛŒØ§ÙØªÛŒ Ø§Ø² Ø§ØªØµØ§Ù„ Ù†Ù…ÙˆÙ†Ù‡ Ø«Ø¨Øª Ù…ÛŒâ€ŒØ´ÙˆØ¯Ø› '
-                'Ù…Ø­ØªÙˆØ§ÛŒ Ù…Ù†Ø¨Ø¹ Ø°Ø®ÛŒØ±Ù‡ ÛŒØ§ Ù…Ø¬ÙˆØ² Ø¢Ù† ØªØ£ÛŒÛŒØ¯ Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>'
-                '<ol>' + ''.join(
-                    '<li>Ù¾Ø±Ø³Ø´ Ù†Ø³Ø®Ù‡ ' + str(item["question_revision"])
-                    + 'ØŒ Ø§Ø±Ø¬Ø§Ø¹ Ù†Ø³Ø®Ù‡ ' + str(item["evidence_revision"])
-                    + ' (' + ("Ù¾Ø±Ø³Ø´ Ø¬Ø§Ø±ÛŒ" if item["question_binding"] == "CURRENT"
-                              else "ØªØ§Ø±ÛŒØ®ÛŒ") + ') Â· '
-                    + escape(item["connector_ref"]) + ' Â· '
-                    + escape(item["evidence_ref"]) + ' Â· SHA-256 '
-                    + escape(item["source_snapshot_digest"])
-                    + ' Â· Ø­Ù‚ÙˆÙ‚ Ùˆ ÛŒØ§ÙØªÙ‡â€ŒÙ‡Ø§ ØªØ£ÛŒÛŒØ¯Ù†Ø´Ø¯Ù‡</li>'
-                    for item in data["local_test_evidence_references"]
-                ) + '</ol></section>'
-                + (
-                    '<section id="export-evidence-reference-form">'
-                    '<h3>Ø«Ø¨Øª fingerprint Ø§ØªØµØ§Ù„ Ù…Ù†Ø¨Ø¹ (DEMO)</h3>'
-                    '<p>Ø§Ø¨ØªØ¯Ø§ Ù¾Ø±Ø³Ø´ Ù…Ø­ØµÙˆÙ„â€“Ù…Ù‚ØµØ¯ Ù†Ø³Ø®Ù‡â€ŒØ¯Ø§Ø± Ø«Ø¨Øª Ú©Ù†ÛŒØ¯. Ù…Ù‚Ø§Ø¯ÛŒØ± ÙÙ‚Ø· '
-                    'Ø´Ù†Ø§Ø³Ù‡â€ŒÙ‡Ø§ÛŒ Ù†Ù…ÙˆÙ†Ù‡â€ŒØ§Ù†Ø¯ Ùˆ Ø§ÛŒÙ† ÙØ±Ù… Ú¯Ø²Ø§Ø±Ø´ Ù¾Ú˜ÙˆÙ‡Ø´ Ù†Ù…ÛŒâ€ŒØ³Ø§Ø²Ø¯.</p>'
-                    + (
-                        '<form method="post" action="/admin/export/research/drafts/'
-                        + quote(ref) + '/evidence-reference/capture">'
-                        '<input type="hidden" name="csrf" value="'
-                        + escape(session.csrf, quote=True) + '">'
-                        '<input type="hidden" name="action_id" value="DEMO-UI-CAPTURE-'
-                        + secrets.token_hex(10).upper() + '">'
-                        '<input type="hidden" name="case_version" value="'
-                        + str(data["case_version"]) + '">'
-                        '<input type="hidden" name="question_revision" value="'
-                        + str(question["question_revision"]) + '">'
-                        '<input type="hidden" name="evidence_revision" value="'
-                        + str(sum(1 for item in data["local_test_evidence_references"]
-                                  if item["question_revision"] == question["question_revision"])) + '">'
-                        '<label for="export-source-connector">Ø§ØªØµØ§Ù„ Ù…Ù†Ø¨Ø¹ Ù¾ÛŒÚ©Ø±Ø¨Ù†Ø¯ÛŒâ€ŒØ´Ø¯Ù‡</label>'
-                        '<select id="export-source-connector" name="connector_ref">'
-                        + ''.join(
-                            '<option value="' + escape(connector_ref, quote=True) + '">'
-                            + escape(connector_ref) + '</option>'
-                            for connector_ref in export_source_connectors.refs()
-                        )
-                        + '</select><button type="submit">Ú¯Ø±ÙØªÙ† snapshot Ùˆ Ø«Ø¨Øª fingerprint</button>'
-                        '</form><p>Ù…Ø­ØªÙˆØ§ÛŒ snapshot Ø°Ø®ÛŒØ±Ù‡ Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯Ø› Ø§ÛŒÙ† Ø«Ø¨ØªØŒ Ù…Ø¬ÙˆØ² ÛŒØ§ ÛŒØ§ÙØªÙ‡ Ø¨Ø§Ø²Ø§Ø± Ù†ÛŒØ³Øª.</p>'
-                        if export_source_connectors is not None and export_source_connectors.refs()
-                        else ''
-                    )
-                    + '<form method="post" action="/admin/export/research/drafts/'
-                    + quote(ref) + '/evidence-reference">'
-                    '<input type="hidden" name="csrf" value="'
-                    + escape(session.csrf, quote=True) + '">'
-                    '<input type="hidden" name="action_id" value="DEMO-UI-ER-'
-                    + secrets.token_hex(10).upper() + '">'
-                    '<input type="hidden" name="case_version" value="'
-                    + str(data["case_version"]) + '">'
-                    '<input type="hidden" name="question_revision" value="'
-                    + str(question["question_revision"] if question else 0) + '">'
-                    '<input type="hidden" name="evidence_revision" value="'
-                    + str(sum(1 for item in data["local_test_evidence_references"]
-                              if question and item["question_revision"] == question["question_revision"])) + '">'
-                    '<label for="export-evidence-ref">Ø´Ù†Ø§Ø³Ù‡ Ø´ÙˆØ§Ù‡Ø¯ DEMO</label>'
-                    '<select id="export-evidence-ref" name="evidence_ref">'
-                    + sample_choice_options(prefix="DEMO-EVIDENCE-")
-                    + '</select><label for="export-connector-ref">Ø´Ù†Ø§Ø³Ù‡ Ø§ØªØµØ§Ù„ DEMO</label>'
-                    '<select id="export-connector-ref" name="connector_ref">'
-                    + sample_choice_options(prefix="DEMO-CONNECTOR-")
-                    + '</select><label for="export-snapshot-digest">SHA-256 snapshot</label>'
-                    '<input id="export-snapshot-digest" name="source_snapshot_digest" '
-                    'pattern="[0-9a-f]{64}" minlength="64" maxlength="64" required>'
-                    '<button type="submit">Ø«Ø¨Øª Ø§Ø±Ø¬Ø§Ø¹ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ</button></form></section>'
-                    if question is not None else
-                    '<p>Ø«Ø¨Øª Ø§Ø±Ø¬Ø§Ø¹ Ù…Ù†Ø¨Ø¹ Ø¨Ø§Ø² Ø§Ø³Øª ØªØ§ Ù¾Ø±Ø³Ø´ Ù†Ø³Ø®Ù‡â€ŒØ¯Ø§Ø± ØªØ¹Ø±ÛŒÙ Ø´ÙˆØ¯.</p>'
-                )
-                + '<section id="export-research-findings"><h3>ÛŒØ§ÙØªÙ‡â€ŒÙ‡Ø§ÛŒ Ù¾Ú˜ÙˆÙ‡Ø´ÛŒ Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³</h3>'
-                '<p>ÛŒØ§Ø¯Ø¯Ø§Ø´Øªâ€ŒÙ‡Ø§ Ø¨Ø§ÛŒØ¯ Ø¨Ø§ Ù¾ÛŒØ´ÙˆÙ†Ø¯ DEMO Ø¨Ø§Ø´Ù†Ø¯ Ùˆ Ø¨Ù‡ Ø§Ø±Ø¬Ø§Ø¹ Ø´ÙˆØ§Ù‡Ø¯ Ù¾Ø±Ø³Ø´ Ø¬Ø§Ø±ÛŒ Ù…ØªØµÙ„ Ø´ÙˆÙ†Ø¯. '
-                'Ø§ÛŒÙ† ÛŒØ§Ø¯Ø¯Ø§Ø´Øªâ€ŒÙ‡Ø§ ÙˆØ§Ù‚Ø¹ÛŒØª Ø¨Ø§Ø²Ø§Ø± ÛŒØ§ Ú¯Ø²Ø§Ø±Ø´ ØªØ£ÛŒÛŒØ¯Ø´Ø¯Ù‡ Ù†ÛŒØ³ØªÙ†Ø¯.</p>'
-                '<ol>' + ''.join(
-                    '<li>Ù¾Ø±Ø³Ø´ Ù†Ø³Ø®Ù‡ ' + str(item["question_revision"])
-                    + ' Â· ÛŒØ§ÙØªÙ‡ Ù†Ø³Ø®Ù‡ ' + str(item["revision"])
-                    + ' Â· Ø§Ø±Ø¬Ø§Ø¹ ' + escape(item["evidence_ref"])
-                    + ' Â· Ù¾Ø±Ø³Ø´: ' + escape(item["question_binding"])
-                    + ' Â· Ø´ÙˆØ§Ù‡Ø¯: ' + escape(item["evidence_binding"])
-                    + '<p>Ø§ØªØµØ§Ù„ Ù…Ù†Ø¨Ø¹: ' + escape(item["connector_ref"])
-                    + ' Â· fingerprint snapshot: '
-                    + escape(item["source_snapshot_digest"]) + '</p>'
-                    + '<p>' + escape(item["note"]) + '</p></li>'
-                    for item in data.get("local_test_findings", [])
-                ) + '</ol>'
-                + (
-                    '<form method="post" action="/admin/export/research/drafts/'
-                    + quote(ref) + '/findings">'
-                    '<input type="hidden" name="csrf" value="'
-                    + escape(session.csrf, quote=True) + '">'
-                    '<input type="hidden" name="action_id" value="DEMO-UI-FINDING-'
-                    + secrets.token_hex(10).upper() + '">'
-                    '<input type="hidden" name="case_version" value="'
-                    + str(data["case_version"]) + '">'
-                    '<input type="hidden" name="question_revision" value="'
-                    + str(question["question_revision"]) + '">'
-                    '<input type="hidden" name="finding_revision" value="'
-                    + str(sum(1 for item in data.get("local_test_findings", [])
-                              if item["question_revision"] == question["question_revision"])) + '">'
-                    '<label for="export-finding-evidence">Ø§Ø±Ø¬Ø§Ø¹ Ø´ÙˆØ§Ù‡Ø¯ Ù¾Ø±Ø³Ø´ Ø¬Ø§Ø±ÛŒ</label>'
-                    '<select id="export-finding-evidence" name="evidence_binding">'
-                    + ''.join(
-                        '<option value="' + str(item["evidence_revision"]) + ':'
-                        + escape(item["evidence_ref"], quote=True) + '">'
-                        + escape(item["evidence_ref"]) + ' Â· Ù†Ø³Ø®Ù‡ '
-                        + str(item["evidence_revision"]) + '</option>'
-                        for item in data["local_test_evidence_references"]
-                        if item["question_binding"] == "CURRENT"
-                    )
-                    + '</select><label for="export-finding-note">ÛŒØ§Ø¯Ø¯Ø§Ø´Øª DEMO</label>'
-                    '<textarea id="export-finding-note" name="note" minlength="8" '
-                    'maxlength="2000" required></textarea>'
-                    '<button type="submit">Ø«Ø¨Øª Ù†Ø³Ø®Ù‡ Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³</button></form>'
-                    if question is not None and any(
-                        item["question_binding"] == "CURRENT"
-                        for item in data["local_test_evidence_references"]
-                    ) else '<p>Ø¨Ø±Ø§ÛŒ Ø«Ø¨Øª ÛŒØ§Ø¯Ø¯Ø§Ø´ØªØŒ Ù¾Ø±Ø³Ø´ Ø¬Ø§Ø±ÛŒ Ùˆ Ø­Ø¯Ø§Ù‚Ù„ ÛŒÚ© Ø§Ø±Ø¬Ø§Ø¹ Ø´ÙˆØ§Ù‡Ø¯ Ù„Ø§Ø²Ù… Ø§Ø³Øª.</p>'
-                ) + '</section>'
-                + '<p>Ù…Ø±Ø¬Ø¹ Ù…Ù†Ø¨Ø¹ ØµØ±ÙØ§Ù‹ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ: '
-                + escape(data["source_ref"]) + '</p>'
-                '<p>Ø­Ù‚ÙˆÙ‚ Ø§Ø³ØªÙØ§Ø¯Ù‡ Ùˆ Ø¨Ø§Ø²Ù†Ø´Ø± Ø§ÛŒÙ† Ù…Ù†Ø¨Ø¹ Ø§Ø­Ø±Ø§Ø² Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>'
-                '<h3>ÙˆØ¶Ø¹ÛŒØª Ø¨Ø±Ø±Ø³ÛŒ</h3><p>'
-                + escape(stage_labels[data["technical_review_state"]])
-                + '</p><ul>' + steps + '</ul>'
-                '<p>ÛŒØ§ÙØªÙ‡ Ù…Ø¹ØªØ¨Ø± Ø¨Ø§Ø²Ø§Ø±ØŒ Ú¯Ø²Ø§Ø±Ø´ ØªØ£ÛŒÛŒØ¯Ø´Ø¯Ù‡ØŒ Ø®Ø±ÛŒØ¯Ø§Ø± Ø§Ø­Ø±Ø§Ø²Ø´Ø¯Ù‡ØŒ '
-                'Ù‚ÛŒÙ…Øª ÛŒØ§ Ù‚Ø±Ø§Ø±Ø¯Ø§Ø¯ ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯Ø› Ø§ÛŒÙ† ØµÙØ­Ù‡ ØªÙˆØµÛŒÙ‡ ØªØ¬Ø§Ø±ÛŒ Ù†ÛŒØ³Øª.</p>'
-                '<p><a href="/admin/export/research?'
-                + navigation + '">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ ÙÙ‡Ø±Ø³Øª Ù¾Ú˜ÙˆÙ‡Ø´ ØµØ§Ø¯Ø±Ø§Øª</a></p>'
-                '</article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” ÙØ¶Ø§ÛŒ Ù¾Ú˜ÙˆÙ‡Ø´ ØµØ§Ø¯Ø±Ø§Øª Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ",
-                        body, logged_in=True, local_test_form=True)
-
-        @router.post("/admin/export/research/drafts/{ref}/local-test-question")
-        async def export_demo_question_browser(
-            ref: str, request: Request,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> RedirectResponse:
-            principal, form = await checked_browser_form(
-                request, sid,
-                fields=frozenset({
-                    "csrf", "action_id", "case_version", "question_revision",
-                    "product_ref", "destination_ref",
-                }),
-            )
-            if not valid_question_refs(
-                form["product_ref"], form["destination_ref"],
-            ) or form["product_ref"] not in (
-                "DEMO-PRODUCT-ALPHA", "DEMO-PRODUCT-BETA",
-            ) or form["destination_ref"] not in (
-                "DEMO-DEST-ALPHA", "DEMO-DEST-BETA",
-            ):
-                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
-            try:
-                result = technical_review_ledger.record_export_research_question(
-                    ref, principal,
-                    expected_case_version=form_version(
-                        form["case_version"], zero_allowed=False,
-                    ),
-                    expected_question_revision=form_version(
-                        form["question_revision"],
-                    ),
-                    action_id=form["action_id"],
-                    product_ref=form["product_ref"],
-                    destination_ref=form["destination_ref"],
-                )
-            except ExportResearchQuestionConflict as exc:
-                raise HTTPException(
-                    409, detail="EXPORT_LOCAL_QUESTION_CHANGED",
-                ) from exc
-            except LedgerIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
-                ) from exc
-            except ValueError as exc:
-                raise HTTPException(
-                    422, detail="INVALID_LOCAL_TEST_FORM",
-                ) from exc
-            if result is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            return RedirectResponse(
-                "/admin/export/research/drafts/" + quote(ref),
-                status_code=303,
-            )
-
-        @router.post("/admin/export/research/drafts/{ref}/evidence-reference")
-        async def export_demo_evidence_reference_browser(
-            ref: str, request: Request,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> RedirectResponse:
-            principal, form = await checked_browser_form(
-                request, sid,
-                fields=frozenset({
-                    "csrf", "action_id", "case_version", "question_revision",
-                    "evidence_revision", "evidence_ref", "connector_ref",
-                    "source_snapshot_digest",
-                }),
-            )
-            if (not valid_evidence_refs(
-                    form["evidence_ref"], form["connector_ref"],
-                ) or form["evidence_ref"] not in (
-                    "DEMO-EVIDENCE-ALPHA", "DEMO-EVIDENCE-BETA",
-                ) or form["connector_ref"] not in (
-                    "DEMO-CONNECTOR-ALPHA", "DEMO-CONNECTOR-BETA",
-                ) or not valid_snapshot_digest(form["source_snapshot_digest"])):
-                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
-            try:
-                result = technical_review_ledger.record_export_evidence_reference(
-                    ref, principal,
-                    expected_case_version=form_version(
-                        form["case_version"], zero_allowed=False,
-                    ),
-                    expected_question_revision=form_version(
-                        form["question_revision"], zero_allowed=False,
-                    ),
-                    expected_evidence_revision=form_version(
-                        form["evidence_revision"],
-                    ),
-                    action_id=form["action_id"],
-                    evidence_ref=form["evidence_ref"],
-                    connector_ref=form["connector_ref"],
-                    source_snapshot_digest=form["source_snapshot_digest"],
-                )
-            except ExportEvidenceReferenceConflict as exc:
-                raise HTTPException(
-                    409, detail="EXPORT_EVIDENCE_REFERENCE_CHANGED",
-                ) from exc
-            except LedgerIntegrityError as exc:
-                raise HTTPException(
-                    503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
-                ) from exc
-            except ValueError as exc:
-                raise HTTPException(
-                    422, detail="INVALID_LOCAL_TEST_FORM",
-                ) from exc
-            if result is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            return RedirectResponse(
-                "/admin/export/research/drafts/" + quote(ref),
-                status_code=303,
-            )
-
-        @router.post("/admin/export/research/drafts/{ref}/findings")
-        async def export_demo_finding_browser(
-            ref: str, request: Request,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> RedirectResponse:
-            principal, form = await checked_browser_form(
-                request, sid, fields=frozenset({
-                    "csrf", "action_id", "case_version", "question_revision",
-                    "finding_revision", "evidence_binding", "note",
-                }), max_bytes=4096, max_fields=8, max_value_length=2100,
-            )
-            try:
-                evidence_revision_text, evidence_ref = form["evidence_binding"].split(":", 1)
-                evidence_revision = form_version(evidence_revision_text, zero_allowed=False)
-            except (ValueError, TypeError) as exc:
-                raise HTTPException(422, detail="INVALID_EXPORT_RESEARCH_FINDING") from exc
-            try:
-                result = technical_review_ledger.record_export_research_finding(
-                    ref, principal,
-                    expected_case_version=form_version(
-                        form["case_version"], zero_allowed=False,
-                    ),
-                    expected_question_revision=form_version(
-                        form["question_revision"], zero_allowed=False,
-                    ),
-                    expected_finding_revision=form_version(
-                        form["finding_revision"],
-                    ),
-                    evidence_revision=evidence_revision,
-                    action_id=form["action_id"],
-                    evidence_ref=evidence_ref, note=form["note"],
-                )
-            except ExportResearchFindingConflict as exc:
-                raise HTTPException(
-                    409, detail="EXPORT_RESEARCH_FINDING_CHANGED",
-                ) from exc
-            except (LedgerIntegrityError, sqlite3.Error) as exc:
-                raise HTTPException(
-                    503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
-                ) from exc
-            except ValueError as exc:
-                raise HTTPException(
-                    422, detail="INVALID_EXPORT_RESEARCH_FINDING",
-                ) from exc
-            if result is None:
-                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-            return RedirectResponse(
-                "/admin/export/research/drafts/" + quote(ref), status_code=303,
-            )
-
-        if export_source_connectors is not None:
-            @router.post("/admin/export/research/drafts/{ref}/evidence-reference/capture")
-            async def export_demo_evidence_reference_capture_browser(
-                ref: str, request: Request,
-                sid: str | None = Cookie(default=None, alias=cookie_name),
-            ) -> RedirectResponse:
-                principal, form = await checked_browser_form(
-                    request, sid,
-                    fields=frozenset({
-                        "csrf", "action_id", "case_version", "question_revision",
-                        "evidence_revision", "connector_ref",
-                    }),
-                )
-                try:
-                    result = capture_export_source_reference(
-                        technical_review_ledger, export_source_connectors, ref,
-                        principal,
-                        expected_case_version=form_version(
-                            form["case_version"], zero_allowed=False,
-                        ),
-                        expected_question_revision=form_version(
-                            form["question_revision"], zero_allowed=False,
-                        ),
-                        expected_evidence_revision=form_version(
-                            form["evidence_revision"],
-                        ),
-                        action_id=form["action_id"],
-                        connector_ref=form["connector_ref"],
-                    )
-                except ExportEvidenceReferenceConflict as exc:
-                    raise HTTPException(
-                        409, detail="EXPORT_EVIDENCE_REFERENCE_CHANGED",
-                    ) from exc
-                except ExportSourceConnectorUnavailable as exc:
-                    raise HTTPException(
-                        503, detail="EXPORT_SOURCE_CONNECTOR_UNAVAILABLE",
-                    ) from exc
-                except (LedgerIntegrityError, sqlite3.Error) as exc:
-                    raise HTTPException(
-                        503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
-                    ) from exc
-                except ValueError as exc:
-                    raise HTTPException(
-                        422, detail="INVALID_EXPORT_SOURCE_CONNECTOR",
-                    ) from exc
-                if result is None:
-                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-                return RedirectResponse(
-                    "/admin/export/research/drafts/" + quote(ref),
-                    status_code=303,
-                )
-
-    if authority_enquiry_ledger is not None:
-        @router.get("/admin/gate-evidence/{domain}/readiness")
-        def technical_readiness_matrix(
-            domain: str,
-            sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> HTMLResponse:
-            try:
-                session = flow.session(sid)
-            except InvalidToken:
-                raise HTTPException(401, detail="INVALID_SESSION") from None
-            permitted = next((
-                dossier for dossier in visible_dossiers(
-                    Principal(session.subject, session.roles)
-                )
-                if dossier.domain == domain and dossier.role in session.roles
-            ), None)
-            if permitted is None:
-                # Governance may read public gate metadata, but must not
-                # implicitly gain a domain operator's technical worklist.
-                raise HTTPException(404, detail="READINESS_MATRIX_NOT_FOUND")
-            matrix = authority_enquiry_ledger.read_readiness_matrix(
-                Principal(session.subject, session.roles), domain,
-            )
-            rows = []
-            for item in matrix["items"]:
-                stage = item["technical_handoff"]["technical_state"]
-                checks = 'Ø› '.join(
-                    check["check_kind"] + ": " + check["technical_state"]
-                    for check in item["authority_checks"]
-                )
-                rows.append(
-                    '<li><strong>' + escape(item["evidence_id"]) +
-                    '</strong> â€” Ø§Ø±Ø¬Ø§Ø¹: ' + escape(stage) +
-                    ' â€” Ø§Ø³ØªØ¹Ù„Ø§Ù…â€ŒÙ‡Ø§: ' + escape(checks) +
-                    ' â€” Ù¾Ø°ÛŒØ±Ø´: Ù…Ø³Ø¯ÙˆØ¯</li>'
-                )
-            body = (
-                '<article class="panel"><h2>Ù…Ø§ØªØ±ÛŒØ³ ÙÙ†ÛŒ Ø´ÙˆØ§Ù‡Ø¯ ' +
-                escape(domain) + '</h2>'
-                '<p>ØªÙ…Ø§Ù… ÙˆØ¶Ø¹ÛŒØªâ€ŒÙ‡Ø§ Ø¯Ø± ÛŒÚ© ØªØ±Ø§Ú©Ù†Ø´ ÙˆØ§Ø­Ø¯ØŒ Ù¾Ø³ Ø§Ø² Ø¨Ø±Ø±Ø³ÛŒ ÛŒÚ©Ù¾Ø§Ø±Ú†Ú¯ÛŒ ØªØ§Ø±ÛŒØ®Ú†Ù‡ Ø®ÙˆØ§Ù†Ø¯Ù‡ Ø´Ø¯Ù‡â€ŒØ§Ù†Ø¯.</p>'
-                '<p>Ø§ÛŒÙ† Ø§Ø·Ù„Ø§Ø¹Ø§Øª Ù†Ø³Ø®Ù‡â€ŒØ¨Ø³ØªÙ‡ Ùˆ ØºÛŒØ±Ø¹Ù…Ù„ÛŒØ§ØªÛŒ Ù‡Ø³ØªÙ†Ø¯Ø› '
-                'Ø§ØµØ§Ù„Øª Ù…Ù†Ø´Ø£ØŒ Ø­Ù‚ Ø§Ø³ØªÙØ§Ø¯Ù‡ØŒ ØµÙ„Ø§Ø­ÛŒØª Ø¨Ø§Ø²Ø¨ÛŒÙ† Ùˆ ØªØµÙˆÛŒØ¨ Business '
-                'Ù‡Ù…Ú†Ù†Ø§Ù† ØªØ£ÛŒÛŒØ¯ Ù†Ø´Ø¯Ù‡â€ŒØ§Ù†Ø¯.</p>'
-                '<ul>' + ''.join(rows) + '</ul>'
-                '<p><a href="/admin/gate-evidence/' +
-                escape(domain, quote=True) +
-                '">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ø§Ø³Ù†Ø§Ø¯ Ø´ÙˆØ§Ù‡Ø¯ Ø§ÛŒÙ† Ø­ÙˆØ²Ù‡</a></p></article>'
-            )
-            return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ù…Ø§ØªØ±ÛŒØ³ ÙÙ†ÛŒ Ø´ÙˆØ§Ù‡Ø¯ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ",
-                        body, logged_in=True)
-
-    @router.get("/admin/gate-evidence/{domain}")
-    def gate_evidence_detail(
-        domain: str,
-        sid: str | None = Cookie(default=None, alias=cookie_name),
-    ) -> HTMLResponse:
-        try:
-            session = flow.session(sid)
-        except InvalidToken:
-            raise HTTPException(401, detail="INVALID_SESSION") from None
-        allowed = next((
-            d for d in visible_dossiers(
-                Principal(session.subject, session.roles)
-            ) if d.domain == domain
-        ), None)
-        if allowed is None:
-            raise HTTPException(404, detail="GATE_DOSSIER_NOT_FOUND")
-        verify_pinned_business_sources()
-        current = dossier_detail(allowed)
-        handoff_states: dict[str, str] = {}
-        enquiry_states: dict[str, str] = {}
-        preflight_notice = ""
-        if (gate_handoff_ledger is not None
-                and allowed.role in session.roles):
-            preflight = gate_handoff_ledger.preflight_worklist(
-                Principal(session.subject, session.roles), domain,
-            )
-            handoff_states = {
-                item["evidence_id"]: item["technical_state"]
-                for item in preflight["items"]
-            }
-            preflight_notice = (
-                '<p>Ú©Ù†ØªØ±Ù„ Ù¾Ø°ÛŒØ±Ø´ Ø´ÙˆØ§Ù‡Ø¯: Ù…Ø³Ø¯ÙˆØ¯Ø› Ø§ØµØ§Ù„Øª Ù…Ù†Ø´Ø£ØŒ Ø­Ù‚ Ø§Ø³ØªÙØ§Ø¯Ù‡ '
-                'Ùˆ ØµÙ„Ø§Ø­ÛŒØª Ø¨Ø§Ø²Ø¨ÛŒÙ† ØªØ£ÛŒÛŒØ¯ Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª. Ø­ØªÛŒ ØªØ·Ø¨ÛŒÙ‚ Ù‡Ø´ DEMO '
-                'Ø¨Ø±Ø§ÛŒ ØªØ£ÛŒÛŒØ¯ Business Ú©Ø§ÙÛŒ Ù†ÛŒØ³Øª.</p>'
-            )
-        if (authority_enquiry_ledger is not None
-                and allowed.role in session.roles):
-            enquiry = authority_enquiry_ledger.read_check_status(
-                Principal(session.subject, session.roles), domain,
-            )
-            grouped = {}
-            for item in enquiry["items"]:
-                if item["technical_state"] != "NO_REQUEST":
-                    grouped.setdefault(item["evidence_id"], []).append(
-                        item["check_kind"] + ": " + item["technical_state"]
-                    )
-            enquiry_states = {ref: "Ø› ".join(parts) for ref, parts in grouped.items()}
-            preflight_notice += (
-                '<p>Ø§Ø±Ø¬Ø§Ø¹â€ŒÙ‡Ø§ÛŒ Ø¨Ø±Ø±Ø³ÛŒ Ù…Ø±Ø¬Ø¹ Ù…Ø¹ØªØ¨Ø± ÙÙ‚Ø· ÙÙ†ÛŒ Ù‡Ø³ØªÙ†Ø¯Ø› '
-                'ØªØ£ÛŒÛŒØ¯ ÙˆØ§Ù‚Ø¹ÛŒ Ù…Ù†Ø´Ø£ØŒ Ø­Ù‚ÙˆÙ‚ ÛŒØ§ ØµÙ„Ø§Ø­ÛŒØª Ø¨Ø§Ø²Ø¨ÛŒÙ† Ù‡Ù†ÙˆØ² ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.</p>'
-                '<p><a href="/admin/gate-evidence/' +
-                escape(domain, quote=True) +
-                '/readiness">Ù†Ù…Ø§ÛŒ ÛŒÚ©Ù¾Ø§Ø±Ú†Ù‡ Ù¾ÛŒÚ¯ÛŒØ±ÛŒ ÙÙ†ÛŒ Ø§ÛŒÙ† Ø­ÙˆØ²Ù‡</a></p>'
-            )
-        # All URLs are derived exclusively from pinned repository constants,
-        # not from a query or arbitrary user-provided source path.
-        official_source = (
-            "https://github.com/mahdimarzooghi4-debug/Ronas/blob/"
-            + BUSINESS_SOURCE_SHA + "/" + current["source_path"]
-        )
-        issue = (
-            "https://github.com/mahdimarzooghi4-debug/Ronas/issues/"
-            + str(current["gate_issue"])
-        )
-        evidence_rows = ''.join(
-            '<li><strong>' + escape(e["id"]) + '</strong> â€” '
-            + escape(e["label"]) + ': '
-            + escape(e["source_status"])
-            + (' Â· Ù¾ÛŒÚ¯ÛŒØ±ÛŒ Ø§Ø±Ø¬Ø§Ø¹ ÙÙ†ÛŒ: '
-               + escape(handoff_states[e["id"]])
-               if e["id"] in handoff_states else '')
-            + (' Â· Ù¾ÛŒÚ¯ÛŒØ±ÛŒ Ø§Ø³ØªØ¹Ù„Ø§Ù… ÙÙ†ÛŒ: ' + escape(enquiry_states[e["id"]])
-               if e["id"] in enquiry_states else '')
-            + '</li>'
-            for e in current["evidence_items"]
-        )
-        body = (
-            '<article class="panel"><h2>Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø´ÙˆØ§Ù‡Ø¯ ' +
-            escape(current["domain"]) + '</h2>'
-            '<p>Ø§ÛŒÙ† Ù†Ù…Ø§ÛŒ Ù†Ø³Ø®Ù‡â€ŒØ¨Ø³ØªÙ‡ØŒ ØªØµÙ…ÛŒÙ… Ø²Ù†Ø¯Ù‡ Ú¯ÛŒØª ÛŒØ§ Ù…Ø¯Ø±Ú© ØªØ£ÛŒÛŒØ¯Ø´Ø¯Ù‡ Ù†ÛŒØ³Øª.</p>'
-            '<p>ÙˆØ¶Ø¹ÛŒØª Ø¯Ø± Ù†Ø³Ø®Ù‡ Ù…Ù†Ø¨Ø¹: OPEN â€” Ù…Ø³Ø¦ÙˆÙ„ Ø¨Ø±Ø±Ø³ÛŒ Ù‡Ù†ÙˆØ² ØªØ¹ÛŒÛŒÙ† Ù†Ø´Ø¯Ù‡.</p>'
-            '<p>ÙØ§ÛŒÙ„â€ŒÙ‡Ø§ÛŒ Ù‡Ù…ÛŒÙ† Ù†Ø³Ø®Ù‡ Ù…Ø­Ù„ÛŒ Ø¨Ø§ Ø´Ù†Ø§Ø³Ù‡ Git Ù…ÙˆØ±Ø¯ Ø§Ù†ØªØ¸Ø§Ø± Ù…Ø·Ø§Ø¨Ù‚Øª Ø¯Ø§Ø±Ù†Ø¯Ø› '
-            'Ø§ÛŒÙ† ØªØ£ÛŒÛŒØ¯ØŒ ÙˆØ¶Ø¹ÛŒØª Ø²Ù†Ø¯Ù‡ Ú¯ÛŒØª ÛŒØ§ Ù†Ø³Ø®Ù‡ Ø¬Ø§Ø±ÛŒ PR Ù†ÛŒØ³Øª.</p>'
-            '<p>Ø´Ù†Ø§Ø³Ù‡ Ù†Ø³Ø®Ù‡ Ù…Ù†Ø¨Ø¹: <code>' + escape(BUSINESS_SOURCE_SHA)
-            + '</code></p>'
-            '<ul>' + evidence_rows + '</ul>'
-            '<p><a href="' + escape(official_source, quote=True) +
-            '">Ø³Ù†Ø¯ Ù…Ø¨Ø¯Ø£ Ù†Ø³Ø®Ù‡â€ŒØ¨Ø³ØªÙ‡</a> â€” '
-            '<a href="' + escape(issue, quote=True) +
-            '">Ú¯ÛŒØª Business Ø¯Ø± GitHub</a></p>'
-            + preflight_notice +
-            '<p>ÛŒØ§Ø¯Ø¯Ø§Ø´Øª Ø¨Ø±Ø±Ø³ÛŒ ÙÙ†ÛŒØŒ ØªØ£ÛŒÛŒØ¯ Ø§Ø¹ØªØ¨Ø§Ø± Ø³Ù†Ø¯ ÛŒØ§ ØªØµÙˆÛŒØ¨ Business Ù†ÛŒØ³Øª.</p>'
-            '<p>Ù‡ÛŒÚ† ØªØ£ÛŒÛŒØ¯ØŒ Ø«Ø¨Øª Ù…Ø¯Ø±Ú©ØŒ Ø¨ÙˆØ¯Ø¬Ù‡ØŒ Ù…Ø¹Ø§Ù…Ù„Ù‡ ÛŒØ§ ØªØµÙ…ÛŒÙ…ÛŒ Ø¯Ø± Ø§ÛŒÙ† Ù†Ù…Ø§ Ø§Ù†Ø¬Ø§Ù… Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯.</p>'
-            '<p><a href="/admin">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù…Ø¯ÛŒØ±ÛŒØª Ø±ÙˆÙ†Ø§Ø³</a></p>'
-            '</article>'
-        )
-        return page("Ù…Ø¯ÛŒØ±ÛŒØª Ø±ÙˆÙ†Ø§Ø³ â€” ÙˆØ¶Ø¹ÛŒØª Ù†Ø³Ø®Ù‡â€ŒØ¨Ø³ØªÙ‡ Ø´ÙˆØ§Ù‡Ø¯ Ú¯ÛŒØª",
-                    body, logged_in=True)
-
-    @router.get("/admin/operational-readiness/{domain}")
-    def operational_readiness_page(
-        domain: str,
-        sid: str | None = Cookie(default=None, alias=cookie_name),
-    ) -> HTMLResponse:
-        try:
-            session = flow.session(sid)
-        except InvalidToken:
-            raise HTTPException(401, detail="INVALID_SESSION") from None
-        if not any(
-            d.domain == domain for d in visible_dossiers(
-                Principal(session.subject, session.roles)
-            )
-        ):
-            raise HTTPException(404, detail="READINESS_NOT_FOUND")
-        summary = readiness(domain)
-        needs = ''.join(
-            '<li>' + escape(item["label"]) +
-            ' â€” Ù…Ø¯Ø±Ú© Ù…Ø¹ØªØ¨Ø± Ù‡Ù†ÙˆØ² Ø§Ø­Ø±Ø§Ø² Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</li>'
-            for item in summary["pending_evidence"]
-        )
-        sources = ''.join(
-            '<li><strong>' + escape(item["name"]) + '</strong>'
-            ' â€” Ø­Ù‚ Ø§Ø³ØªÙØ§Ø¯Ù‡ Ùˆ Ø¢Ù…ÙˆØ²Ø´ AI Ø§Ø­Ø±Ø§Ø² Ù†Ø´Ø¯Ù‡Ø› Ù…ÙˆØ§Ù†Ø¹: '
-            + escape("ØŒ ".join(item["review_flags"])) +
-            ' Â· <a href="' + escape(item["official_terms_urls"][0], quote=True)
-            + '">Ø´Ø±Ø§ÛŒØ· Ø±Ø³Ù…ÛŒ Ù…Ù†Ø¨Ø¹</a></li>'
-            for item in summary["sources_not_licensed"]
-        )
-        source_box = (
-            '<h3>Ù…Ù†Ø§Ø¨Ø¹ ØºØ±Ø¨Ø§Ù„â€ŒØ´Ø¯Ù‡ØŒ Ù†Ù‡ Ø¯Ø§Ø±Ø§ÛŒ Ù…Ø¬ÙˆØ² Ø§Ø³ØªÙØ§Ø¯Ù‡</h3><ul>'
-            + sources + '</ul>'
-            if sources else ''
-        )
-        finance = (
-            '<h3>Ù…Ù…ÛŒØ²ÛŒ Ø¹Ø¯Ø¯ÛŒ Ù…Ù†Ø¨Ø¹ØŒ Ù†Ù‡ Ø¨ÙˆØ¯Ø¬Ù‡</h3><p>Ø§Ø®ØªÙ„Ø§Ù Ø³Ø±Ù…Ø§ÛŒÙ‡ Ù†Ù‚Ù„â€ŒØ´Ø¯Ù‡: '
-            + str(summary["source_arithmetic_not_budget"][
-                "arithmetic_unexplained_difference"
-            ]) + ' Ù…ÛŒÙ„ÛŒÙˆÙ† ØªÙˆÙ…Ø§Ù†Ø› ØªÙØ³ÛŒØ± Ø­Ø³Ø§Ø¨Ø¯Ø§Ø±ÛŒ Ù‡Ù†ÙˆØ² ØªØµÙˆÛŒØ¨ Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</p>'
-            if domain == "FINANCE" else ''
-        )
-        issue = ("https://github.com/mahdimarzooghi4-debug/Ronas/issues/"
-                 + str(summary["gate_issue"]))
-        body = (
-            '<article class="panel"><h2>Ù…ÛŒØ²Ú©Ø§Ø± ØªØµÙ…ÛŒÙ… Ø¹Ù…Ù„ÛŒØ§ØªÛŒ â€” '
-            + escape(domain) + '</h2>'
-            '<p>ÙˆØ¶Ø¹ÛŒØª Ø¯Ø± Ù†Ø³Ø®Ù‡ Ù¾ÛŒØ´â€ŒÙ†ÙˆÛŒØ³: OPEN. Ø§ÛŒÙ† ØµÙØ­Ù‡ ÙˆØ¶Ø¹ÛŒØª '
-            'Ø²Ù†Ø¯Ù‡ GitHub ÛŒØ§ ØªØµÙˆÛŒØ¨ Ù…Ø³Ø¦ÙˆÙ„ Ø±Ø§ Ù†Ø´Ø§Ù† Ù†Ù…ÛŒâ€ŒØ¯Ù‡Ø¯.</p>'
-            '<h3>Ø´ÙˆØ§Ù‡Ø¯ Ù„Ø§Ø²Ù… Ø¨Ø±Ø§ÛŒ ØªØµÙ…ÛŒÙ… ÙˆØ§Ù‚Ø¹ÛŒ</h3><ul>'
-            + needs + '</ul>'
-            '<p>Ø­ÙˆØ²Ù‡â€ŒÙ‡Ø§ÛŒ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ÛŒØŒ Ù†Ù‡ Ù…Ø¬ÙˆØ² Ø§Ø¬Ø±Ø§: '
-            + escape("ØŒ ".join(summary["candidate_scopes_not_approved"])
-                     or "Ù‡Ù†ÙˆØ² Ø§Ù†ØªØ®Ø§Ø¨ Ù†Ø´Ø¯Ù‡") + '</p>'
-            + source_box + finance +
-            '<p>Ø¯Ø±ÛŒØ§ÙØª Ø¯Ø§Ø¯Ù‡ ÙˆØ§Ù‚Ø¹ÛŒØŒ Ø¨Ø±Ù†Ø§Ù…Ù‡ Ú©Ø´ØªØŒ Ù¾Ú˜ÙˆÙ‡Ø´ ØªØ¬Ø§Ø±ÛŒ ØªØ£ÛŒÛŒØ¯Ø´Ø¯Ù‡ØŒ '
-            'Ø¢Ù…ÙˆØ²Ø´ Ù…Ø¯Ù„ØŒ Ù¾Ø±Ø¯Ø§Ø®Øª Ùˆ Ù‚Ø±Ø§Ø±Ø¯Ø§Ø¯ Ø¹Ù…Ù„ÛŒØ§ØªÛŒ Ø¯Ø± Ø§ÛŒÙ† ØµÙØ­Ù‡ ÙØ¹Ø§Ù„ Ù†ÛŒØ³Øª.</p>'
-            '<p><a href="' + escape(issue, quote=True) +
-            '">Ù¾ÛŒÚ¯ÛŒØ±ÛŒ Ù…Ø¯Ø§Ø±Ú© Ùˆ ØªØµÙ…ÛŒÙ… Ú¯ÛŒØª Ø¯Ø± GitHub</a></p>'
-            '<p><a href="/admin">Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù…Ø¯ÛŒØ±ÛŒØª Ø±ÙˆÙ†Ø§Ø³</a></p></article>'
-        )
-        return page("Ø±ÙˆÙ†Ø§Ø³ â€” Ø´ÙˆØ§Ù‡Ø¯ Ù„Ø§Ø²Ù… Ø¨Ø±Ø§ÛŒ ØªØµÙ…ÛŒÙ… Ø¹Ù…Ù„ÛŒØ§ØªÛŒ",
-                    body, logged_in=True)
-
-    @router.get("/admin/finance/source-arithmetic")
-    def finance_source_review_page(
-        sid: str | None = Cookie(default=None, alias=cookie_name),
-    ) -> HTMLResponse:
-        try:
-            session = flow.session(sid)
-        except InvalidToken:
-            raise HTTPException(401, detail="INVALID_SESSION") from None
-        if "finance" not in session.roles:
-            raise HTTPException(404, detail="SOURCE_REVIEW_NOT_FOUND")
-        verify_pinned_business_sources()
-        report = source_arithmetic()
-        body = (
-            '<article class="panel"><h2>Ø¨Ø±Ø±Ø³ÛŒ Ø¹Ø¯Ø¯ÛŒ Ù…Ù†Ø¨Ø¹ FIN-002 '
-            '(ØµØ±ÙØ§Ù‹ Ø³Ù†Ø¯ ØªØ§Ø±ÛŒØ®ÛŒ)</h2>'
-            '<p>Ù‡Ù…Ù‡ Ù…Ù‚Ø§Ø¯ÛŒØ± Ø¨Ø±Ø­Ø³Ø¨ Ù…ÛŒÙ„ÛŒÙˆÙ† ØªÙˆÙ…Ø§Ù† Ùˆ Ù†Ù‚Ù„Ù Ø·Ø±Ø­â€ŒÙ†Ø§Ù…Ù‡â€ŒØ§Ù†Ø¯Ø› '
-            'Ø¨ÙˆØ¯Ø¬Ù‡ØŒ Ù‡Ø²ÛŒÙ†Ù‡ ÙˆØ§Ù‚Ø¹ÛŒØŒ ÙˆØ¬Ù‡ Ù†Ù‚Ø¯ ÛŒØ§ Ø³Ø±Ù…Ø§ÛŒÙ‡ Ù…ÙˆØ±Ø¯ ØªØ£ÛŒÛŒØ¯ Ù†ÛŒØ³ØªÙ†Ø¯.</p>'
-            '<ul><li>Ø³Ø±Ù…Ø§ÛŒÙ‡ Ø§ÙˆÙ„ÛŒÙ‡ Ù†Ù‚Ù„â€ŒØ´Ø¯Ù‡: '
-            + str(report["reported_initial_capital"]) + '</li>'
-            '<li>ØªØ¬Ù‡ÛŒØ²Ø§Øª: ' + str(report["reported_equipment"]) + '</li>'
-            '<li>Ù¾ÛŒØ´ Ø§Ø² Ø¨Ù‡Ø±Ù‡â€ŒØ¨Ø±Ø¯Ø§Ø±ÛŒ: '
-            + str(report["reported_pre_operating"]) + '</li>'
-            '<li>Ø¬Ù…Ø¹ Ø¯Ùˆ Ù…Ø¤Ù„ÙÙ‡: '
-            + str(report["arithmetic_component_sum"]) + '</li>'
-            '<li>Ø§Ø®ØªÙ„Ø§Ù Ø¨Ø§ Ø±Ù‚Ù… Ø§ÙˆÙ„ÛŒÙ‡: '
-            + str(report["arithmetic_unexplained_difference"]) + '</li>'
-            '<li>Ù‡Ø²ÛŒÙ†Ù‡ Ø¹Ù…Ù„ÛŒØ§ØªÛŒ Ø³Ø§Ù„ Ù†Ø®Ø³Øª Ø¯Ø± Ù…Ù†Ø¨Ø¹: '
-            + str(report["reported_year_one_operating_cost"]) + '</li></ul>'
-            '<p>Ø¨Ø±Ø§Ø¨Ø±ÛŒ Ø§Ø®ØªÙ„Ø§Ù Ùˆ Ù‡Ø²ÛŒÙ†Ù‡ Ø³Ø§Ù„ Ù†Ø®Ø³Øª ÛŒÚ© Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø¹Ø¯Ø¯ÛŒ Ø§Ø³ØªØ› '
-            'Ù†ÙˆØ¹ Ø³Ø±Ù…Ø§ÛŒÙ‡/Ù‡Ø²ÛŒÙ†Ù‡ØŒ Ø®Ø·Ø§ ÛŒØ§ Ø¯ÙˆØ¨Ø§Ø±Ù‡â€ŒØ´Ù…Ø§Ø±ÛŒ Ø±Ø§ Ø§Ø«Ø¨Ø§Øª Ù†Ù…ÛŒâ€ŒÚ©Ù†Ø¯.</p>'
-            '<p>FIN-001 ØªØ§ FIN-007 Ùˆ Ú¯ÛŒØª Ù…Ø§Ù„ÛŒ #4 Ø¨Ø§Ø² Ù‡Ø³ØªÙ†Ø¯. '
-            'Ù‡ÛŒÚ† Ù†Ø±Ø®ØŒ Ø¨ÙˆØ¯Ø¬Ù‡ Ø§ØµÙ„Ø§Ø­ÛŒØŒ Ù¾Ø±Ø¯Ø§Ø®Øª ÛŒØ§ ØªØ³ÙˆÛŒÙ‡ ÙØ¹Ø§Ù„ Ù†ÛŒØ³Øª.</p>'
-            '<p>Ù‡Ø´ Ù†Ø³Ø®Ù‡ ÙØ§ÛŒÙ„ Ù…Ø§Ù„ÛŒ: <code>'
-            + escape(report["source_blob_sha"]) + '</code></p>'
-            '<p><a href="/admin/gate-evidence/FINANCE">'
-            'Ø´ÙˆØ§Ù‡Ø¯ ØªØµÙ…ÛŒÙ… Ù…Ø§Ù„ÛŒ</a> Â· <a href="/admin">'
-            'Ø¨Ø§Ø²Ú¯Ø´Øª Ø¨Ù‡ Ù…Ø¯ÛŒØ±ÛŒØª Ø±ÙˆÙ†Ø§Ø³</a></p></article>'
-        )
-        return page("Ø±ÙˆÙ†Ø§Ø³ â€” ØªØ·Ø¨ÛŒÙ‚ Ø§Ø±Ù‚Ø§Ù… Ù…Ù†Ø¨Ø¹ Ù…Ø§Ù„ÛŒ", body, logged_in=True)
-
-    @router.get("/admin")
-    def admin_ui(
-        sid: str | None = Cookie(default=None, alias=cookie_name),
-        domestic_after_ref: str | None = None,
-        export_after_ref: str | None = None,
-    ) -> HTMLResponse:
-        try:
-            session = flow.session(sid)
-        except InvalidToken:
-            session = None
-        grants = session.roles if session is not None else None
-        if grants is None:
-            return page("Ù…Ø¯ÛŒØ±ÛŒØª Ø±ÙˆÙ†Ø§Ø³ â€” ÙˆØ±ÙˆØ¯ Ø§Ù„Ø²Ø§Ù…ÛŒ", '<p>ÙˆØ±ÙˆØ¯ Ø§Ù…Ù† Ù„Ø§Ø²Ù… Ø§Ø³Øª.</p>',
-                        logged_in=False, code=401, login_return_path="/admin")
-        active = [(name, label) for name, label in ADMIN_ROLES.items() if name in grants]
-        if not active:
-            return page("Ø¯Ø³ØªØ±Ø³ÛŒ Ù…Ø¯ÛŒØ±ÛŒØª Ù…Ø¬Ø§Ø² Ù†ÛŒØ³Øª",
-                        '<p>Ù…Ø¬ÙˆØ² ÙˆØ±ÙˆØ¯ Ø¨Ù‡ Ù‡ÛŒÚ†â€ŒÛŒÚ© Ø§Ø² Ú†Ù‡Ø§Ø± Ø­ÙˆØ²Ù‡ Ù…Ø¯ÛŒØ±ÛŒØª ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.</p>',
-                        logged_in=True, code=403)
-        cards = []
-        try:
-            verify_pinned_business_sources()
-            gate_source_usable = True
-        except BusinessSourceSnapshotError:
-            # Keep unrelated local admin read models available, while
-            # withholding all obsolete gate links and showing a warning.
-            gate_source_usable = False
-        for role, label in active:
-            note = {
-                "domestic_ops": "Ù†Ù…ÙˆÙ†Ù‡ Ù¾Ø±ÙˆÙ†Ø¯Ù‡ Ø®Ø§Ù†ÙˆØ§Ø± DEMO-H01Ø› Ø±Ø¶Ø§ÛŒØª Ùˆ ØªØ£ÛŒÛŒØ¯ Ú©Ø§Ø±Ø´Ù†Ø§Ø³ ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.",
-                "export_ops": "Ù†Ù…ÙˆÙ†Ù‡ Ù¾Ú˜ÙˆÙ‡Ø´ DEMO-SOURCE-01Ø› Ø­Ù‚ÙˆÙ‚ Ù…Ù†Ø¨Ø¹ Ùˆ Ø®Ø±ÛŒØ¯Ø§Ø± Ø§Ø­Ø±Ø§Ø² Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.",
-                "finance": "Ù¾Ø±Ø¯Ø§Ø®ØªØŒ ØªØ³ÙˆÛŒÙ‡ Ùˆ Ø§Ù†ØªÙ‚Ø§Ù„ ÙˆØ¬Ù‡ ØºÛŒØ±ÙØ¹Ø§Ù„ Ù‡Ø³ØªÙ†Ø¯.",
-                "governance": "Ø±Ø§Ù‡Ø¨Ø±ÛŒ Ø¨Ù‡ Ù…Ø¹Ù†ÛŒ Ù…Ø¬ÙˆØ² Ø®ÙˆØ¯Ú©Ø§Ø± Ù…Ø§Ù„ÛŒØŒ Ú©Ø´Ø§ÙˆØ±Ø²ÛŒ ÛŒØ§ ØµØ§Ø¯Ø±Ø§Øª Ù†ÛŒØ³Øª.",
-            }[role]
-            worklist = ""
-            if technical_review_ledger is not None and session is not None:
-                if role == "domestic_ops":
-                    worklist = technical_worklist(
-                        "DOMESTIC", Principal(session.subject, session.roles),
-                        domestic_after_ref,
-                    )
-                elif role == "export_ops":
-                    worklist = (
-                        '<p><a href="/admin/export/research">'
-                        'Ù…Ø±ÙˆØ± Ùˆ ÙÛŒÙ„ØªØ± Ù¾Ø±ÙˆÙ†Ø¯Ù‡â€ŒÙ‡Ø§ÛŒ Ù¾Ú˜ÙˆÙ‡Ø´ ØµØ§Ø¯Ø±Ø§Øª</a></p>'
-                        + technical_worklist(
-                            "EXPORT", Principal(session.subject, session.roles),
-                            export_after_ref,
-                        )
-                    )
-            domain = {
-                "domestic_ops": "DOMESTIC",
-                "export_ops": "EXPORT",
-                "finance": "FINANCE",
-            }.get(role)
-            # Governance can inspect all public Business gate metadata, but
-            # this does not grant access to case/evidence private records.
-            domains = [domain] if domain else (
-                ["DOMESTIC", "EXPORT", "FINANCE"]
-                if role == "governance" else []
-            )
-            gate_links = (''.join(
-                '<p><a href="/admin/gate-evidence/' + key
-                + '">Ø´ÙˆØ§Ù‡Ø¯ Ø¨Ø§Ø² Business â€” ' + key + '</a>'
-                ' (ØµØ±ÙØ§Ù‹ Ù†Ø³Ø®Ù‡â€ŒØ¨Ø³ØªÙ‡ Ùˆ ØºÛŒØ±Ø¹Ù…Ù„ÛŒØ§ØªÛŒ)</p>'
-                for key in domains
-            ) if gate_source_usable else
-                '<p>Ù†Ø³Ø®Ù‡ Ù…Ø­Ù„ÛŒ Ø§Ø³Ù†Ø§Ø¯ Ø´ÙˆØ§Ù‡Ø¯ Ù…Ø¹ØªØ¨Ø± Ù†ÛŒØ³ØªØ› '
-                'Ù¾ÛŒÙˆÙ†Ø¯Ù‡Ø§ÛŒ Ú¯ÛŒØª Ù…ÙˆÙ‚ØªØ§Ù‹ ØºÛŒØ±ÙØ¹Ø§Ù„â€ŒØ§Ù†Ø¯.</p>')
-            if gate_source_usable:
-                try:
-                    verify_decision_sources()
-                except BusinessSourceSnapshotError:
-                    gate_links += (
-                        '<p>Ø§Ø³Ù†Ø§Ø¯ ØªØµÙ…ÛŒÙ… Ø¹Ù…Ù„ÛŒØ§ØªÛŒ Ø¨Ø§ Ù†Ø³Ø®Ù‡ ØªØ£ÛŒÛŒØ¯Ù†Ø´Ø¯Ù‡ ØªØºÛŒÛŒØ± '
-                        'Ú©Ø±Ø¯Ù‡â€ŒØ§Ù†Ø¯Ø› Ù¾ÛŒÙˆÙ†Ø¯Ù‡Ø§ ØºÛŒØ±ÙØ¹Ø§Ù„ Ù‡Ø³ØªÙ†Ø¯.</p>'
-                    )
-                else:
-                    gate_links += ''.join(
-                        '<p><a href="/admin/operational-readiness/'
-                        + key + '">Ø´ÙˆØ§Ù‡Ø¯ Ù„Ø§Ø²Ù… Ø¨Ø±Ø§ÛŒ ØªØµÙ…ÛŒÙ… Ø¹Ù…Ù„ÛŒØ§ØªÛŒ â€” '
-                        + key + '</a></p>'
-                        for key in domains
-                    )
-            if role == "finance" and gate_source_usable:
-                gate_links += (
-                    '<p><a href="/admin/finance/source-arithmetic">'
-                    'Ù…Ù…ÛŒØ²ÛŒ Ø¹Ø¯Ø¯ÛŒ Ù†Ø³Ø®Ù‡â€ŒØ¨Ø³ØªÙ‡ FIN-002 (Ø¨Ø¯ÙˆÙ† ØªØµÙˆÛŒØ¨ Ø¨ÙˆØ¯Ø¬Ù‡)'
-                    '</a></p>'
-                )
-            cards.append('<article class="panel"><h2>' + escape(label) + '</h2><p>'
-                         + escape(note) + '</p>' + worklist + gate_links
-                         + '</article>')
-        return page("Ù…Ø¯ÛŒØ±ÛŒØª Ø±ÙˆÙ†Ø§Ø³ â€” Ù¾Ù†Ù„ ÙˆØ§Ø­Ø¯ Ø¨Ø§ Ø¯Ø³ØªØ±Ø³ÛŒ Ù…Ø¬Ø²Ø§",
-                    '<div class="columns">' + ''.join(cards) + '</div>', logged_in=True)
-
-    return router
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éí÷N:Ý:-jZ.¶›­–)Þ³R""%GvòWF†VçF–6FVBÂ7G&–7FÇ’&öÆR×66÷VB…DÔÂ6†VÆÇ2f÷"÷BÖ–â¶W–6Æö²$dbà ¥F†RFVfVÇB&öGV7F–öâVçG'—ö–çBæWfW"Ö÷VçG2F†W6R&÷WFW2âF†R…DÔÂ—0§&VæFW&VBg&öÒf—†VBFV×ÆFW2Âæ÷B6Æ–VçB×7WÆ–VBFW‡B÷"&&—G&'’f–ÆW2à¤æòÆ—fRv÷&¶fÆ÷r÷"W'6öæÂFFW†—7G2–âF†—2T’f÷VæFF–öâà¢"" ¦g&öÒ6öÆÆV7F–öç2æ&2–×÷'B6ÆÆ&ÆP¦g&öÒ‡FÖÂ–×÷'BW66P¦g&öÒW&ÆÆ–"ç'6R–×÷'BV÷FRÂ'6U÷0¦g&öÒF†Æ–"–×÷'BF€¦g&öÒFFWF–ÖR–×÷'BFFWF–ÖRÂF–ÖW¦öæP¦–×÷'B†6†Æ– ¦–×÷'B†Ö0¦–×÷'B6V7&WG0¦–×÷'B7Æ—FS0 ¦g&öÒf7F’–×÷'B•&÷WFW"Â6öö¶–RÂ…EEW†6WF–öâÂ&WVW7@¦g&öÒf7F’ç&W7öç6W2–×÷'B…DÔÅ&W7öç6RÂÆ–åFW‡E&W7öç6RÂ&VF—&V7E&W7öç6RÂ¥4ôå&W7öç6RÂ&W7öç6P ¦g&öÒæWF‚–×÷'B–çfÆ–EFö¶VâÂ&–æ6—À¦g&öÒæ‡VÖå÷&Wf–Wu÷7Æ—FR–×÷'B7Æ—FU7–çF†WF–4‡VÖå&Wf–WtÆVFvW"Â5DDU22DT4„ä”4Åõ5DDU0¦g&öÒæW‡÷'E÷&W6V&6…öWf–FVæ6R–×÷'BW‡÷'DWf–FVæ6U&VfW&Væ6T6öæfÆ–7@¦g&öÒæW‡÷'E÷&W6V&6…öf–æF–æw2–×÷'BW‡÷'E&W6V&6„f–æF–æt6öæfÆ–7@¦g&öÒæW‡÷'E÷6÷W&6Uö6öææV7F÷"–×÷'B€¢W‡÷'E6÷W&6T6öææV7F÷%&Vv—7G'’ÂW‡÷'E6÷W&6T6öææV7F÷%Væf–Æ&ÆRÀ¢6GW&UöW‡÷'E÷6÷W&6U÷&VfW&Væ6RÀ¢¦g&öÒç66÷VEöG&gG2–×÷'B÷7–çF†WF–5÷&V`¦g&öÒç66÷VEöVF—B–×÷'Bw&çD6öæfÆ–7BÂw&çDæ÷DWF†÷&—¦V@¦g&öÒæW‡÷'E÷&W6V&6…öWf–FVæ6R–×÷'BfÆ–EöWf–FVæ6U÷&Vg2ÂfÆ–E÷6æ6†÷EöF–vW7@¦g&öÒæw&çEöÆVFvW%÷7Æ—FR–×÷'BÆVFvW$–çFVw&—G”W'&÷"Â7Æ—FU7–çF†WF–4w&çDÆVFvW ¦g&öÒæ†÷W6V†öÆEö–çWEöÆVFvW%÷7Æ—FR–×÷'B€¢–çWE&Wf—6–öä6öæfÆ–7BÂ7Æ—FU7–çF†WF–4†÷W6V†öÆD–çWDÆVFvW"À¢¦g&öÒæ†÷W6V†öÆEö–çWE÷&öf–ÆW2–×÷'B€¢†÷W6V†öÆD–çWE66†VÖÂ7Æ—FU7–çF†WF–4†÷W6V†öÆE&öf–ÆTÆVFvW"À¢¦g&öÒæW‡÷'E÷&W6V&6…÷VW7F–öâ–×÷'B€¢W‡÷'E&W6V&6…VW7F–öä6öæfÆ–7BÂfÆ–E÷VW7F–öå÷&Vg2À¢¦g&öÒæö–F5ö'&÷w6W"–×÷'B'&÷w6W$ô”D0¦g&öÒæf–ææ6–Å÷6÷W&6Uö&—F†ÖWF–2–×÷'B6÷W&6Uö&—F†ÖWF–0¦g&öÒæ÷W&F–öæÅ÷&VF–æW72–×÷'B&VF–æW72ÂfW&–g•öFV6—6–öå÷6÷W&6W0¦g&öÒæ66Uö¦÷W&æW•öwV–Fæ6R–×÷'B€¢¦÷W&æW”Wf–FVæ6TÖ—6ÖF6‚Â÷væW%öæW‡Eö7F–öâÂW‡W'EöæW‡Eö7F–öâÀ¢W‡÷'EöæW‡Eö7F–öâÀ¢¦g&öÒæ'W6–æW75övFUöWf–FVæ6R–×÷'B„%U4”äU55õ4õU$4Uõ4„ÂF÷76–W%öFWF–ÂÀ¢f—6–&ÆUöF÷76–W'2ÂfW&–g•÷–ææVEö'W6–æW75÷6÷W&6W2À¢'W6–æW756÷W&6U6æ6†÷DW'&÷"Â4õU$4Uô”åDTu$•E•õ5DDR¦g&öÒç6†&VE÷v÷&·76W2–×÷'BU4U%õ$ôÄU2Âf—6–&ÆU÷W6W%÷v÷&·76W0¦g&öÒæw&öæö×•÷v÷&·76R–×÷'B7–çF†WF–4w&öæö×•v÷&·76P¦g&öÒæW‡W'E÷&Wf–Wu÷VW7F–öç5÷7Æ—FR–×÷'B€¢&Wf–WuVW7F–öä6öæfÆ–7BÂ7Æ—FU7–çF†WF–4W‡W'EVW7F–öäÆVFvW"À¢¦g&öÒæW‡÷'E÷7WÆ–W%÷v÷&·76R–×÷'B€¢7–çF†WF–57WÆ–W%Væf–Æ&ÆRÂ7–çF†WF–57WÆ–W%v÷&·76RÀ¢¦g&öÒæFöÖW7F–5÷'FæW%÷v÷&·76R–×÷'B€¢d”TÄE22DôÔU5D”5õ%DäU%ôd”TÄE2Â7–çF†WF–4FöÖW7F–5'FæW%Væf–Æ&ÆRÀ¢7–çF†WF–4FöÖW7F–5'FæW%v÷&·76RÀ¢¦g&öÒæFöÖW7F–5÷7FvUöö'6W'fF–öâ–×÷'B€¢7W'&VçE7FvT6öçFW‡BÂ7FvTö'6W'fF–öä6öÖÖæBÂ7FvTö'6W'fF–öä6öæfÆ–7BÀ¢¦g&öÒç7FvUöö'6W'fF–öåö'F–f7G2–×÷'B€¢Ô…ô%D”d5Eô%•DU2Â7FvT'F–f7E7F÷&RÂ7FvT'F–f7E7F÷&TW'&÷"À¢ö6†V6µ÷WÆöE÷6—¦RÂöFV6Æ&VE÷WÆöE÷6—¦RÀ¢¦g&öÒæFöÖW7F–5÷&W&F–öå÷&Wf–Wr–×÷'B€¢$Ud”Uuõ5DDU2ÂFöÖW7F–5÷&W&F–öå÷&Wf–WrÀ¢¦g&öÒævFUöWf–FVæ6Uö†æFöfe÷7Æ—FR–×÷'B7Æ—FU7–çF†WF–4vFTWf–FVæ6T†æFöf`¦g&öÒævFUöWf–FVæ6UöWF†÷&—G•öVçV—'•÷7Æ—FR–×÷'B7Æ—FU7–çF†WF–4WF†÷&—G”VçV—'”ÆVFvW ¦g&öÒæFöÖW7F–5÷7W'ÇW5÷V&Æ–6F–öåö’–×÷'BV&Æ–6F–öå÷&VF–æW75÷6æ6†÷@¦g&öÒæFöÖW7F–5÷7W'ÇW5öG&gG2–×÷'B€¢7W'ÇW4G&gD6öæfÆ–7BÂ7W'ÇW4G&gD–çFVw&—G”W'&÷"Â7W'ÇW4G&gDÆVFvW"À¢7W'ÇW4G&gE7F÷&vTW'&÷"À¢—5÷7W'ÇW5öG&gEöÆVFvW"À¢¦g&öÒæFöÖW7F–5÷7W'ÇW5÷&öGV6W%ö6öç6VçB–×÷'B€¢&öGV6W$6öç6VçD6öæfÆ–7BÂ&öGV6W$6öç6VçD–çFVw&—G”W'&÷"À¢&öGV6W$6öç6VçDÆVFvW"Â—5÷&öGV6W%ö6öç6VçEöÆVFvW"À¢¤DÔ”åõ$ôÄU2Ò°¢&FöÖW7F–5ö÷2#¢-‹˜]˜M¸ÍŠ}Š¢ŠýŠ}Ší˜M¸Â"À¢&W‡÷'Eö÷2#¢-‹˜]˜M¸ÍŠ}Š¢‹]Š}Šý‹Š}Š¢"À¢&f–ææ6R#¢-˜]Š}˜M¸Â"À¢&v÷fW&ææ6R#¢-‹Š}˜}Š‹¸Â"À§Ð¥5E”ÄRÒF‚…õöf–ÆUõò’ç&W6öÇfR‚’ç&VçG5³%Òò'&÷F÷G—R"ò'V’"ò'7G–ÆW2æ772  ¤ÄôtõUEõ45$•BÒ""&Fö7VÖVçBæFDWfVçDÆ—7FVæW"‚tDôÔ6öçFVçDÆöFVBrÂ‚’Óâ°¢6öç7B'WGFöâÒFö7VÖVçBævWDVÆVÖVçD'”–B‚w&öæ2ÖÆöv÷WBr“°¢–b‚'WGFöâ’&WGW&ã°¢6öç7B&WG'”ÖW76vRÒ}˜m‹M‹=Š¢Š˜~(Í‹˜‹-‹‹=Š}˜m¸Â˜m‹MŠý‰²Š‹Š}¸ÂŠ}ŠýŠ}˜]˜rŠý˜ŠŠ}‹˜r˜Š}‹Šò‹M˜¸ÍŠòâs°¢6öç7B66†VGVÆU&VæWvÂÒ7–æ2‚’Óâ°¢G'’°¢6öç7B7FGW2Òv—BfWF6‚‚rö’öWF‚÷6W76–öârÂ¶7&VFVçF–Ç3¢w6ÖRÖ÷&–v–ârÂ66†S¢væò×7F÷&RwÒ“°¢–b‚7FGW2æö²’&WGW&ã°¢6öç7B7W'&VçBÒv—B7FGW2æ§6öâ‚“°¢6öç7BFVÆ’ÒÖF‚æÖ‚ƒSÂ7W'&VçBæW‡—&W5öB¢ÒFFRææ÷r‚’Òc“°¢v–æF÷rç6WEF–ÖV÷WB†7–æ2‚’Óâ°¢G'’°¢6öç7B&VæWvVBÒv—BfWF6‚‚rö’öWF‚÷&Vg&W6‚rÂ°¢ÖWF†öC¢uõ5BrÂ7&VFVçF–Ç3¢w6ÖRÖ÷&–v–ârÂ66†S¢væò×7F÷&RrÀ¢†VFW'3§²u‚Ô55$bÕFö¶Vâs¦7W'&VçBæ77&gÐ¢Ò“°¢–b‡&VæWvVBç7FGW2ÓÓÒC’’²v–æF÷rç6WEF–ÖV÷WB‡66†VGVÆU&VæWvÂÂ#“²&WGW&ã²Ð¢–b‚&VæWvVBæö²’F‡&÷rW'&÷"‚u4U54”ôåõ$Te$U4…õ$T¤T5DTBr“°¢66†VGVÆU&VæWvÂ‚“°¢Ò6F6‚°¢6öç7Bæ÷F–6RÒFö7VÖVçBævWDVÆVÖVçD'”–B‚vÆöv÷WBÖÖW76vRr“°¢–b†æ÷F–6R’æ÷F–6RçFW‡D6öçFVçBÒ&WG'”ÖW76vS°¢Ð¢ÒÂFVÆ’“°¢Ò6F6‚°¢6öç7Bæ÷F–6RÒFö7VÖVçBævWDVÆVÖVçD'”–B‚vÆöv÷WBÖÖW76vRr“°¢–b†æ÷F–6R’æ÷F–6RçFW‡D6öçFVçBÒ&WG'”ÖW76vS°¢v–æF÷rç6WEF–ÖV÷WB‡66†VGVÆU&VæWvÂÂ#“°¢Ð¢Ó°¢66†VGVÆU&VæWvÂ‚“°¢'WGFöâæFDWfVçDÆ—7FVæW"‚v6Æ–6²rÂ7–æ2‚’Óâ°¢'WGFöâæF—6&ÆVBÒG'VS°¢G'’°¢6öç7B7FGW2Òv—BfWF6‚‚rö’öWF‚÷6W76–öârÂ¶7&VFVçF–Ç3¢w6ÖRÖ÷&–v–ârÂ66†S¢væò×7F÷&RwÒ“°¢–b‚7FGW2æö²’F‡&÷rW'&÷"‚täõô5D•dUõ4U54”ôâr“°¢6öç7BFFÒv—B7FGW2æ§6öâ‚“°¢6öç7Bf÷&ÒÒFö7VÖVçBæ7&VFTVÆVÖVçB‚vf÷&Òr“°¢f÷&ÒæÖWF†öBÒuõ5Bs°¢f÷&Òæ7F–öâÒrö’öWF‚öÆöv÷WBö¶W–6Æö²s°¢f÷&Òæ†–FFVâÒG'VS°¢6öç7B77&bÒFö7VÖVçBæ7&VFTVÆVÖVçB‚v–çWBr“°¢77&bçG—RÒv†–FFVâs°¢77&bææÖRÒv77&bs°¢77&bçfÇVRÒFFæ77&c°¢f÷&ÒæVæD6†–ÆB†77&b“°¢Fö7VÖVçBæ&öG’æVæD6†–ÆB†f÷&Ò“°¢f÷&Òç&WVW7E7V&Ö—B‚“°¢Ò6F6‚°¢'WGFöâæF—6&ÆVBÒfÇ6S°¢6öç7Bæ÷F–6RÒFö7VÖVçBævWDVÆVÖVçD'”–B‚vÆöv÷WBÖÖW76vRr“°¢–b†æ÷F–6R’æ÷F–6RçFW‡D6öçFVçBÒ}Ší‹˜ŠÂŠ­Š=¸Í¸ÍŠò˜m‹MŠý‰²˜m‹M‹=Š¢‹ŠrŠ‹=Š­˜r˜‹‹b˜mª˜m¸ÍŠòâs°¢Ð¢Ò“°§Ò“²""  ¥5DtUõUÄôEõ45$•BÒ"""&Fö7VÖVçBæFDWfVçDÆ—7FVæW"‚w7V&Ö—BrÂ7–æ2WfVçBÓâ°¢6öç7Bf÷&ÒÒWfVçBçF&vWC°¢–b‚†f÷&Ò–ç7Fæ6Vöb…DÔÄf÷&ÔVÆVÖVçB’ÇÂf÷&Òæ†4GG&–'WFR‚vFF×7FvR×WÆöBr’’&WGW&ã°¢WfVçBç&WfVçDFVfVÇB‚“°¢6öç7Bf–ÆT–çWBÒf÷&ÒçVW'•6VÆV7F÷"‚v–çWE·G—SÖf–ÆUÒr“°¢6öç7BF–vW7D–çWBÒf÷&ÒçVW'•6VÆV7F÷"‚v–çWE¶æÖSÖ'F–f7EöF–vW7EÒr“°¢6öç7Bæ÷F–6RÒf÷&ÒçVW'•6VÆV7F÷"‚u¶FF×WÆöB×7FGW5Òr“°¢6öç7B'WGFöâÒf÷&ÒçVW'•6VÆV7F÷"‚v'WGFöå·G—S×7V&Ö—EÒr“°¢6öç7Bf–ÆRÒf–ÆT–çWBbbf–ÆT–çWBæf–ÆW2bbf–ÆT–çWBæf–ÆW5³Ó°¢6öç7B6’ÒFW‡BÓâ²–b†æ÷F–6R’æ÷F–6RçFW‡D6öçFVçBÒFW‡C²Ó°¢6öç7B6fTf–ÇW&RÒ7–æ2&W7öç6RÓâ°¢ÆWBFWF–ÂÒrs°¢G'’²FWF–ÂÒ†v—B&W7öç6Ræ§6öâ‚’’æFWF–ÂÇÂrs²Ò6F6‚·Ð¢–b‡&W7öç6Rç7FGW2ÓÓÒC’&WGW&â}˜m‹M‹=Š¢‹M˜]Šr˜]‹Š­Š‹˜m¸Í‹=Š­‰²Šý˜ŠŠ}‹˜r˜Š}‹Šò‹M˜¸ÍŠòâs°¢–b‡&W7öç6Rç7FGW2ÓÓÒC2’&WGW&â}Šý‹Ší˜Š}‹=Š¢Š}‹"˜m‹‹Š}˜]˜m¸ÍŠ­¸ÂŠ­Š=¸Í¸ÍŠò˜m‹MŠý‰²‹]˜ŠÝ˜r‹ŠrŠ­Š}‹-˜rª˜m¸ÍŠòâs°¢–b‡&W7öç6Rç7FGW2ÓÓÒC’’&WGW&â}Š}‹}˜MŠ}‹Š}Š¢›í‹˜˜mŠý˜r¸ÍŠr‹}‹ŠÒŠ­‹­¸Í¸Í‹ª‹Šý˜}‰²‹]˜ŠÝ˜r‹ŠrŠ­Š}‹-˜rª˜m¸ÍŠòâs°¢–b‡&W7öç6Rç7FGW2ÓÓÒC2ÇÂFWF–ÂÓÓÒu5DtUô%D”d5EõDôõôÄ$tRr¢&WGW&â}ŠÝŠÍ˜R˜Š}¸Í˜BŠ}‹"‹=˜-˜»‚˜]ªýŠ}ŠŠ}¸ÍŠ¢Š¸Í‹MŠ­‹Š}‹=Š¢âs°¢–b‡&W7öç6Rç7FGW2ÓÓÒC#"’&WGW&â}˜m˜‹’¸ÍŠr˜]ŠÝŠ­˜Š}¸Â˜Š}¸Í˜B›í‹¸Í‹˜Š­˜r˜m‹MŠòâs°¢&WGW&â}Š½ŠŠ¢Š}˜mŠÍŠ}˜R˜m‹MŠý‰²˜‹m‹¸ÍŠ¢›í‹˜˜mŠý˜r‹ŠrŠ­Š}‹-˜rª˜m¸ÍŠò˜‚Šý˜ŠŠ}‹˜rŠ­˜MŠ}‹Bª˜m¸ÍŠòâs°¢Ó°¢–b‚f–ÆRÇÂF–vW7D–çWB’²6’‚}Š}ŠŠ­ŠýŠr¸Íª’˜Š}¸Í˜BŠ­‹]˜¸Í‹¸ÍŠrDbŠ}˜mŠ­ŠíŠ}Š‚ª˜m¸ÍŠòâr“²&WGW&ã²Ð¢–b†f–ÆRç6—¦RÂÇÂf–ÆRç6—¦Râ‚¢#B¢#B’²6’‚}Š}˜mŠýŠ}‹-˜r˜Š}¸Í˜BŠŠ}¸ÍŠòŠÝŠýŠ}ªŠ½‹»‚˜]ªýŠ}ŠŠ}¸ÍŠ¢ŠŠ}‹MŠòâr“²&WGW&ã²Ð¢–b‚²v–ÖvRö§VrrÂv–ÖvR÷ærrÂv–ÖvR÷vV'rÂvÆ–6F–öâ÷FbuÒæ–æ6ÇVFW2†f–ÆRçG—R’’°¢F–vW7D–çWBçfÇVRÒrs°¢6’‚}˜˜-‹r˜Š}¸Í˜B¥T}ˆÂä}ˆÂvV%¸ÍŠrDb›í‹¸Í‹˜Š­˜r˜]¸Î(Í‹M˜Šòâr“°¢&WGW&ã°¢Ð¢F–vW7D–çWBçfÇVRÒrs°¢–b†'WGFöâ’'WGFöâæF—6&ÆVBÒG'VS°¢6’‚}˜Š}¸Í˜BŠý‹ŠÝŠ}˜BŠŠ}‹ªý‹Š}‹¸ÂŠ}‹=Š®(
+br“°¢G'’°¢6öç7BvWBÒæÖRÓâf÷&ÒæVÆVÖVçG2ææÖVD—FVÒ†æÖR’çfÇVS°¢6öç7BWÆöFVBÒv—BfWF6‚†f÷&ÒæFF6WBçWÆöEW&ÂÂ°¢ÖWF†öC¢uUBrÂ7&VFVçF–Ç3¢w6ÖRÖ÷&–v–ârÂ66†S¢væò×7F÷&RrÂ&öG“¦f–ÆRÀ¢†VFW'3§²t6öçFVçBÕG—Rs¦f–ÆRçG—RÂu‚Ô55$bÕFö¶Vâs¦vWB‚v77&br’À¢u‚Õ&öæ2Ô66RÕfW'6–öâs¦vWB‚v66U÷fW'6–öâr’À¢u‚Õ&öæ2Ô–çWBÕ&Wf—6–öâs¦vWB‚v–çWE÷&Wf—6–öâr’À¢u‚Õ&öæ2ÕÆâÔF–vW7Bs¦vWB‚wÆåöF–vW7Br’Âu‚Õ&öæ2Õ7FvRÕ&Vbs¦vWB‚w7FvU÷&Vbr’À¢u‚Õ&öæ2Õ&WV—&VÖVçG2ÔF–vW7Bs¦vWB‚w&WV—&VÖVçG5öF–vW7Br—Ð¢Ò“°¢–b‚WÆöFVBæö²’F‡&÷rW'&÷"†v—B6fTf–ÇW&R‡WÆöFVB’“°¢6öç7B'F–f7BÒv—BWÆöFVBæ§6öâ‚“°¢–b‚õå³Ó–Öe×³cGÒBòçFW7B†'F–f7BæF–vW7B’ÇÂ'F–f7Bæ'—FUöÆVæwF‚ÓÒf–ÆRç6—¦P¢ÇÂ'F–f7Bæ6öçFVçE÷G—RÓÒf–ÆRçG—RÇÂ'F–f7Bç7F÷&VBÓÒG'VR¢F‡&÷rW'&÷"‚}›íŠ}‹=ŠâŠ}˜]˜bŠŠ}‹ªý‹Š}‹¸Â˜Š}¸Í˜B˜]‹Š­Š‹˜m¸Í‹=Š­‰²Šý˜ŠŠ}‹˜rŠ­˜MŠ}‹Bª˜m¸ÍŠòâr“°¢F–vW7D–çWBçfÇVRÒ'F–f7BæF–vW7C°¢6öç7Bf–VÆG2ÒæWrU$Å6V&6…&×2‚“°¢f÷"†6öç7B¶¶W’ÂfÇVUÒöbæWrf÷&ÔFF†f÷&Ò’æVçG&–W2‚’¢–b‡G—VöbfÇVRÓÓÒw7G&–ærr’f–VÆG2æVæB†¶W’ÂfÇVR“°¢6öç7B6fVBÒv—BfWF6‚†f÷&Òæ7F–öâÂ°¢ÖWF†öC¢uõ5BrÂ7&VFVçF–Ç3¢w6ÖRÖ÷&–v–ârÂ66†S¢væò×7F÷&RrÀ¢†VFW'3§²t6öçFVçBÕG—Rs¢vÆ–6F–öâ÷‚×wwrÖf÷&Ò×W&ÆVæ6öFVBwÒÂ&öG“¦f–VÆG0¢Ò“°¢–b‚6fVBæö²’F‡&÷rW'&÷"†v—B6fTf–ÇW&R‡6fVB’“°¢v–æF÷ræÆö6F–öâæ76–vâ‡6fVBçW&Â“°¢Ò6F6‚†W'&÷"’°¢6’†W'&÷"–ç7Fæ6VöbW'&÷"bbW'&÷"æÖW76vP¢òW'&÷"æÖW76vR¢}Š½ŠŠ¢Š}˜mŠÍŠ}˜R˜m‹MŠý‰²˜‹m‹¸ÍŠ¢›í‹˜˜mŠý˜r‹ŠrŠ­Š}‹-˜rª˜m¸ÍŠò˜‚Šý˜ŠŠ}‹˜rŠ­˜MŠ}‹Bª˜m¸ÍŠòâr“°¢–b†'WGFöâ’'WGFöâæF—6&ÆVBÒfÇ6S°¢Ð§Ò“°¦Fö7VÖVçBæFDWfVçDÆ—7FVæW"‚v6†ævRrÂWfVçBÓâ°¢6öç7B–çWBÒWfVçBçF&vWC°¢–b‚†–çWB–ç7Fæ6Vöb…DÔÄ–çWDVÆVÖVçB’ÇÂ–çWBçG—RÓÒvf–ÆRr’&WGW&ã°¢6öç7Bf÷&ÒÒ–çWBæf÷&Ó°¢–b‚†f÷&Ò–ç7Fæ6Vöb…DÔÄf÷&ÔVÆVÖVçB’ÇÂf÷&Òæ†4GG&–'WFR‚vFF×7FvR×WÆöBr’’&WGW&ã°¢6öç7BF–vW7BÒf÷&ÒçVW'•6VÆV7F÷"‚v–çWE¶æÖSÖ'F–f7EöF–vW7EÒr“°¢6öç7Bæ÷F–6RÒf÷&ÒçVW'•6VÆV7F÷"‚u¶FF×WÆöB×7FGW5Òr“°¢–b†F–vW7B’F–vW7BçfÇVRÒrs°¢–b†æ÷F–6R’æ÷F–6RçFW‡D6öçFVçBÒrs°§Ò“²""  ¦FVbvR‡F—FÆS¢7G"Â&öG“¢7G"Â¢ÂÆövvVEö–ã¢&ööÂÂ6öFS¢–çBÒ#À¢Æö6Å÷FW7Eöf÷&Ó¢&ööÂÒfÇ6RÀ¢Æöv–å÷&WGW&å÷Fƒ¢7G"Ò"ò"À¢7FvU÷WÆöE÷67&—C¢&ööÂÒfÇ6R’Óâ…DÔÅ&W7öç6S ¢Æöv÷WBÒ€¢sÆ'WGFöâG—SÒ&'WGFöâ"–CÒ'&öæ2ÖÆöv÷WB#íŠí‹˜ŠÂŠ}˜]˜cÂö'WGFöãâp¢sÇ–CÒ&Æöv÷WBÖÖW76vR"&öÆSÒ'7FGW2"&–ÖÆ—fSÒ'öÆ—FR#ãÂ÷âp¢–bÆövvVEö–âVÇ6R€¢sÆ6Æ73Ò&'Fâ"‡&VcÒ"ö’öWF‚÷7F'C÷&WGW&å÷FóÒp¢²V÷FR†Æöv–å÷&WGW&å÷F‚Â6fSÒrr’²r#í˜‹˜ŠòŠŠr¶W–6Æö³Âöâp¢¢¢‡FÖÂÒ‚sÂFö7G—R‡FÖÃãÆ‡FÖÂÆæsÒ&f"F—#Ò''FÂ#ãÆ†VCâp¢sÆÖWF6†'6WCÒ'WFbÓ‚#ãÆÖWFæÖSÒ'f–Ww÷'B"6öçFVçCÒ'v–GFƒÖFWf–6R×v–GF‚Æ–æ—F–Â×66ÆSÓ#âp¢sÇF—FÆSâr²W66R‡F—FÆR’²sÂ÷F—FÆSâp¢sÆÆ–æ²&VÃÒ'7G–ÆW6†VWB"‡&VcÒ"ö76WG2÷&öæ2æ772#âp¢sÂö†VCãÆ&öG“ãÆ†VFW"6Æ73Ò'F÷#ãÆ6Æ73Ò&'&æB"‡&VcÒ"ò#í‹˜˜mŠ}‹3Âöâp¢sÆæb&–ÖÆ&VÃÒ-Šý˜‚˜]ŠÝ¸Í‹r‹˜˜mŠ}‹2#ãÆ‡&VcÒ"ò#í‹˜˜mŠ}‹3Âöâp¢sÆ‡&VcÒ"öFÖ–â#í˜]Šý¸Í‹¸ÍŠ¢‹˜˜mŠ}‹3ÂöãÂöæcãÂö†VFW#âp¢sÆF—b6Æ73Ò&FVÖò#ãÇ7G&öæsí˜m‹=Ší˜rŠ-‹-˜]Š}¸Í‹M¸ÃÂ÷7G&öæsâ+r˜}˜]˜rŠ}‹}˜MŠ}‹Š}Š¢˜m˜]˜˜m˜r˜}‹=Š­˜mŠý‰²p¢}˜}¸Í¨b‹˜]˜M¸ÍŠ}Š¢˜]Š}˜M¸ÍˆÂ‹]Š}Šý‹Š}Š­ˆÂŠ½ŠŠ®(Í˜mŠ}˜R¸ÍŠrŠ­Š=¸Í¸ÍŠò‹˜M˜]¸ÂŠ}˜mŠÍŠ}˜R˜m˜]¸Î(Í‹M˜ŠòãÂöF—câp¢sÆÖ–â6Æ73Ò'w&"–CÒ&Ö–â#ãÆƒâr²W66R‡F—FÆR’²sÂöƒâp¢²&öG’²sÇ6V7F–öâ6Æ73Ò'6V7F–öâ#âr²Æöv÷WB²sÂ÷6V7F–öããÂöÖ–ãâp¢sÇ67&—B7&3Ò"ö76WG2÷&öæ2ÖWF‚æ§2"FVfW#ãÂ÷67&—Câp¢²‚sÇ67&—B7&3Ò"ö76WG2÷&öæ2×7FvRÖö'6W'fF–öâ×WÆöBæ§2"FVfW#ãÂ÷67&—Câp¢–b7FvU÷WÆöE÷67&—BVÇ6Rrr¢²sÂö&öG“ãÂö‡FÖÃâr¢&W7öç6RÒ…DÔÅ&W7öç6R†‡FÖÂÂ7FGW5ö6öFSÖ6öFR¢&W7öç6Ræ†VFW'5²$6öçFVçBÕ6V7W&—G’ÕöÆ–7’%ÒÒ€¢&FVfVÇB×7&2væöæRs²7G–ÆR×7&2w6VÆbs²67&—B×7&2w6VÆbs² ¢&6öææV7B×7&2w6VÆbs²&6R×W&’væöæRs²f÷&ÒÖ7F–öâ ¢²‚"w6VÆbr"–bÆö6Å÷FW7Eöf÷&ÒVÇ6R"væöæRr"¢²#²g&ÖRÖæ6W7F÷'2væöæRs²ö&¦V7B×7&2væöæRr ¢¢&W7öç6Ræ†VFW'5²%‚Ôg&ÖRÔ÷F–öç2%ÒÒ$DTå’ ¢&W7öç6Ræ†VFW'5²$66†RÔ6öçG&öÂ%ÒÒ&æò×7F÷&R ¢&WGW&â&W7öç6P   ¦FVb&VFöæÇ•öFöÖW7F–5÷&W&F–öåö‡FÖÂ‡&W&F–öã¢F–7B’Óâ7G# ¢""$öæR6fRDTÔòf–VÆBF—7Æ’Â6†&VB'’÷væW"æB76–væVBW‡W'Bâ"" ¢6Æ÷G2Ò€¢‚-˜]ŠÝ‹]˜˜B"Â&7&÷"’Â‚-˜]‹=Š}ŠÝŠ¢"Â&w&÷v–æuö&V"’À¢‚-Š-Š‚"Â'vFW""’Â‚-ŠíŠ}ª’"Â'6ö–Â"’Â‚-˜]˜˜-‹¸ÍŠ¢"Â&Æö6F–öâ"’À¢¢2FVÆ–&W&FVÇ’öæÇ’66WBF†RW&RÄô4ÂõDU5BVæ¶æ÷vâÖ–çWB6öçG&7C°¢2F†—2&VæFW&W"×W7BæWfW"&V6öÖR&rÖ–çWB÷"Gf—6÷'’&VæFW&W"à¢–b‡&W&F–öå²&–çWE÷7FFR%ÒÒ$äõEõ$T4õ$DTEô”åôDTÔò ¢÷"ç’‡&W&F–öå²&7VÇF—fF–öåö–çWG2%Õ¶¶W•Ò—2æ÷BæöæP¢f÷"òÂ¶W’–â6Æ÷G2¢÷"&W&F–öå²'Æå÷7FFR%ÒÒ$äõEôUD„õ$TB ¢÷"&W&F–öå²&'W6–æW75ö7F–öç5öVæ&ÆVB%Ò—2æ÷BfÇ6R“ ¢&—6RfÇVTW'&÷"‚'Væ&÷fVB7VÇF—fF–öâ&W&F–öâF—7Æ’7FFR"¢WfVçG2Ò&W&F–öå²'FV6†æ–6Å÷F–ÖVÆ–æR%Ð¢–bæ÷B—6–ç7Fæ6R†WfVçG2ÂÆ—7B“ ¢&—6RfÇVTW'&÷"‚&–çfÆ–BFV6†æ–6ÂF–ÖVÆ–æR"¢G'“ ¢&V6÷&FVBÒGWÆR€¢WfVçE²'FV6†æ–6ÅöWfVçB%Òf÷"WfVçB–âWfVçG0¢¢W‡V7FVBÒFöÖW7F–5÷&W&F–öå÷&Wf–Wr€¢66U÷fW'6–öã×&W&F–öå²&66U÷fW'6–öâ%ÒÀ¢&Wf–Wu÷&Wf—6–öã×&W&F–öå²'&Wf–Wu÷&Wf—6–öâ%ÒÀ¢FV6†æ–6Å÷&Wf–Wu÷7FFS×&W&F–öå²'FV6†æ–6Å÷&Wf–Wu÷7FFR%ÒÀ¢fÆ–E÷&Wf–Wu÷7FFW3Õ$Ud”Uuõ5DDU2À¢ö'6W'fVE÷&Wf–Wu÷7FW3×&V6÷&FVBÀ¢¢–b&W&F–öâÒW‡V7FVC ¢&—6RfÇVTW'&÷"‚'VæW‡V7FVBF—7Æ’6æ6†÷B"¢W†6WB…G—TW'&÷"Â¶W”W'&÷"ÂGG&–'WFTW'&÷"’2W†3 ¢&—6RfÇVTW'&÷"‚&–çfÆ–BFV6†æ–6ÂF–ÖVÆ–æR"’g&öÒW†0¢Æ&VÇ2Ò°¢%DT4…õ$Ud”Uuõ$UTU5DTB# ¢-Šý‹Ší˜Š}‹=Š¢Š‹‹‹=¸Â˜˜m¸ÂŠ½ŠŠ¢‹MŠý˜}‰²Š}¸Í˜b˜]‹ŠÝ˜M˜rŠ­Š=¸Í¸ÍŠò‹˜M˜]¸Â˜m¸Í‹=Š¢â"À¢%DT4…ô…TÔåõ$U5ôå4Uõ$T4õ$DTB# ¢-˜]‹ŠÍ‹’›íŠ}‹=Šâ˜˜m¸ÂŠ½ŠŠ¢‹MŠý˜}‰²‹}‹ŠÒª‹MŠ¢Š­Š=¸Í¸ÍŠò˜m‹MŠý˜rŠ}‹=Š¢â"À¢Ð¢†—7F÷'’Ò€¢sÆöÃâr²rræ¦ö–â€¢sÆÆ“í˜]‹ŠÝ˜M˜rr²7G"†WfVçE²'&Wf—6–öâ%Ò’²s¢p¢²Æ&VÇ5¶WfVçE²'FV6†æ–6ÅöWfVçB%ÕÒ²sÂöÆ“âp¢f÷"WfVçB–âWfVçG0¢’²sÂööÃâp¢–bWfVçG2VÇ6RsÇí˜}˜m˜‹"‹˜¸ÍŠýŠ}ŠòŠ‹‹‹=¸Â˜˜m¸ÂŠ½ŠŠ¢˜m‹MŠý˜rŠ}‹=Š¢ãÂ÷âp¢¢F–ÖVÆ–æUö‡FÖÂÒ€¢sÇ6V7F–öâ&–ÖÆ&VÃÒ-‹=Š}Š˜-˜r›í¸Íªý¸Í‹¸Â˜˜m¸Â#ãÆƒ3í‹=Š}Š˜-˜r›í¸Íªý¸Í‹¸Â˜˜m¸ÃÂöƒ3âp¢²†—7F÷'¢²sÇíŠ­˜m˜}Šr˜]‹Š}ŠÝ˜B˜˜m¸ÂŠ½ŠŠ®(Í‹MŠý˜r˜m˜]Š}¸Í‹BŠýŠ}Šý˜r˜]¸Î(Í‹M˜˜mŠý‰²p¢}Š­Š}‹¸ÍŠíˆÂ˜m‹‹Š­Ší‹]‹]¸Â¸ÍŠrŠ­‹]˜]¸Í˜RŠý‹ŠŠ}‹˜rª‹MŠ¢Š}‹"Š-˜bŠ}‹=Š­˜mŠ­Š}ŠÂ˜m˜]¸Î(Í‹M˜ŠòãÂ÷âp¢sÂ÷6V7F–öãâp¢¢—FV×2Òrræ¦ö–â‚sÆÆ“âr²Æ&VÂ²s¢Š­‹¸Í¸Í˜b˜m‹MŠý˜sÂöÆ“âp¢f÷"Æ&VÂÂò–â6Æ÷G2¢&WGW&â€¢sÇ6V7F–öããÆƒ3íŠ}‹}˜MŠ}‹Š}Š¢ª‹MŠ¢Šý‹›í¸Í‹N(Í˜m˜]Š}¸Í‹BŠ-‹-˜]Š}¸Í‹M¸ÃÂöƒ3âp¢sÇíŠ}¸Í˜b˜¸Í˜MŠý˜}Šr‹]‹˜Š}˜²ŠÍŠ}¸ÍªýŠ}˜r˜m˜]Š}¸Í‹M¸Â˜}‹=Š­˜mŠý‰²p¢}˜]‹¸ÍŠ}‹ª˜Š}¸ÍŠ¢Š}‹}˜MŠ}‹Š}Š¢Š‹Š}¸Â‹}‹ŠÒª‹MŠ¢Š­‹¸Í¸Í˜b˜m‹MŠý˜rŠ}‹=Š¢ãÂ÷âp¢sÇVÃâr²—FV×2²sÂ÷VÃâp¢sÇí‹}‹ŠÒª‹MŠ¢Š­˜˜M¸ÍŠò˜m‹MŠý˜rŠ}‹=Š¢â‹‹mŠ}¸ÍŠ¢˜Š}˜-‹¸ÂŠ}ŠÝ‹Š}‹"˜m‹MŠý˜}‰²p¢}‹]˜MŠ}ŠÝ¸ÍŠ¢ŠÝ‹˜˜~(ÍŠ}¸Â˜‚Š­Š=¸Í¸ÍŠò‹˜M˜]¸Â˜m¸Í‹"Š}ŠÝ‹Š}‹"˜m‹MŠý˜~(ÍŠ}˜mŠòãÂ÷ãÂ÷6V7F–öãâp¢²F–ÖVÆ–æUö‡FÖÀ¢  ¦FVb'V–ÆEöWF†VçF–6FVE÷V•÷&÷WFW"€¢fÆ÷s¢'&÷w6W$ô”D2À¢FV6†æ–6Å÷&Wf–WuöÆVFvW#¢7Æ—FU7–çF†WF–4‡VÖå&Wf–WtÆVFvW"ÂæöæRÒæöæRÀ¢÷væVEö66UöÆVFvW#¢7Æ—FU7–çF†WF–4w&çDÆVFvW"ÂæöæRÒæöæRÀ¢†÷W6V†öÆEö–çWEöÆVFvW#¢7Æ—FU7–çF†WF–4†÷W6V†öÆD–çWDÆVFvW"ÂæöæRÒæöæRÀ¢†÷W6V†öÆE÷&öf–ÆU÷66†VÖ¢†÷W6V†öÆD–çWE66†VÖÂæöæRÒæöæRÀ¢†÷W6V†öÆE÷&öf–ÆUö66W75öWF†÷&—G“¢6ÆÆ&ÆUµµ&–æ6—ÂÂ7G"Â7G%ÒÂ&ööÅÒÂæöæRÒæöæRÀ¢†÷W6V†öÆE÷7FvUö6öçFW‡EöWF†÷&—G“¢6ÆÆ&ÆUµ·7G%ÒÂ7W'&VçE7FvT6öçFW‡BÂæöæUÒÂæöæRÒæöæRÀ¢vFUö†æFöfeöÆVFvW#¢7Æ—FU7–çF†WF–4vFTWf–FVæ6T†æFöfbÂæöæRÒæöæRÀ¢WF†÷&—G•öVçV—'•öÆVFvW#¢7Æ—FU7–çF†WF–4WF†÷&—G”VçV—'”ÆVFvW"ÂæöæRÒæöæRÀ¢w&öæö×•÷v÷&·76S¢7–çF†WF–4w&öæö×•v÷&·76RÂæöæRÒæöæRÀ¢W‡÷'E÷7WÆ–W%÷v÷&·76S¢7–çF†WF–57WÆ–W%v÷&·76RÂæöæRÒæöæRÀ¢FöÖW7F–5÷'FæW%÷v÷&·76S¢7–çF†WF–4FöÖW7F–5'FæW%v÷&·76RÂæöæRÒæöæRÀ¢†÷W6V†öÆE÷7FvUö'F–f7E÷7F÷&S¢7FvT'F–f7E7F÷&RÂæöæRÒæöæRÀ¢W‡÷'E÷6÷W&6Uö6öææV7F÷'3¢W‡÷'E6÷W&6T6öææV7F÷%&Vv—7G'’ÂæöæRÒæöæRÀ¢†÷W6V†öÆE÷7W'ÇW5÷V&Æ–6F–öåöWF†÷&—G“ÔæöæRÀ¢†÷W6V†öÆE÷7W'ÇW5öG&gEöÆVFvW#¢7W'ÇW4G&gDÆVFvW"ÂæöæRÒæöæRÀ¢†÷W6V†öÆE÷7W'ÇW5÷&öGV6W%ö6öç6VçEöÆVFvW#¢&öGV6W$6öç6VçDÆVFvW"ÂæöæRÒæöæRÀ¢’Óâ•&÷WFW# ¢–bW‡÷'E÷6÷W&6Uö6öææV7F÷'2—2æ÷BæöæRæB€¢æ÷B—6–ç7Fæ6R†W‡÷'E÷6÷W&6Uö6öææV7F÷'2ÂW‡÷'E6÷W&6T6öææV7F÷%&Vv—7G'’¢÷"FV6†æ–6Å÷&Wf–WuöÆVFvW"—2æöæR“ ¢&—6RfÇVTW'&÷"‚$W‡÷'B6öææV7F÷"T’&WV—&W2F†RW‡Æ–6—B&Wf–WrÆVFvW""¢–b†÷W6V†öÆE÷7W'ÇW5÷V&Æ–6F–öåöWF†÷&—G’—2æ÷BæöæRæB€¢æ÷B6ÆÆ&ÆR††÷W6V†öÆE÷7W'ÇW5÷V&Æ–6F–öåöWF†÷&—G’¢÷"æ÷B—6–ç7Fæ6R††÷W6V†öÆEö–çWEöÆVFvW"À¢7Æ—FU7–çF†WF–4†÷W6V†öÆE&öf–ÆTÆVFvW"¢÷"†÷W6V†öÆEö–çWEöÆVFvW"—2æ÷BFV6†æ–6Å÷&Wf–WuöÆVFvW ¢÷"†÷W6V†öÆE÷&öf–ÆU÷66†VÖÒ†÷W6V†öÆEö–çWEöÆVFvW"ç&öf–ÆU÷66†VÖ¢÷"æ÷B6ÆÆ&ÆR††÷W6V†öÆE÷&öf–ÆUö66W75öWF†÷&—G’’“ ¢&—6RfÇVTW'&÷"€¢'7W'ÇW2&VF–æW72T’&WV—&W2F†R6ÖR÷væW"×66÷VB†÷W6V†öÆB&öf–ÆRÆVFvW" ¢¢–b†÷W6V†öÆE÷7W'ÇW5öG&gEöÆVFvW"—2æ÷BæöæRæB€¢æ÷B—5÷7W'ÇW5öG&gEöÆVFvW"††÷W6V†öÆE÷7W'ÇW5öG&gEöÆVFvW"¢÷"æ÷B—6–ç7Fæ6R††÷W6V†öÆEö–çWEöÆVFvW"À¢7Æ—FU7–çF†WF–4†÷W6V†öÆE&öf–ÆTÆVFvW"¢÷"†÷W6V†öÆEö–çWEöÆVFvW"—2æ÷BFV6†æ–6Å÷&Wf–WuöÆVFvW ¢÷"æ÷B6ÆÆ&ÆR††÷W6V†öÆE÷&öf–ÆUö66W75öWF†÷&—G’¢÷"†÷W6V†öÆE÷7W'ÇW5öG&gEöÆVFvW"åö÷væW%ö66W75öWF†÷&—G¢Ò†÷W6V†öÆE÷&öf–ÆUö66W75öWF†÷&—G’“ ¢&—6RfÇVTW'&÷"€¢'7W'ÇW2G&gBT’&WV—&W2F†R6†&VB÷væW"×66÷VB†÷W6V†öÆBWF†÷&—G’ ¢¢–b†÷W6V†öÆE÷7W'ÇW5÷&öGV6W%ö6öç6VçEöÆVFvW"—2æ÷BæöæRæB€¢†÷W6V†öÆE÷7W'ÇW5öG&gEöÆVFvW"—2æöæP¢÷"æ÷B—5÷&öGV6W%ö6öç6VçEöÆVFvW"€¢†÷W6V†öÆE÷7W'ÇW5÷&öGV6W%ö6öç6VçEöÆVFvW"À¢†÷W6V†öÆE÷7W'ÇW5öG&gEöÆVFvW"À¢’“ ¢&—6RfÇVTW'&÷"€¢'&öGV6W"6öç6VçB×W7B6†&RF†RW†7B7W'ÇW2G&gBÆVFvW" ¢¢2öæÇ’F†R÷BÖ–â6ÖRÖ–ç7Fæ6RÆVFvW"–æ¦V7FVB'’7&VFUöÖ¢2&÷f–FRF†R7–çF†WF–2v÷&¶Æ—7BâæWfW"G'W7B6Æ–VçB×6–FR&öÆRÆ—7Bà¢–b‡FV6†æ–6Å÷&Wf–WuöÆVFvW"—2æ÷BæöæP¢æBæ÷B—6–ç7Fæ6R‡FV6†æ–6Å÷&Wf–WuöÆVFvW"Â7Æ—FU7–çF†WF–4‡VÖå&Wf–WtÆVFvW"’“ ¢&—6RfÇVTW'&÷"‚'FV6†æ–6Â&Wf–Wrv÷&¶Æ—7B&WV—&W2W‡Æ–6—BÆVFvW""¢–b†÷væVEö66UöÆVFvW"—2æ÷BæöæP¢æBæ÷B—6–ç7Fæ6R†÷væVEö66UöÆVFvW"Â7Æ—FU7–çF†WF–4w&çDÆVFvW"’“ ¢&—6RfÇVTW'&÷"‚&÷væVB†÷W6V†öÆBÆ—7B&WV—&W2W‡Æ–6—Bw&çBÆVFvW""¢–b††÷W6V†öÆEö–çWEöÆVFvW"—2æ÷BæöæP¢æB†æ÷B—6–ç7Fæ6R††÷W6V†öÆEö–çWEöÆVFvW"À¢7Æ—FU7–çF†WF–4†÷W6V†öÆD–çWDÆVFvW"¢÷"†÷W6V†öÆEö–çWEöÆVFvW"—2æ÷B÷væVEö66UöÆVFvW ¢÷"†÷W6V†öÆEö–çWEöÆVFvW"—2æ÷BFV6†æ–6Å÷&Wf–WuöÆVFvW"’“ ¢&—6RfÇVTW'&÷"‚&†÷W6V†öÆB–çWB×W7BW6R6ÖRW‡Æ–6—B&Wf–WrÆVFvW""¢–b†÷W6V†öÆE÷&öf–ÆU÷66†VÖ—2æ÷BæöæS ¢–b†æ÷B—6–ç7Fæ6R††÷W6V†öÆEö–çWEöÆVFvW"Â7Æ—FU7–çF†WF–4†÷W6V†öÆE&öf–ÆTÆVFvW"¢÷"†÷W6V†öÆEö–çWEöÆVFvW"ç&öf–ÆU÷66†VÖÒ†÷W6V†öÆE÷&öf–ÆU÷66†VÖ¢÷"æ÷B6ÆÆ&ÆR††÷W6V†öÆE÷&öf–ÆUö66W75öWF†÷&—G’’“ ¢&—6RfÇVTW'&÷"‚&†÷W6V†öÆB&öf–ÆRT’æVVG2W†7BÆVFvW"÷66†VÖöWF†÷&—G’"¢VÆ–b†÷W6V†öÆE÷&öf–ÆUö66W75öWF†÷&—G’—2æ÷BæöæS ¢&—6RfÇVTW'&÷"‚&†÷W6V†öÆB&öf–ÆRWF†÷&—G’&WV—&W2W‡Æ–6—B66†VÖ"¢–b†÷W6V†öÆE÷7FvUö6öçFW‡EöWF†÷&—G’—2æ÷BæöæS ¢–b††÷W6V†öÆE÷&öf–ÆU÷66†VÖ—2æöæP¢÷"æ÷B6ÆÆ&ÆR††÷W6V†öÆE÷7FvUö6öçFW‡EöWF†÷&—G’’“ ¢&—6RfÇVTW'&÷"‚'7FvRö'6W'fF–öâT’æVVG27W'&VçB6öçFW‡BWF†÷&—G’"¢–b†÷W6V†öÆE÷7FvUö'F–f7E÷7F÷&R—2æ÷BæöæRæB€¢†÷W6V†öÆE÷7FvUö6öçFW‡EöWF†÷&—G’—2æöæP¢÷"†÷W6V†öÆE÷&öf–ÆU÷66†VÖ—2æöæP¢÷"æ÷B6ÆÆ&ÆR††÷W6V†öÆE÷&öf–ÆUö66W75öWF†÷&—G’¢÷"æ÷BÆÂ†6ÆÆ&ÆR†vWFGG"††÷W6V†öÆE÷7FvUö'F–f7E÷7F÷&RÂæÖRÂæöæR’¢f÷"æÖR–â‚'WB"Â&vWB"Â&6öçF–ç2"’’“ ¢&—6RfÇVTW'&÷"‚'7FvRWÆöBT’&WV—&W2W†7B7F÷&RæB&öf–ÆRWF†÷&—F–W2"¢–b†vFUö†æFöfeöÆVFvW"—2æ÷BæöæP¢æBæ÷B—6–ç7Fæ6R†vFUö†æFöfeöÆVFvW"À¢7Æ—FU7–çF†WF–4vFTWf–FVæ6T†æFöfb’“ ¢&—6RfÇVTW'&÷"‚'FV6†æ–6ÂvFR†æFöfb&WV—&W2W‡Æ–6—B7–çF†WF–2ÆVFvW""¢–b†WF†÷&—G•öVçV—'•öÆVFvW"—2æ÷BæöæP¢æB†æ÷B—6–ç7Fæ6R†WF†÷&—G•öVçV—'•öÆVFvW"À¢7Æ—FU7–çF†WF–4WF†÷&—G”VçV—'”ÆVFvW"¢÷"vFUö†æFöfeöÆVFvW"—2æöæP¢÷"WF†÷&—G•öVçV—'•öÆVFvW"æ†æFöfb—2æ÷BvFUö†æFöfeöÆVFvW"’“ ¢&—6RfÇVTW'&÷"‚&WF†÷&—G’VçV—'’&WV—&W26ÖRW‡Æ–6—B†æFöfbÆVFvW""¢–b†w&öæö×•÷v÷&·76R—2æ÷BæöæP¢æB†æ÷B—6–ç7Fæ6R†w&öæö×•÷v÷&·76RÂ7–çF†WF–4w&öæö×•v÷&·76R¢÷"FV6†æ–6Å÷&Wf–WuöÆVFvW"—2æöæP¢÷"w&öæö×•÷v÷&·76RæÆVFvW"—2æ÷BFV6†æ–6Å÷&Wf–WuöÆVFvW"’“ ¢&—6RfÇVTW'&÷"‚&w&öæö×’æVVG2F†R6ÖRW‡Æ–6—B‡VÖâ×&Wf–WrÆVFvW""¢–b†W‡÷'E÷7WÆ–W%÷v÷&·76R—2æ÷BæöæP¢æBæ÷B—6–ç7Fæ6R†W‡÷'E÷7WÆ–W%÷v÷&·76RÂ7–çF†WF–57WÆ–W%v÷&·76R’“ ¢&—6RfÇVTW'&÷"‚&W‡Æ–6—B7–çF†WF–27WÆ–W"v÷&·76R&WV—&VB"¢–b†FöÖW7F–5÷'FæW%÷v÷&·76R—2æ÷BæöæP¢æBæ÷B—6–ç7Fæ6R†FöÖW7F–5÷'FæW%÷v÷&·76RÀ¢7–çF†WF–4FöÖW7F–5'FæW%v÷&·76R’“ ¢&—6RfÇVTW'&÷"‚&W‡Æ–6—B7–çF†WF–2FöÖW7F–2'FæW"v÷&·76R&WV—&VB"¢&÷WFW"Ò•&÷WFW"‚¢6öö¶–UöæÖRÒ%õô†÷7B×&öæ5÷6W76–öâ  ¢7–æ2FVb6†V6¶VEö'&÷w6W%öf÷&Ò€¢&WVW7C¢&WVW7BÂ6–C¢7G"ÂæöæRÂ¢À¢f–VÆG3¢g&÷¦Vç6WE·7G%ÒÂ÷F–öæÅöf–VÆG3¢g&÷¦Vç6WE·7G%ÒÒg&÷¦Vç6WB‚’À¢Ö…ö'—FW3¢–çBÒ#ÂÖ…öf–VÆG3¢–çBÒ‚À¢Ö…÷fÇVUöÆVæwFƒ¢–çBÒSÂfÇVUöVæ6öF–æs¢7G"Ò&66–’"À¢’ÓâGWÆUµ&–æ6—ÂÂF–7E·7G"Â7G%ÕÓ ¢""%fW&–f–VB6W'fW"6W76–öâÂ7G&–7B÷&–v–â´55$bæB&÷VæFVBf÷&Ò–çWBà ¢F†—2—2æ÷BF†RW†—7F–ær&V&W"’&÷WFRâæWfW"66WBÖ&–VçB6öö¶–W0¢2Væ÷Vvƒ¢F†R6–væVB6W76–öâ—2&WfW&–f–VBÂ2&R55$bæB÷&–v–âà¢"" ¢–b&WVW7Bæ†VFW'2ævWB‚&÷&–v–â"’ÒfÆ÷ræ6öæf–ræ÷&–v–ã ¢&—6R…EEW†6WF–öâƒC2ÂFWF–ÃÒ$õ$”t”åõ$UT•$TB"¢–b‡&WVW7Bæ†VFW'2ævWB‚&6öçFVçB×G—R"Â""’ç7Æ—B‚#²"•³Òç7G&—‚¢Ò&Æ–6F–öâ÷‚×wwrÖf÷&Ò×W&ÆVæ6öFVB"“ ¢&—6R…EEW†6WF–öâƒCRÂFWF–ÃÒ$dõ$Õô4ôåDTåEõE•Uõ$UT•$TB"¢G'“ ¢6W76–öâÒfÆ÷rç6W76–öâ‡6–B¢W†6WB–çfÆ–EFö¶Vã ¢&—6R…EEW†6WF–öâƒCÂFWF–ÃÒ$”ådÄ”Eõ4U54”ôâ"’g&öÒæöæP¢&rÒv—B&WVW7Bæ&öG’‚¢–bÆVâ‡&r’âÖ…ö'—FW3 ¢&—6R…EEW†6WF–öâƒC2ÂFWF–ÃÒ$Äô4ÅõDU5Eôdõ$ÕõDôõôÄ$tR"¢G'“ ¢f÷&ÒÒ'6U÷2€¢&ræFV6öFR‚&66–’"’Â¶VWö&Ææµ÷fÇVW3ÕG'VRÀ¢7G&–7E÷'6–æsÕG'VRÂÖ…öçVÕöf–VÆG3ÖÖ…öf–VÆG2À¢Væ6öF–æs×fÇVUöVæ6öF–ærÂW'&÷'3Ò'7G&–7B"À¢¢W†6WB…fÇVTW'&÷"ÂVæ–6öFTW'&÷"’2W†3 ¢&—6R…EEW†6WF–öâƒC#"ÂFWF–ÃÒ$”ådÄ”EôÄô4ÅõDU5Eôdõ$Ò"’g&öÒW†0¢&W6VçBÒ6WB†f÷&Ò¢–b†æ÷Bf–VÆG2æ—77V'6WB‡&W6VçB¢÷"æ÷B&W6VçBæ—77V'6WB†f–VÆG2Â÷F–öæÅöf–VÆG2¢÷"ç’†ÆVâ†—FV×2’Ò÷"ÆVâ†—FV×5³Ò’âÖ…÷fÇVUöÆVæwF€¢f÷"—FV×2–âf÷&ÒçfÇVW2‚’’“ ¢&—6R…EEW†6WF–öâƒC#"ÂFWF–ÃÒ$”ådÄ”EôÄô4ÅõDU5Eôdõ$Ò"¢FFÒ¶¶W“¢fÇVW5³Òf÷"¶W’ÂfÇVW2–âf÷&Òæ—FV×2‚—Ð¢FFçWFFR‡¶¶W“¢""f÷"¶W’–â÷F–öæÅöf–VÆG2–b¶W’æ÷B–âFFÒ¢–bæ÷B†Ö2æ6ö×&UöF–vW7B‡6W76–öâæ77&bÂFF²&77&b%Ò“ ¢&—6R…EEW†6WF–öâƒC2ÂFWF–ÃÒ$55$eõ$UT•$TB"¢&WGW&â&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2’ÂFF ¢FVbf÷&Õ÷fW'6–öâ†FF¢7G"Â¢Â¦W&õöÆÆ÷vVC¢&ööÂÒG'VR’Óâ–çC ¢–b†æ÷BFFæ—666–’‚’÷"æ÷BFFæ—6FV6–ÖÂ‚¢÷"†ÆVâ†FF’âæBFFç7F'G7v—F‚‚#"’¢÷"ÆVâ†FF’â"“ ¢&—6R…EEW†6WF–öâƒC#"ÂFWF–ÃÒ$”ådÄ”EôÄô4ÅõDU5Eôdõ$Ò"¢fÇVRÒ–çB†FF¢–b‡fÇVRÂƒ–b¦W&õöÆÆ÷vVBVÇ6R¢÷"fÇVRâ#CsCƒ3cCr“ ¢&—6R…EEW†6WF–öâƒC#"ÂFWF–ÃÒ$”ådÄ”EôÄô4ÅõDU5Eôdõ$Ò"¢&WGW&âfÇVP ¢FVb6×ÆUö6†ö–6Uö÷F–öç2‚¢Â&Vf—ƒ¢7G"’Óâ7G# ¢&WGW&ârræ¦ö–â€¢sÆ÷F–öâfÇVSÒ"r²&Vf—‚²÷F–öâ²r#âp¢²‚}‹=˜mŠ}‹¸Í˜¸Â˜m˜]˜˜m˜rŠ}˜M˜r–b÷F–öâÓÒ$Å„ ¢VÇ6R}‹=˜mŠ}‹¸Í˜¸Â˜m˜]˜˜m˜rŠ‚r’²sÂö÷F–öãâp¢f÷"÷F–öâ–â‚$Å„"Â$$UD"¢ ¢FVbW‡÷'Eöæf–vF–öå÷VW'’‡FV6†æ–6Å÷7FFS¢7G"ÂgFW%÷&Vc¢7G"ÂæöæR’Óâ7G# ¢2æf–vF–öâöæÇ“²æWfW"w&çB÷"–æfW"W‡÷'B66R66W72g&öÒU$Âà¢–b‡FV6†æ–6Å÷7FFRæ÷B–â‚$ÄÂ"Â¥DT4„ä”4Åõ5DDU2¢÷"gFW%÷&Vb—2æ÷BæöæRæBæ÷B÷7–çF†WF–5÷&Vb†gFW%÷&Vb’“ ¢&—6R…EEW†6WF–öâƒC#"ÂFWF–ÃÒ$”ådÄ”EôU…õ%Eõ$U4T$4…õTUTR"¢&WGW&â€¢'FV6†æ–6Å÷7FFSÒ"²V÷FR‡FV6†æ–6Å÷7FFR¢²‚"fgFW%÷&VcÒ"²V÷FR†gFW%÷&Vb’–bgFW%÷&Vb—2æ÷BæöæRVÇ6R""¢ ¢FVb&öÆW2‡6–C¢7G"ÂæöæR’Óâg&÷¦Vç6WE·7G%ÒÂæöæS ¢–b6–B—2æöæS ¢&WGW&âæöæP¢G'“ ¢&WGW&âfÆ÷rç6W76–öâ‡6–B’ç&öÆW0¢W†6WB–çfÆ–EFö¶Vã ¢&WGW&âæöæP ¢&÷WFW"ævWB‚"ö76WG2÷&öæ2æ772"¢FVb7G–ÆR‚’ÓâÆ–åFW‡E&W7öç6S ¢2W†7FÇ’F†—2G'W7FVB&W÷6—F÷'’Ö÷væVB552f–ÆS²æòF‚–çWBà¢–bæ÷B5E”ÄRæ—5öf–ÆR‚“ ¢&—6R…EEW†6WF–öâƒS2ÂFWF–ÃÒ%T•ô54UEôäõEôd”Ä$ÄR"¢&WGW&âÆ–åFW‡E&W7öç6R…5E”ÄRç&VE÷FW‡B†Væ6öF–æsÒ'WFbÓ‚"’ÂÖVF–÷G—SÒ'FW‡Bö772" ¢&÷WFW"ævWB‚"ö76WG2÷&öæ2ÖWF‚æ§2"¢FVb6Æ–VçE÷67&—B‚’ÓâÆ–åFW‡E&W7öç6S ¢&WGW&âÆ–åFW‡E&W7öç6R„ÄôtõUEõ45$•BÂÖVF–÷G—SÒ'FW‡Bö¦f67&—B" ¢&÷WFW"ævWB‚"ö76WG2÷&öæ2×7FvRÖö'6W'fF–öâ×WÆöBæ§2"¢FVb7FvU÷WÆöE÷67&—B‚’ÓâÆ–åFW‡E&W7öç6S ¢&WGW&âÆ–åFW‡E&W7öç6R…5DtUõUÄôEõ45$•BÂÖVF–÷G—SÒ'FW‡Bö¦f67&—B" ¢FVb†÷W6V†öÆE÷v÷&¶Æ—7B€¢&–æ6—Ã¢&–æ6—ÂÂgFW%÷&Vc¢7G"ÂæöæRÂFV6†æ–6Å÷7FFS¢7G"À¢’Óâ7G# ¢–b÷væVEö66UöÆVFvW"—2æöæS ¢&WGW&â" ¢&öw&W75öVæ&ÆVBÒ€¢FV6†æ–6Å÷&Wf–WuöÆVFvW"—2æ÷BæöæP¢æB÷væVEö66UöÆVFvW"—2FV6†æ–6Å÷&Wf–WuöÆVFvW ¢¢G'“ ¢–b&öw&W75öVæ&ÆVC ¢2öæRW†7BÖ÷væW"Â6–ævÆR×G&ç67F–öâ6æ6†÷C¢Fòæ÷@¢276VÖ&ÆR7FGW2W6–ær6W&FRW"×&V6÷&B&—f–ÆVvVB&VG2à¢&W7VÇBÒFV6†æ–6Å÷&Wf–WuöÆVFvW"æÆ—7Eö÷væVEöFöÖW7F–5÷&öw&W72€¢&–æ6—ÂÂgFW%÷&VcÖgFW%÷&VbÂÆ–Ö—CÓ#À¢FV6†æ–6Å÷7FFS×FV6†æ–6Å÷7FFRÀ¢¢VÇ6S ¢–bFV6†æ–6Å÷7FFRÒ$ÄÂ# ¢&—6RfÇVTW'&÷"‚'FV6†æ–6Âf–ÇFW&–ær&WV—&W2&Wf–WrÆVFvW""¢&W7VÇBÒ÷væVEö66UöÆVFvW"æÆ—7Eö÷væVEöFöÖW7F–5öG&gG2€¢&–æ6—ÂÂgFW%÷&VcÖgFW%÷&VbÂÆ–Ö—CÓ#À¢¢W†6WBÆVFvW$–çFVw&—G”W'&÷# ¢&—6R2ÖÆWfVÂ6æ—F—¦W"&öGV6W2S2ÂæWfW"'F–Â…DÔÀ¢W†6WBfÇVTW'&÷"2W†3 ¢&—6R…EEW†6WF–öâƒC#"ÂFWF–ÃÒ$”ådÄ”EôõtäTEô44UõTU%’"’g&öÒW†0¢Æ–æµö&6RÒ€¢"ö×’ÖG&gG2ò"–b&öw&W75öVæ&ÆVBVÇ6P¢"ö’÷cöFöÖW7F–2ö†÷W6V†öÆBÖ–çF¶RöG&gG2ò ¢¢Æ&VÇ2Ò°¢%Tå$UTU5DTB#¢-Š‹‹‹=¸Â˜˜m¸ÂŠý‹Ší˜Š}‹=Š¢˜m‹MŠý˜r"À¢$Ud”DTä4Uõ$Ud”Uuõ$UTU5DTB#¢-Šý‹Ší˜Š}‹=Š¢Š‹‹‹=¸Â‹M˜Š}˜}ŠòŠ½ŠŠ¢‹MŠý˜r"À¢$…TÔåõ$U5ôå4Uõ$T4õ$DTB# ¢-˜]‹ŠÍ‹’›íŠ}‹=ŠâŠ}˜m‹=Š}˜m¸ÂŠ½ŠŠ¢‹MŠý˜}‰²Š˜r˜]‹˜m¸ÂŠ­Š=¸Í¸ÍŠò˜m¸Í‹=Š¢"À¢Ð¢&÷w2Ò°¢sÆÆ“ãÆ‡&VcÒ"r²Æ–æµö&6R²W66R†—FVÕ²'&Vb%Ò’²r#âp¢²W66R†—FVÕ²'&Vb%Ò’²sÂöâ(	BE$eEôôäÅ’p¢²‚r+rr²W66R†Æ&VÇ5¶—FVÕ²'FV6†æ–6Å÷&Wf–Wu÷7FFR%ÕÒ¢–b&öw&W75öVæ&ÆVBVÇ6Rrr¢²r+rÆ‡&VcÒ"ö×’ÖG&gG2òr²W66R†—FVÕ²'&Vb%ÒÂV÷FSÕG'VR¢²r÷fW'6–öç2#íŠ­Š}‹¸ÍŠí¨m˜r˜m‹=Ší˜~(Í˜}ŠsÂöãÂöÆ“âp¢f÷"—FVÒ–â&W7VÇE²&—FV×2%Ð¢Ð¢&öG’Ò‚sÇVÃâr²rræ¦ö–â‡&÷w2’²sÂ÷VÃâr–b&÷w2VÇ6P¢sÇíŠý‹Š}¸Í˜b˜¸Í˜MŠ­‹›í‹˜˜mŠý˜rŠ-‹-˜]Š}¸Í‹M¸Â˜]Š­‹˜M˜"Š˜rŠ}¸Í˜bŠÝ‹=Š}Š‚˜ŠÍ˜Šò˜mŠýŠ}‹ŠòãÂ÷âp¢–b&öw&W75öVæ&ÆVBæBFV6†æ–6Å÷7FFRÒ$ÄÂ"VÇ6P¢sÇí›í‹˜˜mŠý˜r‹=Š}ŠíŠ­ªý¸Â˜]Š­‹˜M˜"Š˜rŠ}¸Í˜bŠÝ‹=Š}Š‚˜ŠÍ˜Šò˜mŠýŠ}‹ŠòãÂ÷âr¢–b&öw&W75öVæ&ÆVC ¢7FFUöÆ&VÇ2Ò°¢$ÄÂ#¢-˜}˜]˜r›í‹˜˜mŠý˜~(Í˜}Š}¸Â˜]˜b"À¢¢¦Æ&VÇ2À¢Ð¢æf–vF–öâÒr+rræ¦ö–â€¢‚sÇ7G&öæsâr²W66R†Æ&VÂ’²sÂ÷7G&öæsâp¢–b7FFRÓÒFV6†æ–6Å÷7FFRVÇ6P¢sÆ‡&VcÒ"óö†÷W6V†öÆE÷FV6†æ–6Å÷7FFSÒr²V÷FR‡7FFR¢²r#âr²W66R†Æ&VÂ’²sÂöâr¢f÷"7FFRÂÆ&VÂ–â7FFUöÆ&VÇ2æ—FV×2‚¢¢&öG’Ò€¢sÇí˜¸Í˜MŠ­‹‹]‹˜Š}˜²˜]‹ŠÝ˜M˜r˜˜m¸ÂŠ½ŠŠ®(Í‹MŠý˜r‹Šr˜m‹MŠ}˜b˜]¸Î(ÍŠý˜}Šý‰²p¢}›íŠ}‹=ŠâŠ}˜m‹=Š}˜m¸ÂŠ˜r˜]‹˜m¸ÂŠ­Š=¸Í¸ÍŠò‹}‹ŠÒª‹MŠ¢˜m¸Í‹=Š¢ãÂ÷âp¢sÆæb&–ÖÆ&VÃÒ-˜¸Í˜MŠ­‹›í¸Íªý¸Í‹¸Â›í‹˜˜mŠý˜~(Í˜}Š}¸ÂŠíŠ}˜m˜Š}‹#âp¢²æf–vF–öâ²sÂöæcâr²&öG¢¢–b&W7VÇE²&æW‡Eö7W'6÷"%Ó ¢&öG’³Ò‚sÆ‡&VcÒ"óö†÷W6V†öÆE÷FV6†æ–6Å÷7FFSÒp¢²V÷FR‡FV6†æ–6Å÷7FFR’²rf†÷W6V†öÆEögFW%÷&VcÒp¢²V÷FR‡&W7VÇE²&æW‡Eö7W'6÷"%Ò’²r#í›í‹˜˜mŠý˜~(Í˜}Š}¸ÂŠ‹Šý¸ÃÂöâr¢&WGW&â‚sÇ6V7F–öâ6Æ73Ò'6V7F–öâ#ãÆƒ3í›í‹˜˜mŠý˜~(Í˜}Š}¸Â˜]˜bp¢r˜˜-‹r˜m˜]˜˜m˜rŠ-‹-˜]Š}¸Í‹M¸Â“Âöƒ3âr²&öG’²sÂ÷6V7F–öãâr ¢&÷WFW"ævWB‚"÷v÷&·76R÷·&öÆWÒ"¢FVbW6W%÷&öÆU÷v÷&·76R€¢&öÆS¢7G"À¢6–C¢7G"ÂæöæRÒ6öö¶–R†FVfVÇCÔæöæRÂÆ–3Ö6öö¶–UöæÖR’À¢gFW%÷&Vc¢7G"ÂæöæRÒæöæRÀ¢FV6†æ–6Å÷7FFS¢7G"Ò$ÄÂ"À¢’Óâ…DÔÅ&W7öç6S ¢G'“ ¢6W76–öâÒfÆ÷rç6W76–öâ‡6–B¢W†6WB–çfÆ–EFö¶Vã ¢&—6R…EEW†6WF–öâƒCÂFWF–ÃÒ$”ådÄ”Eõ4U54”ôâ"’g&öÒæöæP¢7F—fRÒf—6–&ÆU÷W6W%÷v÷&·76W2€¢&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2’À¢÷væVEö66W3Ö÷væVEö66UöÆVFvW"—2æ÷BæöæRÀ¢FV6†æ–6Å÷&öw&W73Ò€¢FV6†æ–6Å÷&Wf–WuöÆVFvW"—2æ÷BæöæP¢æB÷væVEö66UöÆVFvW"—2FV6†æ–6Å÷&Wf–WuöÆVFvW ¢’À¢w&öæö×•ö66W3Öw&öæö×•÷v÷&·76R—2æ÷BæöæRÀ¢W‡÷'E÷7WÆ–W%÷&Wf–WsÖW‡÷'E÷7WÆ–W%÷v÷&·76R—2æ÷BæöæRÀ¢FöÖW7F–5÷'FæW%÷&Wf–WsÖFöÖW7F–5÷'FæW%÷v÷&·76R—2æ÷BæöæRÀ¢¢76–væVBÒæW‡B‚‡rf÷"r–â7F—fR–bu²'&öÆR%ÒÓÒ&öÆR’ÂæöæR¢–b76–væVB—2æöæS ¢2Væ¶æ÷vâæBVæ76–væVB'FæW"&öÆW2&R–æF—7F–æwV—6†&ÆRà¢&—6R…EEW†6WF–öâƒCBÂFWF–ÃÒ%tõ$µ54UôäõEôdõTäB"¢–b&öÆRÓÒ&w&öæö×•öW‡W'B"æBw&öæö×•÷v÷&·76R—2æ÷BæöæS ¢G'“ ¢Æ—7F–ærÒw&öæö×•÷v÷&·76RæÆ—7Eö76–væVEö66W2€¢&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2’À¢gFW%÷&VcÖgFW%÷&VbÂÆ–Ö—CÓ#À¢FV6†æ–6Å÷7FFS×FV6†æ–6Å÷7FFRÀ¢¢W†6WBÆVFvW$–çFVw&—G”W'&÷"2W†3 ¢&—6R…EEW†6WF–öâ€¢S2ÂFWF–ÃÒ%5”åD„UD”5ôu$ôäôÕ•õTäd”Ä$ÄR"À¢’g&öÒW†0¢W†6WBfÇVTW'&÷"2W†3 ¢&—6R…EEW†6WF–öâ€¢C#"ÂFWF–ÃÒ$”ådÄ”Eô54”täTEô44UõTU%’"À¢’g&öÒW†0¢Æ&VÇ2Ò°¢$ÄÂ#¢-˜}˜]˜r˜]‹Š}ŠÝ˜BŠ½ŠŠ®(Í‹MŠý˜r"À¢%Tå$UTU5DTB#¢-ŠŠý˜˜bŠý‹Ší˜Š}‹=Š¢Š‹‹‹=¸Â˜˜m¸Â"À¢$Ud”DTä4Uõ$Ud”Uuõ$UTU5DTB#¢-Šý‹Ší˜Š}‹=Š¢Š‹‹‹=¸ÂŠ½ŠŠ®(Í‹MŠý˜r"À¢$…TÔåõ$U5ôå4Uõ$T4õ$DTB#¢-˜]‹ŠÍ‹’›íŠ}‹=Šâ˜˜m¸ÂŠ½ŠŠ®(Í‹MŠý˜r"À¢Ð¢f–ÇFW'2Òr+rræ¦ö–â€¢‚sÇ7G&öæsâr²W66R†Æ&VÂ’²sÂ÷7G&öæsâp¢–b7FFRÓÒFV6†æ–6Å÷7FFRVÇ6P¢sÆ‡&VcÒ"÷v÷&·76Röw&öæö×•öW‡W'C÷FV6†æ–6Å÷7FFSÒp¢²V÷FR‡7FFR’²r#âr²W66R†Æ&VÂ’²sÂöâr¢f÷"7FFRÂÆ&VÂ–âÆ&VÇ2æ—FV×2‚¢¢Æ–æ·2Òrræ¦ö–â€¢sÆÆ“ãÆ‡&VcÒ"öw&öæö×’ö76–væVBÖG&gG2òp¢²V÷FR†—FVÕ²'&Vb%Ò’²r#âp¢²W66R†—FVÕ²'&Vb%Ò’²sÂöâ(	Bp¢²W66R†Æ&VÇ5¶—FVÕ²'FV6†æ–6Å÷&Wf–Wu÷7FFR%ÕÒ¢²r+r‹}‹ŠÒª‹MŠ¢Š­Šý˜¸Í˜b˜m‹MŠý˜sÂöÆ“âp¢f÷"—FVÒ–âÆ—7F–æu²&—FV×2%Ð¢¢Æö6Å÷&VBÒ€¢sÆƒ3í›í‹˜˜mŠý˜~(Í˜}Š}¸ÂŠ­Ší‹]¸Í‹^(Í¸ÍŠ}˜Š­˜rŠ-‹-˜]Š}¸Í‹M¸ÃÂöƒ3âp¢sÇíŠ­Ší‹]¸Í‹R›í‹˜˜mŠý˜}ˆÂŠ}Š½ŠŠ}Š¢‹]˜MŠ}ŠÝ¸ÍŠ¢ŠÝ‹˜˜~(ÍŠ}¸Â¸ÍŠr˜]ŠÍ˜‹"‹]Šý˜‹‹}‹ŠÒ˜m¸Í‹=Š¢âp¢r˜¸Í˜MŠ­‹˜˜-‹r˜‹m‹¸ÍŠ¢˜˜m¸ÂŠ½ŠŠ®(Í‹MŠý˜r‹Šr˜m‹MŠ}˜b˜]¸Î(ÍŠý˜}ŠýˆÂ˜m˜rŠ­Š=¸Í¸ÍŠò‹˜M˜]¸ÂãÂ÷âp¢sÆæb&–ÖÆ&VÃÒ-˜¸Í˜MŠ­‹˜]‹Š}ŠÝ˜B˜˜m¸ÂªŠ}‹‹M˜mŠ}‹2#âp¢²f–ÇFW'2²sÂöæcâp¢²‚sÇVÃâr²Æ–æ·2²sÂ÷VÃâr–bÆ–æ·2VÇ6P¢sÇíŠý‹Š}¸Í˜b˜¸Í˜MŠ­‹›í‹˜˜mŠý˜rŠ-‹-˜]Š}¸Í‹M¸ÂŠ­Ší‹]¸Í‹^(Í¸ÍŠ}˜Š­˜~(ÍŠ}¸Â¸ÍŠ}˜Š¢˜m‹MŠòãÂ÷âr¢²‚sÇãÆ‡&VcÒ"÷v÷&·76Röw&öæö×•öW‡W'C÷FV6†æ–6Å÷7FFSÒp¢²V÷FR‡FV6†æ–6Å÷7FFR’²rfgFW%÷&VcÒp¢²V÷FR†Æ—7F–æu²&æW‡Eö7W'6÷"%Ò¢²r#íŠ}ŠýŠ}˜]˜r›í‹˜˜mŠý˜~(Í˜}ŠsÂöãÂ÷âp¢–bÆ—7F–æu²&æW‡Eö7W'6÷"%ÒVÇ6Rrr¢¢VÆ–b‡&öÆR–â‚&Æö6Åö'W–W""Â&WV—ÖVçE÷6VÆÆW""¢æBFöÖW7F–5÷'FæW%÷v÷&·76R—2æ÷BæöæR“ ¢G'“ ¢&Wf–WrÒFöÖW7F–5÷'FæW%÷v÷&·76Ræ÷vå÷&Wf–Wr€¢&öÆRÂ&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2¢¢W†6WB7–çF†WF–4FöÖW7F–5'FæW%Væf–Æ&ÆR2W†3 ¢&—6R…EEW†6WF–öâ€¢S2ÂFWF–ÃÒ$DôÔU5D”5õ%DäU%õ$Ud”UuõTäd”Ä$ÄR"À¢’g&öÒW†0¢Æ–æ²Ò€¢"öÆö6ÂÖ'W–W"ö×’×&Wf–Wr"–b&öÆRÓÒ&Æö6Åö'W–W" ¢VÇ6R"öWV—ÖVçB×6VÆÆW"ö×’×&Wf–Wr ¢¢Æö6Å÷&VBÒ€¢sÆƒ3í›í¸Í‹N(Í˜m˜]Š}¸Â‹MŠí‹]¸Â˜m˜-‹BŠýŠ}Ší˜M¸Â˜˜-‹rDTÔò“Âöƒ3âp¢sÇãÆ‡&VcÒ"öFöÖW7F–2×'FæW'2ö×’×&W&F–öâ#âp¢}˜m˜]Š}¸Â¸Íª›íŠ}‹¨m˜rŠ-˜]Š}Šý˜~(Í‹=Š}‹-¸Â‹MŠí‹]¸Â˜]˜cÂöãÂ÷âp¢sÇíŠ}¸Í˜bŠÍŠ}¸ÍªýŠ}˜rŠ-‹-˜]Š}¸Í‹M¸ÂŠ˜r˜]‹˜m¸Â˜ŠÍ˜ŠòŠý‹Ší˜Š}‹=Š¢Ší‹¸ÍŠýˆÂ˜]˜ŠÍ˜Šý¸Âp¢}Š­ŠÍ˜}¸Í‹-Š}Š­ˆÂ˜]ŠÍ˜‹-ˆÂ›í¸Í‹M˜m˜}Š}Šò¸ÍŠr˜]‹Š}˜]˜M˜r˜m¸Í‹=Š¢ãÂ÷âp¢²‚sÇãÆ‡&VcÒ"r²Æ–æ°¢²r#í˜]‹MŠ}˜}Šý˜r›í¸Í‹N(Í˜m˜]Š}¸ÂŠ-˜]Š}Šý˜~(Í‹=Š}‹-¸Â‹MŠí‹]¸ÃÂöãÂ÷âp¢–b&Wf–Wr—2æ÷BæöæRVÇ6P¢sÇí˜m˜]˜˜m˜r‹MŠí‹]¸ÂŠýŠ}‹Š}¸Â˜]ŠÍ˜‹"ŠÍŠ}‹¸Â˜]˜ŠÍ˜Šò˜m¸Í‹=Š¢ãÂ÷âr¢¢VÆ–b&öÆRÓÒ&W‡÷'E÷7WÆ–W""æBW‡÷'E÷7WÆ–W%÷v÷&·76R—2æ÷BæöæS ¢G'“ ¢&Wf–WrÒW‡÷'E÷7WÆ–W%÷v÷&·76Ræ÷vå÷&Wf–Wr€¢&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2¢¢W†6WB7–çF†WF–57WÆ–W%Væf–Æ&ÆR2W†3 ¢&—6R…EEW†6WF–öâ€¢S2ÂFWF–ÃÒ%5UÄ”U%õ$Ud”UuõTäd”Ä$ÄR"À¢’g&öÒW†0¢Æö6Å÷&VBÒ€¢sÆƒ3í›í¸Í‹N(Í˜m˜]Š}¸Â‹MŠí‹]¸ÂŠ­Š=˜]¸Í˜n(Íª˜m˜mŠý˜r‹]Š}Šý‹Š}Š¢˜˜-‹rDTÔò“Âöƒ3âp¢sÇíŠ}¸Í˜b˜m˜]Š}¸Â‹MŠí‹]¸ÍˆÂ˜}˜¸ÍŠ­ˆÂ‹‹˜¸ÍŠ­ˆÂ˜]ŠÍ˜‹"¸ÍŠrŠ}‹˜}Š}‹˜Š}˜-‹¸Â˜m¸Í‹=Š¢ãÂ÷âp¢²€¢sÇãÆ‡&VcÒ"öW‡÷'B×7WÆ–W"ö×’×&Wf–Wr#âp¢}˜]‹MŠ}˜}Šý˜r›í¸Í‹N(Í˜m˜]Š}¸ÂŠ-˜]Š}Šý˜~(Í‹=Š}‹-¸ÂŠ­Š=˜]¸Í˜n(Íª˜m˜mŠý˜sÂöãÂ÷âp¢–b&Wf–Wr—2æ÷BæöæRVÇ6P¢sÇí˜m˜]˜˜m˜rŠ-‹-˜]Š}¸Í‹M¸ÂŠýŠ}‹Š}¸Â˜]ŠÍ˜‹"˜‹˜M¸Â˜]˜ŠÍ˜Šò˜m¸Í‹=Š¢ãÂ÷âp¢¢¢VÇ6S ¢Æö6Å÷&VBÒ€¢sÇãÆ‡&VcÒ"ò#í˜]‹MŠ}˜}Šý˜r›í‹˜˜mŠý˜~(Í˜}Š}¸Â‹=Š}ŠíŠ­ªý¸Â˜]Š­‹˜M˜"Š˜r˜]˜cÂöãÂ÷âp¢–b$õtäTEõ5”åD„UD”5ôDôÔU5D”5ôE$eE2"–â76–væVE²&Æö6Å÷FW7E÷&VG2%Ð¢VÇ6RsÇíŠý‹Š}¸Í˜b˜m˜-‹MˆÂŠí˜Š}˜mŠý˜b›í‹˜˜mŠý˜r‹˜]˜M¸ÍŠ}Š­¸Â˜‹Š}˜B˜m¸Í‹=Š¢ãÂ÷âp¢¢&öG’Ò€¢sÆ'F–6ÆR6Æ73Ò'æVÂ#ãÆƒ#âr²W66R†76–væVE²&Æ&VÂ%Ò’²sÂöƒ#âp¢sÇí˜]ŠÝ¸Í‹rªŠ}‹Š‹Š}˜b˜‚˜}˜]ªŠ}‹Š}˜b(	BŠý‹=Š­‹‹=¸Â‹]‹˜Š}˜²Š˜r˜m˜-‹BŠ}˜]‹mŠ}‹MŠý˜rãÂ÷âp¢sÇí˜‹m‹¸ÍŠ¢ŠíŠý˜]Š}Š¢Š}¸Í˜b˜m˜-‹C¢‹­¸Í‹‹˜]˜M¸ÍŠ}Š­¸Í‰²˜]‹Š}˜]˜M˜}ˆÂŠ½ŠŠ®(Í˜mŠ}˜]ˆÂp¢}Š­Š=¸Í¸ÍŠò˜‚Š­‹]˜]¸Í˜R'W6–æW72‹­¸Í‹˜‹Š}˜B˜}‹=Š­˜mŠòãÂ÷âp¢²Æö6Å÷&V@¢²sÇãÆ‡&VcÒ"ò#íŠŠ}‹-ªý‹MŠ¢Š˜r˜]ŠÝ¸Í‹r˜]‹MŠ­‹ª“ÂöãÂ÷ãÂö'F–6ÆSâp¢¢&WGW&âvR‚-‹˜˜mŠ}‹2(	B˜‹mŠ}¸ÂªŠ}‹˜m˜-‹B˜]˜bŠ-‹-˜]Š}¸Í‹M¸Â’"Â&öG’ÂÆövvVEö–ãÕG'VR ¢–bw&öæö×•÷v÷&·76R—2æ÷BæöæS ¢&÷WFW"ævWB‚"öw&öæö×’ö76–væVBÖG&gG2÷·&VgÒ"¢FVbw&öæö×•ö66U÷vR€¢&Vc¢7G"À¢6–C¢7G"ÂæöæRÒ6öö¶–R†FVfVÇCÔæöæRÂÆ–3Ö6öö¶–UöæÖR’À¢’Óâ…DÔÅ&W7öç6S ¢G'“ ¢6W76–öâÒfÆ÷rç6W76–öâ‡6–B¢W†6WB–çfÆ–EFö¶Vã ¢&—6R…EEW†6WF–öâƒCÂFWF–ÃÒ$”ådÄ”Eõ4U54”ôâ"’g&öÒæöæP¢FFÒw&öæö×•÷v÷&·76Rç&VEö76–væVEö66R€¢&VbÂ&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2’À¢¢–bFF—2æöæS ¢&—6R…EEW†6WF–öâƒCBÂFWF–ÃÒ$E$eEôäõEôdõTäB"¢W‡W'Eö¦÷W&æW•ö‡FÖÂÒ" ¢–b—6–ç7Fæ6R†w&öæö×•÷v÷&·76RæÆVFvW"À¢7Æ—FU7–çF†WF–4W‡W'EVW7F–öäÆVFvW"“ ¢v†òÒ&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2¢†—7F÷'’Òw&öæö×•÷v÷&·76Rç&VEö76–væVE÷7–çF†WF–5÷&Wf–Wu÷VW7F–öç2€¢&VbÂv†òÀ¢¢–b†—7F÷'’—2æöæS ¢&—6R…EEW†6WF–öâƒCBÂFWF–ÃÒ$E$eEôäõEôdõTäB"¢G'“ ¢&÷÷6ÂÒw&öæö×•÷v÷&·76Rç&VEö76–væVE÷&÷÷6Å÷7G'V7GW&R€¢&VbÂv†òÀ¢¢W†6WBÆVFvW$–çFVw&—G”W'&÷"2W†3 ¢26÷''WFVBò7FÆR–æFWVæFVçB–çWB÷"6÷W&6RÆ–æVvP¢26ææ÷B&R&W6VçFVB2â÷&F–æ'’æf–v&ÆR66Rà¢&—6R…EEW†6WF–öâ€¢S2ÂFWF–ÃÒ%5”åD„UD”5ôu$ôäôÕ•õTäd”Ä$ÄR"À¢’g&öÒW†0¢G'“ ¢æW‡E÷7FWÒW‡W'EöæW‡Eö7F–öâ††—7F÷'’Â&÷÷6Â¢W†6WB¦÷W&æW”Wf–FVæ6TÖ—6ÖF6‚2W†3 ¢&—6R…EEW†6WF–öâ€¢S2ÂFWF–ÃÒ%5”åD„UD”5ô¤õU$äU•õTäd”Ä$ÄR"À¢’g&öÒW†0¢wV–Fæ6RÒ°¢%4õU$4Uôõ%ô”åUEô4„ätTEô„•5Dõ%•ôôäÅ’# ¢-˜]˜mŠ‹’¸ÍŠr›í¸Í‹M˜m˜}Š}Šò˜]‹Š­Š‹ŠÍŠ}‹¸Â˜]˜ŠÍ˜Šò˜m¸Í‹=Š­‰²˜˜-‹rŠ­Š}‹¸ÍŠí¨m˜r˜-Š}Š˜B˜]‹MŠ}˜}Šý˜rŠ}‹=Š¢"À¢%$UTU5EôÔ•54”äuôUd”DTä4UôDTÔò# ¢-›í‹‹=‹B‹=Š}ŠíŠ­Š}‹¸ÂŠ-‹-˜]Š}¸Í‹M¸ÂŠý‹ŠŠ}‹˜rŠýŠ}Šý˜r˜-Š}Š˜BŠ½ŠŠ¢Š}‹=Š¢"À¢%t•Eôdõ%ô„õU4T„ôÄEõ$U5ôå4UôDTÔò# ¢-›í‹‹=‹BŠ½ŠŠ¢‹MŠý˜}‰²Šý‹¸ÍŠ}˜Š¢›íŠ}‹=Šâ˜]‹ŠÍ‹¸ÂŠíŠ}˜m˜Š}‹Šý‹Š}˜mŠ­‹Š}‹Š}‹=Š¢"À¢$”å5T5Eõ$U5ôå4Uõ$T4T•EôDTÔò# ¢-‹‹=¸ÍŠò›íŠ}‹=ŠâŠíŠ}˜m˜Š}‹˜-Š}Š˜B˜]‹MŠ}˜}Šý˜rŠ}‹=Š­‰²˜m˜r˜]ŠÝŠ­˜Š}¸ÂŠí‹]˜‹]¸ÂŠ-˜b"À¢%$T4T•Eôô%4U%dTEôäõEõ$Ud”UtTB# ¢-‹‹=¸ÍŠò˜]‹MŠ}˜}Šý˜r‹MŠý‰²˜}¸Í¨bŠ‹‹‹=¸Â‹˜M˜]¸Â¸ÍŠrŠ‹˜mŠ}˜]˜~(ÍŠ}¸ÂŠ­‹]˜¸ÍŠ‚˜m‹MŠý˜rŠ}‹=Š¢"À¢Õ¶æW‡E÷7FWÐ¢W‡W'Eö¦÷W&æW•ö‡FÖÂÒ€¢sÆæb6Æ73Ò&¦÷W&æW’"&–ÖÆ&VÃÒ-Š}˜-ŠýŠ}˜RŠ‹Šý¸ÂªŠ}‹‹M˜mŠ}‹2#âp¢sÆƒ3í˜]‹ŠÝ˜M˜rŠ‹Šý¸ÂŠý‹˜}˜]¸Í˜b›í‹˜˜mŠý˜sÂöƒ3ãÇâp¢²W66R†wV–Fæ6R’²sÂ÷âp¢sÇãÆ‡&VcÒ"öw&öæö×’ö76–væVBÖG&gG2òp¢²V÷FR‡&Vb’²r÷&Wf–Wr×VW7F–öç26W‡W'BÖFVÖòÖ7F–öç2#âp¢}˜]‹MŠ}˜}Šý˜r›í‹‹=‹N(Í˜}Šr˜‚Š}˜-ŠýŠ}˜]Š}Š¢˜]ŠÍŠ}‹#ÂöãÂ÷âp¢²‚sÇãÆ‡&VcÒ"öw&öæö×’ö76–væVBÖG&gG2òp¢²V÷FR‡&Vb’²r÷7FvRÖö'6W'fF–öç2#âp¢}˜]‹MŠ}˜}Šý˜rªý‹-Š}‹‹N(Í˜}Š}¸Â˜]‹ŠÝ˜M˜~(ÍŠ}¸ÂŠíŠ}˜m˜Š}‹ÂöãÂ÷âp¢–b†÷W6V†öÆE÷7FvUö6öçFW‡EöWF†÷&—G’—2æ÷BæöæP¢æB—6–ç7Fæ6R†w&öæö×•÷v÷&·76RæÆVFvW"À¢7Æ—FU7–çF†WF–4†÷W6V†öÆE&öf–ÆTÆVFvW"¢VÇ6Rrr¢²sÇíŠ­Ší‹]¸Í‹R›í‹˜˜mŠý˜r˜]ŠÍ˜‹"Š­Ší‹]‹]¸Â¸ÍŠrŠ­Š=¸Í¸ÍŠòŠ‹˜mŠ}˜]˜rª‹MŠ¢˜m¸Í‹=Š¢ãÂ÷âp¢²sÂöæcâp¢¢&öG’Ò€¢sÆ'F–6ÆR6Æ73Ò'æVÂ#ãÆƒ#í›í¸Í‹N(Í˜m˜]Š}¸Â›í‹˜˜mŠý˜rŠíŠ}˜m˜Š}‹˜˜-‹rDTÔò“¢p¢²W66R†FF²'&Vb%Ò’²sÂöƒ#âp¢sÇí˜m‹=Ší˜r›í‹˜˜mŠý˜s¢r²7G"†FF²&66U÷fW'6–öâ%Ò¢²r+r˜‹m‹¸ÍŠ£¢E$eEôôäÅ“Â÷âp¢²&VFöæÇ•öFöÖW7F–5÷&W&F–öåö‡FÖÂ€¢FF²&7VÇF—fF–öå÷&W&F–öâ%Ð¢¢²W‡W'Eö¦÷W&æW•ö‡FÖÀ¢²sÇí˜}¸Í¨b›í¸Í‹M˜m˜}Š}Šò˜]ŠÝ‹]˜˜B¸ÍŠrŠ‹˜mŠ}˜]˜rŠ-Š¸ÍŠ}‹¸Âp¢}Š­˜˜M¸ÍŠò˜m‹MŠý˜rŠ}‹=Š¢ãÂ÷âp¢sÇíŠ­Ší‹]¸Í‹R˜˜m¸ÂªŠ}‹‹M˜mŠ}‹=ˆÂ‹]˜MŠ}ŠÝ¸ÍŠ¢ŠÝ‹˜˜~(ÍŠ}¸Â‹ŠrŠ}ŠÝ‹Š}‹"˜m˜]¸Î(Íª˜mŠý‰²p¢}‹‹mŠ}¸ÍŠ¢˜Š}˜-‹¸ÂŠíŠ}˜m˜Š}‹˜‚Š­Š=¸Í¸ÍŠò‹˜M˜]¸Âý‹}‹ŠÒª‹MŠ¢˜ŠÍ˜Šò˜mŠýŠ}‹ŠòãÂ÷âp¢sÇãÆ‡&VcÒ"öw&öæö×’ö76–væVBÖG&gG2òp¢²V÷FR‡&Vb’²rö–çFW&æÂ×Æâ×&÷÷6Â#âp¢}‹=Š}ŠíŠ­Š}‹›í¸Í‹M˜m˜}Š}ŠòŠýŠ}Ší˜M¸ÂŠ‹˜mŠ}˜]˜rª‹MŠ¢˜˜-‹rDTÔò“ÂöãÂ÷âp¢sÇãÆ‡&VcÒ"öw&öæö×’ö76–væVBÖG&gG2òp¢²V÷FR‡&Vb’²röW‡W'B×&Wf–Wr×&W&F–öâ#âp¢}‹=˜r˜]ŠÝ˜‹Š-˜]Š}Šý˜~(Í‹=Š}‹-¸ÂŠ‹‹‹=¸Â˜]‹=Š­˜-˜B˜]Š­Ší‹]‹R˜˜-‹rDTÔò“ÂöãÂ÷âp¢²‚sÇãÆ‡&VcÒ"öw&öæö×’ö76–væVBÖG&gG2òp¢²V÷FR‡&Vb’²r÷&Wf–Wr×VW7F–öç2#âp¢}›í‹‹=‹MˆÂŠý‹¸ÍŠ}˜Š¢›íŠ}‹=Šâ˜‚˜]‹MŠ}˜}Šý˜r‹‹=¸ÍŠòDTÔóÂöãÂ÷âp¢–b—6–ç7Fæ6R†w&öæö×•÷v÷&·76RæÆVFvW"À¢7Æ—FU7–çF†WF–4W‡W'EVW7F–öäÆVFvW"’VÇ6Rrr¢²sÇãÆ‡&VcÒ"÷v÷&·76Röw&öæö×•öW‡W'B#âp¢}ŠŠ}‹-ªý‹MŠ¢Š˜r˜‹mŠ}¸ÂªŠ}‹ªŠ}‹‹M˜mŠ}‹2ª‹MŠ}˜‹‹-¸ÃÂöãÂ÷âp¢sÂö'F–6ÆSâp¢¢&WGW&âvR‚-‹˜˜mŠ}‹2(	B˜‹mŠ}¸ÂªŠ}‹ªŠ}‹‹M˜mŠ}‹2ª‹MŠ}˜‹‹-¸ÂŠ-‹-˜]Š}¸Í‹M¸Â’"À¢&öG’ÂÆövvVEö–ãÕG'VR ¢–b†w&öæö×•÷v÷&·76R—2æ÷BæöæP¢æB†÷W6V†öÆE÷7FvUö6öçFW‡EöWF†÷&—G’—2æ÷BæöæP¢æB—6–ç7Fæ6R†w&öæö×•÷v÷&·76RæÆVFvW"À¢7Æ—FU7–çF†WF–4†÷W6V†öÆE&öf–ÆTÆVFvW"’“ ¢&÷WFW"ævWB€¢"öw&öæö×’ö76–væVBÖG&gG2÷·&VgÒ÷7FvRÖö'6W'fF–öç2"À¢¢FVbw&öæö×•÷7FvUöö.´ã­í¢G§²ÚîÆ­yÓ3íŠ}˜-ŠýŠ}˜RŠ‹Šý¸Â›í‹˜˜mŠý˜r›í©˜˜}‹CÂöƒ3ãÇâp¢²W66R†æW‡Eö7F–öâ’²sÂ÷âp¢sÇãÆ‡&VcÒ"6W‡÷'BÖFVÖò×VW7F–öâÖf÷&Ò#âp¢}‹˜Š­˜bŠ˜rŠ­‹‹¸Í˜¸ÍŠrŠ}‹]˜MŠ}ŠÒ›í‹‹=‹B˜m˜]˜˜m˜sÂöãÂ÷âp¢sÇíŠ½ŠŠ¢›í‹‹=‹MˆÂ˜]ŠÍ˜‹"˜]˜mŠ‹ˆÂ˜-‹Š}‹ŠýŠ}Šò¸ÍŠrªý‹-Š}‹‹B‹]Š}Šý‹Š}Š¢˜m¸Í‹=Š¢ãÂ÷âp¢sÂöæcâp¢¢FVÖõ÷VW7F–öâÒ€¢sÆƒ3í›í‹‹=‹BŠ-‹-˜]Š}¸Í‹M¸ÂŠ½ŠŠ®(Í‹MŠý˜rŠý‹˜}˜]¸Í˜b›í‹˜˜mŠý˜sÂöƒ3âp¢sÇí˜m‹=Ší˜r›í‹‹=‹Br²7G"‡VW7F–öå²'VW7F–öå÷&Wf—6–öâ%Ò¢²r(	B˜]‹ŠÍ‹’˜]ŠÝ‹]˜˜Br²W66R‡VW7F–öå²'&öGV7E÷&Vb%Ò¢²r+r˜]‹ŠÍ‹’˜]˜-‹]Šòr²W66R‡VW7F–öå²&FW7F–æF–öå÷&Vb%Ò¢²sÂ÷ãÇí‹]‹˜Š}˜²DTÔò˜‚Š­Š=¸Í¸ÍŠý˜m‹MŠý˜}‰²˜]˜mŠ‹ˆÂ˜]ŠÝ‹]˜˜MˆÂ˜]˜-‹]ŠýˆÂp¢}ŠÝ˜"Š}‹=Š­˜Š}Šý˜r¸ÍŠr¸ÍŠ}˜Š­˜r˜]‹Š­Š‹ŠŠ}‹-Š}‹Š}ŠÝ‹Š}‹"˜m‹MŠý˜~(ÍŠ}˜mŠòãÂ÷âp¢–bVW7F–öâ—2æ÷BæöæRVÇ6P¢sÇí˜}˜m˜‹"˜}¸Í¨b›í‹‹=‹BDTÔò˜m‹=Ší˜~(ÍŠýŠ}‹¸ÂŠ½ŠŠ¢˜m‹MŠý˜rŠ}‹=Š¢ãÂ÷âp¢¢&Wf–÷W5öFVÖõ÷VW7F–öç2ÒFF²&Æö6Å÷FW7E÷VW7F–öåö†—7F÷'’%Ð¢†—7F÷'•÷6V7F–öâÒ€¢sÇ6V7F–öâ&–ÖÆ&VÃÒ-Š­Š}‹¸ÍŠí¨m˜r›í‹‹=‹N(Í˜}Š}¸ÂDTÔò#âp¢sÆƒ3íŠ­Š}‹¸ÍŠí¨m˜rŠ}‹]˜MŠ}ŠÒ›í‹‹=‹N(Í˜}Š}¸ÂDTÔóÂöƒ3âp¢sÆöÃâr²rræ¦ö–â€¢sÆÆ“í˜m‹=Ší˜r›í‹‹=‹Br²7G"†—FVÕ²'VW7F–öå÷&Wf—6–öâ%Ò¢²‚r˜m‹=Ší˜rŠÍŠ}‹¸Â’r–b—FVÕ²&—5ö7W'&VçB%ÒVÇ6RrŠ­Š}‹¸ÍŠí¸Â’r¢²r+r˜]‹ŠÍ‹’˜]ŠÝ‹]˜˜Br²W66R†—FVÕ²'&öGV7E÷&Vb%Ò¢²r+r˜]‹ŠÍ‹’˜]˜-‹]Šòr²W66R†—FVÕ²&FW7F–æF–öå÷&Vb%Ò¢²r+rŠÝ˜-˜˜"˜‚¸ÍŠ}˜Š­˜~(Í˜}ŠrŠ­Š=¸Í¸ÍŠý˜m‹MŠý˜sÂöÆ“âp¢f÷"—FVÒ–â&Wf–÷W5öFVÖõ÷VW7F–öç0¢’²sÂööÃãÂ÷6V7F–öãâp¢–b&Wf–÷W5öFVÖõ÷VW7F–öç2VÇ6P¢sÇí‹=Š}Š˜-˜~(ÍŠ}¸ÂŠ}‹"Š}‹]˜MŠ}ŠÒ›í‹‹=‹N(Í˜}Š}¸ÂDTÔòŠ½ŠŠ¢˜m‹MŠý˜rŠ}‹=Š¢ãÂ÷âp¢¢fW'6–öâÒ€¢VW7F–öå²'VW7F–öå÷&Wf—6–öâ%Ò–bVW7F–öâ—2æ÷BæöæRVÇ6R ¢¢FVÖõöf÷&ÒÒ€¢sÇ6V7F–öâ–CÒ&W‡÷'BÖFVÖò×VW7F–öâÖf÷&Ò"&–ÖÆ&VÃÒ-˜¸Í‹Š}¸Í‹B›í‹‹=‹BŠ-‹-˜]Š}¸Í‹M¸Â‹]Š}Šý‹Š}Š¢#âp¢sÆƒ3íŠ­‹‹¸Í˜¸ÍŠrŠ}‹]˜MŠ}ŠÒ›í‹‹=‹BDTÔóÂöƒ3âp¢sÇí‹]‹˜Š}˜²‹M˜mŠ}‹=˜~(Í˜}Š}¸Â˜m˜]˜˜m˜}‰²˜}¸Í¨b˜]ŠÝ‹]˜˜MˆÂª‹M˜‹¸ÍŠr˜]Š=Ší‹˜Š}˜-‹¸Âp¢}Šý‹Š}¸Í˜b‹]˜ŠÝ˜rŠ½ŠŠ¢¸ÍŠrŠ­Š=¸Í¸ÍŠò˜m˜]¸Î(Í‹M˜ŠòãÂ÷âp¢sÆf÷&ÒÖWF†öCÒ'÷7B"7F–öãÒ"öFÖ–âöW‡÷'B÷&W6V&6‚öG&gG2òp¢²V÷FR‡&Vb’²röÆö6Â×FW7B×VW7F–öâ#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&77&b"fÇVSÒ"p¢²W66R‡6W76–öâæ77&bÂV÷FSÕG'VR’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&7F–öåö–B"fÇVSÒ$DTÔòÕT’ÔRÒp¢²6V7&WG2çFö¶Våö†W‚ƒ’çWW"‚’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&66U÷fW'6–öâ"fÇVSÒ"p¢²7G"†FF²&66U÷fW'6–öâ%Ò’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ'VW7F–öå÷&Wf—6–öâ"fÇVSÒ"p¢²7G"‡fW'6–öâ’²r#âp¢sÆÆ&VÂf÷#Ò&W‡÷'BÖFVÖò×&öGV7B#í˜]‹ŠÍ‹’˜]ŠÝ‹]˜˜BDTÔóÂöÆ&VÃâp¢sÇ6VÆV7B–CÒ&W‡÷'BÖFVÖò×&öGV7B"æÖSÒ'&öGV7E÷&Vb#âp¢²6×ÆUö6†ö–6Uö÷F–öç2‡&Vf—ƒÒ$DTÔòÕ$ôET5BÒ"¢²sÂ÷6VÆV7Câp¢sÆÆ&VÂf÷#Ò&W‡÷'BÖFVÖòÖFW7F–æF–öâ#í˜]‹ŠÍ‹’˜]˜-‹]ŠòDTÔóÂöÆ&VÃâp¢sÇ6VÆV7B–CÒ&W‡÷'BÖFVÖòÖFW7F–æF–öâ"æÖSÒ&FW7F–æF–öå÷&Vb#âp¢²6×ÆUö6†ö–6Uö÷F–öç2‡&Vf—ƒÒ$DTÔòÔDU5BÒ"¢²sÂ÷6VÆV7CãÆ'WGFöâG—SÒ'7V&Ö—B#íŠ½ŠŠ¢›í‹‹=‹BŠ-‹-˜]Š}¸Í‹M¸ÃÂö'WGFöãâp¢sÂöf÷&ÓãÂ÷6V7F–öãâp¢¢7FvUöÆ&VÇ2Ò°¢%Tå$UTU5DTB#¢-Šý‹Ší˜Š}‹=Š¢Š‹‹‹=¸Â˜˜m¸Â˜}˜m˜‹"Š½ŠŠ¢˜m‹MŠý˜rŠ}‹=Š¢"À¢$Ud”DTä4Uõ$Ud”Uuõ$UTU5DTB#¢-˜]‹ŠÍ‹’Šý‹Ší˜Š}‹=Š¢Š‹‹‹=¸Â˜˜m¸ÂŠ½ŠŠ¢‹MŠý˜rŠ}‹=Š¢"À¢$…TÔåõ$U5ôå4Uõ$T4õ$DTB# ¢-˜]‹ŠÍ‹’›íŠ}‹=Šâ˜]‹=Š­˜-˜BŠ½ŠŠ¢‹MŠý˜}‰²˜mŠ­¸ÍŠÍ˜r›í©˜˜}‹BŠ­Š=¸Í¸ÍŠò˜m‹MŠý˜rŠ}‹=Š¢"À¢Ð¢7FvUöWfVçG2Ò°¢%DT4…õ$Ud”Uuõ$UTU5DTB#¢-Šý‹Ší˜Š}‹=Š¢Š‹‹‹=¸Â˜˜m¸ÂŠ½ŠŠ®(Í‹MŠý˜r"À¢%DT4…ô…TÔåõ$U5ôå4Uõ$T4õ$DTB# ¢-˜]‹ŠÍ‹’›íŠ}‹=ŠâŠ}˜m‹=Š}˜m¸ÂŠ½ŠŠ®(Í‹MŠý˜r˜m˜rŠ­Š=¸Í¸ÍŠòªý‹-Š}‹‹B’"À¢Ð¢7FW2Òrræ¦ö–â€¢sÆÆ“í˜]‹ŠÝ˜M˜r˜˜m¸Âr²7G"†—FVÕ²'&Wf—6–öâ%Ò’²s¢p¢²W66R‡7FvUöWfVçG5¶—FVÕ²'7FvR%ÕÒ’²sÂöÆ“âp¢f÷"—FVÒ–âFF²'FV6†æ–6Å÷&Wf–Wu÷7FW2%Ð¢¢–bæ÷B7FW3 ¢7FW2ÒsÆÆ“í˜}¸Í¨bŠ‹‹‹=¸Â˜˜m¸ÂŠ‹Š}¸ÂŠ}¸Í˜b˜m˜]˜˜m˜rŠ½ŠŠ¢˜m‹MŠý˜rŠ}‹=Š¢ãÂöÆ“âp¢fW'6–öç2Ò}ˆÂræ¦ö–â‡7G"‡b’f÷"b–âFF²&¶æ÷vå÷fW'6–öç2%Ò¢&öG’Ò€¢sÆ'F–6ÆR6Æ73Ò'æVÂ#ãÆƒ#í›í‹˜˜mŠý˜r›í©˜˜}‹B‹]Š}Šý‹Š}Š¢Š-‹-˜]Š}¸Í‹M¸Â“¢p¢²W66R†FF²'&Vb%Ò’²sÂöƒ#âp¢sÇí˜‹m‹¸ÍŠ¢›í‹˜˜mŠý˜s¢E$eEôôäÅ’+r˜m‹=Ší˜r˜‹˜M¸Âp¢²7G"†FF²&66U÷fW'6–öâ%Ò’²sÂ÷âp¢sÇí˜m‹=Ší˜~(Í˜}Š}¸Â˜]‹=Š­˜mŠòŠý‹˜m˜]˜˜m˜s¢r²W66R‡fW'6–öç2’²sÂ÷âp¢sÇãÆ‡&VcÒ"öFÖ–âöW‡÷'B÷&W6V&6‚öG&gG2òp¢²V÷FR†FF²'&Vb%Ò’²r÷fW'6–öç3òr²æf–vF–öà¢²r#íŠ­Š}‹¸ÍŠí¨m˜r˜m‹=Ší˜~(Í˜}Š}¸ÂŠ}¸Í˜b›í‹˜˜mŠý˜sÂöãÂ÷âp¢sÆƒ3íŠ­‹‹¸Í˜˜]‹=Šm˜M˜r›í©˜˜}‹CÂöƒ3âp¢sÇí˜]ŠÝ‹]˜˜C¢Š­‹¸Í¸Í˜b˜m‹MŠý˜r+r˜]˜-‹]Šó¢Š­‹¸Í¸Í˜b˜m‹MŠý˜rp¢|+r…3¢Š­‹¸Í¸Í˜b˜m‹MŠý˜sÂ÷âp¢sÇí˜]ŠÝ‹]˜˜B˜‚˜]˜-‹]Šò˜Š}˜-‹¸Â˜}˜]¨m˜mŠ}˜bŠ­‹¸Í¸Í˜b˜‚Š}‹Š­ŠŠ}‹‹=˜mŠÍ¸Â˜m‹MŠý˜~(ÍŠ}˜mŠòãÂ÷âp¢²W‡÷'Eö¦÷W&æW•ö‡FÖÀ¢²FVÖõ÷VW7F–öà¢²†—7F÷'•÷6V7F–öà¢²FVÖõöf÷&Ð¢²sÇ6V7F–öâ&–ÖÆ&VÃÒ-Š}‹ŠÍŠ}‹ž(Í˜}Š}¸Â˜]˜mŠ‹’˜m‹=Ší˜~(ÍŠýŠ}‹#ãÆƒ3íŠ}‹ŠÍŠ}‹ž(Í˜}Š}¸Â˜˜m¸Â˜]˜mŠ‹“Âöƒ3âp¢sÇí˜˜-‹r‹M˜mŠ}‹=˜r˜‚f–ævW'&–çBŠý‹¸ÍŠ}˜Š­¸ÂŠ}‹"Š}Š­‹]Š}˜B˜m˜]˜˜m˜rŠ½ŠŠ¢˜]¸Î(Í‹M˜Šý‰²p¢}˜]ŠÝŠ­˜Š}¸Â˜]˜mŠ‹’‹Ší¸Í‹˜r¸ÍŠr˜]ŠÍ˜‹"Š-˜bŠ­Š=¸Í¸ÍŠò˜m˜]¸Î(Í‹M˜ŠòãÂ÷âp¢sÆöÃâr²rræ¦ö–â€¢sÆÆ“í›í‹‹=‹B˜m‹=Ší˜rr²7G"†—FVÕ²'VW7F–öå÷&Wf—6–öâ%Ò¢²}ˆÂŠ}‹ŠÍŠ}‹’˜m‹=Ší˜rr²7G"†—FVÕ²&Wf–FVæ6U÷&Wf—6–öâ%Ò¢²r‚r²‚-›í‹‹=‹BŠÍŠ}‹¸Â"–b—FVÕ²'VW7F–öåö&–æF–ær%ÒÓÒ$5U%$TåB ¢VÇ6R-Š­Š}‹¸ÍŠí¸Â"’²r’+rp¢²W66R†—FVÕ²&6öææV7F÷%÷&Vb%Ò’²r+rp¢²W66R†—FVÕ²&Wf–FVæ6U÷&Vb%Ò’²r+r4„Ó#Sbp¢²W66R†—FVÕ²'6÷W&6U÷6æ6†÷EöF–vW7B%Ò¢²r+rŠÝ˜-˜˜"˜‚¸ÍŠ}˜Š­˜~(Í˜}ŠrŠ­Š=¸Í¸ÍŠý˜m‹MŠý˜sÂöÆ“âp¢f÷"—FVÒ–âFF²&Æö6Å÷FW7EöWf–FVæ6U÷&VfW&Væ6W2%Ð¢’²sÂööÃãÂ÷6V7F–öãâp¢²€¢sÇ6V7F–öâ–CÒ&W‡÷'BÖWf–FVæ6R×&VfW&Væ6RÖf÷&Ò#âp¢sÆƒ3íŠ½ŠŠ¢f–ævW'&–çBŠ}Š­‹]Š}˜B˜]˜mŠ‹’„DTÔò“Âöƒ3âp¢sÇíŠ}ŠŠ­ŠýŠr›í‹‹=‹B˜]ŠÝ‹]˜˜N(	=˜]˜-‹]Šò˜m‹=Ší˜~(ÍŠýŠ}‹Š½ŠŠ¢ª˜m¸ÍŠòâ˜]˜-Š}Šý¸Í‹˜˜-‹rp¢}‹M˜mŠ}‹=˜~(Í˜}Š}¸Â˜m˜]˜˜m˜~(ÍŠ}˜mŠò˜‚Š}¸Í˜b˜‹˜Rªý‹-Š}‹‹B›í©˜˜}‹B˜m˜]¸Î(Í‹=Š}‹-ŠòãÂ÷âp¢²€¢sÆf÷&ÒÖWF†öCÒ'÷7B"7F–öãÒ"öFÖ–âöW‡÷'B÷&W6V&6‚öG&gG2òp¢²V÷FR‡&Vb’²röWf–FVæ6R×&VfW&Væ6Rö6GW&R#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&77&b"fÇVSÒ"p¢²W66R‡6W76–öâæ77&bÂV÷FSÕG'VR’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&7F–öåö–B"fÇVSÒ$DTÔòÕT’Ô4EU$RÒp¢²6V7&WG2çFö¶Våö†W‚ƒ’çWW"‚’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&66U÷fW'6–öâ"fÇVSÒ"p¢²7G"†FF²&66U÷fW'6–öâ%Ò’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ'VW7F–öå÷&Wf—6–öâ"fÇVSÒ"p¢²7G"‡VW7F–öå²'VW7F–öå÷&Wf—6–öâ%Ò’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&Wf–FVæ6U÷&Wf—6–öâ"fÇVSÒ"p¢²7G"‡7VÒƒf÷"—FVÒ–âFF²&Æö6Å÷FW7EöWf–FVæ6U÷&VfW&Væ6W2%Ð¢–b—FVÕ²'VW7F–öå÷&Wf—6–öâ%ÒÓÒVW7F–öå²'VW7F–öå÷&Wf—6–öâ%Ò’’²r#âp¢sÆÆ&VÂf÷#Ò&W‡÷'B×6÷W&6RÖ6öææV7F÷"#íŠ}Š­‹]Š}˜B˜]˜mŠ‹’›í¸Íª‹Š˜mŠý¸Î(Í‹MŠý˜sÂöÆ&VÃâp¢sÇ6VÆV7B–CÒ&W‡÷'B×6÷W&6RÖ6öææV7F÷""æÖSÒ&6öææV7F÷%÷&Vb#âp¢²rræ¦ö–â€¢sÆ÷F–öâfÇVSÒ"r²W66R†6öææV7F÷%÷&VbÂV÷FSÕG'VR’²r#âp¢²W66R†6öææV7F÷%÷&Vb’²sÂö÷F–öãâp¢f÷"6öææV7F÷%÷&Vb–âW‡÷'E÷6÷W&6Uö6öææV7F÷'2ç&Vg2‚¢¢²sÂ÷6VÆV7CãÆ'WGFöâG—SÒ'7V&Ö—B#íªý‹˜Š­˜b6æ6†÷B˜‚Š½ŠŠ¢f–ævW'&–çCÂö'WGFöãâp¢sÂöf÷&ÓãÇí˜]ŠÝŠ­˜Š}¸Â6æ6†÷B‹Ší¸Í‹˜r˜m˜]¸Î(Í‹M˜Šý‰²Š}¸Í˜bŠ½ŠŠ­ˆÂ˜]ŠÍ˜‹"¸ÍŠr¸ÍŠ}˜Š­˜rŠŠ}‹-Š}‹˜m¸Í‹=Š¢ãÂ÷âp¢–bW‡÷'E÷6÷W&6Uö6öææV7F÷'2—2æ÷BæöæRæBW‡÷'E÷6÷W&6Uö6öææV7F÷'2ç&Vg2‚¢VÇ6Rrp¢¢²sÆf÷&ÒÖWF†öCÒ'÷7B"7F–öãÒ"öFÖ–âöW‡÷'B÷&W6V&6‚öG&gG2òp¢²V÷FR‡&Vb’²röWf–FVæ6R×&VfW&Væ6R#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&77&b"fÇVSÒ"p¢²W66R‡6W76–öâæ77&bÂV÷FSÕG'VR’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&7F–öåö–B"fÇVSÒ$DTÔòÕT’ÔU"Òp¢²6V7&WG2çFö¶Våö†W‚ƒ’çWW"‚’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&66U÷fW'6–öâ"fÇVSÒ"p¢²7G"†FF²&66U÷fW'6–öâ%Ò’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ'VW7F–öå÷&Wf—6–öâ"fÇVSÒ"p¢²7G"‡VW7F–öå²'VW7F–öå÷&Wf—6–öâ%Ò–bVW7F–öâVÇ6R’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&Wf–FVæ6U÷&Wf—6–öâ"fÇVSÒ"p¢²7G"‡7VÒƒf÷"—FVÒ–âFF²&Æö6Å÷FW7EöWf–FVæ6U÷&VfW&Væ6W2%Ð¢–bVW7F–öâæB—FVÕ²'VW7F–öå÷&Wf—6–öâ%ÒÓÒVW7F–öå²'VW7F–öå÷&Wf—6–öâ%Ò’’²r#âp¢sÆÆ&VÂf÷#Ò&W‡÷'BÖWf–FVæ6R×&Vb#í‹M˜mŠ}‹=˜r‹M˜Š}˜}ŠòDTÔóÂöÆ&VÃâp¢sÇ6VÆV7B–CÒ&W‡÷'BÖWf–FVæ6R×&Vb"æÖSÒ&Wf–FVæ6U÷&Vb#âp¢²6×ÆUö6†ö–6Uö÷F–öç2‡&Vf—ƒÒ$DTÔòÔUd”DTä4RÒ"¢²sÂ÷6VÆV7CãÆÆ&VÂf÷#Ò&W‡÷'BÖ6öææV7F÷"×&Vb#í‹M˜mŠ}‹=˜rŠ}Š­‹]Š}˜BDTÔóÂöÆ&VÃâp¢sÇ6VÆV7B–CÒ&W‡÷'BÖ6öææV7F÷"×&Vb"æÖSÒ&6öææV7F÷%÷&Vb#âp¢²6×ÆUö6†ö–6Uö÷F–öç2‡&Vf—ƒÒ$DTÔòÔ4ôääT5Dõ"Ò"¢²sÂ÷6VÆV7CãÆÆ&VÂf÷#Ò&W‡÷'B×6æ6†÷BÖF–vW7B#å4„Ó#Sb6æ6†÷CÂöÆ&VÃâp¢sÆ–çWB–CÒ&W‡÷'B×6æ6†÷BÖF–vW7B"æÖSÒ'6÷W&6U÷6æ6†÷EöF–vW7B"p¢wGFW&ãÒ%³Ó–Öe×³cGÒ"Ö–æÆVæwFƒÒ#cB"Ö†ÆVæwFƒÒ#cB"&WV—&VCâp¢sÆ'WGFöâG—SÒ'7V&Ö—B#íŠ½ŠŠ¢Š}‹ŠÍŠ}‹’Š-‹-˜]Š}¸Í‹M¸ÃÂö'WGFöããÂöf÷&ÓãÂ÷6V7F–öãâp¢–bVW7F–öâ—2æ÷BæöæRVÇ6P¢sÇíŠ½ŠŠ¢Š}‹ŠÍŠ}‹’˜]˜mŠ‹’ŠŠ}‹"Š}‹=Š¢Š­Šr›í‹‹=‹B˜m‹=Ší˜~(ÍŠýŠ}‹Š­‹‹¸Í˜‹M˜ŠòãÂ÷âp¢¢²sÇ6V7F–öâ–CÒ&W‡÷'B×&W6V&6‚Öf–æF–æw2#ãÆƒ3í¸ÍŠ}˜Š­˜~(Í˜}Š}¸Â›í©˜˜}‹M¸Â›í¸Í‹N(Í˜m˜¸Í‹3Âöƒ3âp¢sÇí¸ÍŠ}ŠýŠýŠ}‹MŠ®(Í˜}ŠrŠŠ}¸ÍŠòŠŠr›í¸Í‹M˜˜mŠòDTÔòŠŠ}‹M˜mŠò˜‚Š˜rŠ}‹ŠÍŠ}‹’‹M˜Š}˜}Šò›í‹‹=‹BŠÍŠ}‹¸Â˜]Š­‹]˜B‹M˜˜mŠòâp¢}Š}¸Í˜b¸ÍŠ}ŠýŠýŠ}‹MŠ®(Í˜}Šr˜Š}˜-‹¸ÍŠ¢ŠŠ}‹-Š}‹¸ÍŠrªý‹-Š}‹‹BŠ­Š=¸Í¸ÍŠý‹MŠý˜r˜m¸Í‹=Š­˜mŠòãÂ÷âp¢sÆöÃâr²rræ¦ö–â€¢sÆÆ“í›í‹‹=‹B˜m‹=Ší˜rr²7G"†—FVÕ²'VW7F–öå÷&Wf—6–öâ%Ò¢²r+r¸ÍŠ}˜Š­˜r˜m‹=Ší˜rr²7G"†—FVÕ²'&Wf—6–öâ%Ò¢²r+rŠ}‹ŠÍŠ}‹’r²W66R†—FVÕ²&Wf–FVæ6U÷&Vb%Ò¢²r+r›í‹‹=‹C¢r²W66R†—FVÕ²'VW7F–öåö&–æF–ær%Ò¢²r+r‹M˜Š}˜}Šó¢r²W66R†—FVÕ²&Wf–FVæ6Uö&–æF–ær%Ò¢²sÇíŠ}Š­‹]Š}˜B˜]˜mŠ‹“¢r²W66R†—FVÕ²&6öææV7F÷%÷&Vb%Ò¢²r+rf–ævW'&–çB6æ6†÷C¢p¢²W66R†—FVÕ²'6÷W&6U÷6æ6†÷EöF–vW7B%Ò’²sÂ÷âp¢²sÇâr²W66R†—FVÕ²&æ÷FR%Ò’²sÂ÷ãÂöÆ“âp¢f÷"—FVÒ–âFFævWB‚&Æö6Å÷FW7Eöf–æF–æw2"ÂµÒ¢’²sÂööÃâp¢²€¢sÆf÷&ÒÖWF†öCÒ'÷7B"7F–öãÒ"öFÖ–âöW‡÷'B÷&W6V&6‚öG&gG2òp¢²V÷FR‡&Vb’²röf–æF–æw2#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&77&b"fÇVSÒ"p¢²W66R‡6W76–öâæ77&bÂV÷FSÕG'VR’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&7F–öåö–B"fÇVSÒ$DTÔòÕT’Ôd”äD”ärÒp¢²6V7&WG2çFö¶Våö†W‚ƒ’çWW"‚’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&66U÷fW'6–öâ"fÇVSÒ"p¢²7G"†FF²&66U÷fW'6–öâ%Ò’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ'VW7F–öå÷&Wf—6–öâ"fÇVSÒ"p¢²7G"‡VW7F–öå²'VW7F–öå÷&Wf—6–öâ%Ò’²r#âp¢sÆ–çWBG—SÒ&†–FFVâ"æÖSÒ&f–æF–æu÷&Wf—6–öâ"fÇVSÒ"p¢²7G"‡7VÒƒf÷"—FVÒ–âFFævWB‚&Æö6Å÷FW7Eöf–æF–æw2"ÂµÒ¢–b—FVÕ²'VW7F–öå÷&Wf—6–öâ%ÒÓÒVW7F–öå²'VW7F–öå÷&Wf—6–öâ%Ò’’²r#âp¢sÆÆ&VÂf÷#Ò&W‡÷'BÖf–æF–ærÖWf–FVæ6R#íŠ}‹ŠÍŠ}‹’‹M˜Š}˜}Šò›í‹‹=‹BŠÍŠ}‹¸ÃÂöÆ&VÃâp¢sÇ6VÆV7B–CÒ&W‡÷'BÖf–æF–ærÖWf–FVæ6R"æÖSÒ&Wf–FVæ6Uö&–æF–ær#âp¢²rræ¦ö–â€¢sÆ÷F–öâfÇVSÒ"r²7G"†—FVÕ²&Wf–FVæ6U÷&Wf—6–öâ%Ò’²s¢p¢²W66R†—FVÕ²&Wf–FVæ6U÷&Vb%ÒÂV÷FSÕG'VR’²r#âp¢²W66R†—FVÕ²&Wf–FVæ6U÷&Vb%Ò’²r+r˜m‹=Ší˜rp¢²7G"†—FVÕ²&Wf–FVæ6U÷&Wf—6–öâ%Ò’²sÂö÷F–öãâp¢f÷"—FVÒ–âFF²&Æö6Å÷FW7EöWf–FVæ6U÷&VfW&Væ6W2%Ð¢–b—FVÕ²'VW7F–öåö&–æF–ær%ÒÓÒ$5U%$TåB ¢¢²sÂ÷6VÆV7CãÆÆ&VÂf÷#Ò&W‡÷'BÖf–æF–ærÖæ÷FR#í¸ÍŠ}ŠýŠýŠ}‹MŠ¢DTÔóÂöÆ&VÃâp¢sÇFW‡F&V–CÒ&W‡÷'BÖf–æF–ærÖæ÷FR"æÖSÒ&æ÷FR"Ö–æÆVæwFƒÒ#‚"p¢vÖ†ÆVæwFƒÒ##"&WV—&VCãÂ÷FW‡F&Vâp¢sÆ'WGFöâG—SÒ'7V&Ö—B#íŠ½ŠŠ¢˜m‹=Ší˜r›í¸Í‹N(Í˜m˜¸Í‹3Âö'WGFöããÂöf÷&Óâp¢–bVW7F–öâ—2æ÷BæöæRæBç’€¢—FVÕ²'VW7F–öåö&–æF–ær%ÒÓÒ$5U%$TåB ¢f÷"—FVÒ–âFF²&Æö6Å÷FW7EöWf–FVæ6U÷&VfW&Væ6W2%Ð¢’VÇ6RsÇíŠ‹Š}¸ÂŠ½ŠŠ¢¸ÍŠ}ŠýŠýŠ}‹MŠ­ˆÂ›í‹‹=‹BŠÍŠ}‹¸Â˜‚ŠÝŠýŠ}˜-˜B¸Íª’Š}‹ŠÍŠ}‹’‹M˜Š}˜}Šò˜MŠ}‹-˜RŠ}‹=Š¢ãÂ÷âp¢’²sÂ÷6V7F–öãâp¢²sÇí˜]‹ŠÍ‹’˜]˜mŠ‹’‹]‹˜Š}˜²Š-‹-˜]Š}¸Í‹M¸Ã¢p¢²W66R†FF²'6÷W&6U÷&Vb%Ò’²sÂ÷âp¢sÇíŠÝ˜-˜˜"Š}‹=Š­˜Š}Šý˜r˜‚ŠŠ}‹-˜m‹M‹Š}¸Í˜b˜]˜mŠ‹’Š}ŠÝ‹Š}‹"˜m‹MŠý˜rŠ}‹=Š¢ãÂ÷âp¢sÆƒ3í˜‹m‹¸ÍŠ¢Š‹‹‹=¸ÃÂöƒ3ãÇâp¢²W66R‡7FvUöÆ&VÇ5¶FF²'FV6†æ–6Å÷&Wf–Wu÷7FFR%ÕÒ¢²sÂ÷ãÇVÃâr²7FW2²sÂ÷VÃâp¢sÇí¸ÍŠ}˜Š­˜r˜]‹Š­Š‹ŠŠ}‹-Š}‹ˆÂªý‹-Š}‹‹BŠ­Š=¸Í¸ÍŠý‹MŠý˜}ˆÂŠí‹¸ÍŠýŠ}‹Š}ŠÝ‹Š}‹-‹MŠý˜}ˆÂp¢}˜-¸Í˜]Š¢¸ÍŠr˜-‹Š}‹ŠýŠ}Šò˜ŠÍ˜Šò˜mŠýŠ}‹Šý‰²Š}¸Í˜b‹]˜ŠÝ˜rŠ­˜‹]¸Í˜rŠ­ŠÍŠ}‹¸Â˜m¸Í‹=Š¢ãÂ÷âp¢sÇãÆ‡&VcÒ"öFÖ–âöW‡÷'B÷&W6V&6ƒòp¢²æf–vF–öâ²r#íŠŠ}‹-ªý‹MŠ¢Š˜r˜˜}‹‹=Š¢›í©˜˜}‹B‹]Š}Šý‹Š}Š£ÂöãÂ÷âp¢sÂö'F–6ÆSâp¢¢&WGW&âvR‚-‹˜˜mŠ}‹2(	B˜‹mŠ}¸Â›í©˜˜}‹B‹]Š}Šý‹Š}Š¢Š-‹-˜]Š}¸Í‹M¸Â"À¢&öG’ÂÆövvVEö–ãÕG'VRÂÆö6Å÷FW7Eöf÷&ÓÕG'VR ¢&÷WFW"ç÷7B‚"öFÖ–âöW‡÷'B÷&W6V&6‚öG&gG2÷·&VgÒöÆö6Â×FW7B×VW7F–öâ"¢7–æ2FVbW‡÷'EöFVÖõ÷VW7F–öåö'&÷w6W"€¢&Vc¢7G"Â&WVW7C¢&WVW7BÀ¢6–C¢7G"ÂæöæRÒ6öö¶–R†FVfVÇCÔæöæRÂÆ–3Ö6öö¶–UöæÖR’À¢’Óâ&VF—&V7E&W7öç6S ¢&–æ6—ÂÂf÷&ÒÒv—B6†V6¶VEö'&÷w6W%öf÷&Ò€¢&WVW7BÂ6–BÀ¢f–VÆG3Ög&÷¦Vç6WB‡°¢&77&b"Â&7F–öåö–B"Â&66U÷fW'6–öâ"Â'VW7F–öå÷&Wf—6–öâ"À¢'&öGV7E÷&Vb"Â&FW7F–æF–öå÷&Vb"À¢Ò’À¢¢–bæ÷BfÆ–E÷VW7F–öå÷&Vg2€¢f÷&Õ²'&öGV7E÷&Vb%ÒÂf÷&Õ²&FW7F–æF–öå÷&Vb%ÒÀ¢’÷"f÷&Õ²'&öGV7E÷&Vb%Òæ÷B–â€¢$DTÔòÕ$ôET5BÔÅ„"Â$DTÔòÕ$ôET5BÔ$UD"À¢’÷"f÷&Õ²&FW7F–æF–öå÷&Vb%Òæ÷B–â€¢$DTÔòÔDU5BÔÅ„"Â$DTÔòÔDU5BÔ$UD"À¢“ ¢&—6R…EEW†6WF–öâƒC#"ÂFWF–ÃÒ$”ådÄ”EôÄô4ÅõDU5Eôdõ$Ò"¢G'“ ¢&W7VÇBÒFV6†æ–6Å÷&Wf–WuöÆVFvW"ç&V6÷&EöW‡÷'E÷&W6V&6…÷VW7F–öâ€¢&VbÂ&–æ6—ÂÀ¢W‡V7FVEö66U÷fW'6–öãÖf÷&Õ÷fW'6–öâ€¢f÷&Õ²&66U÷fW'6–öâ%ÒÂ¦W&õöÆÆ÷vVCÔfÇ6RÀ¢’À¢W‡V7FVE÷VW7F–öå÷&Wf—6–öãÖf÷&Õ÷fW'6–öâ€¢f÷&Õ²'VW7F–öå÷&Wf—6–öâ%ÒÀ¢’À¢7F–öåö–CÖf÷&Õ²&7F–öåö–B%ÒÀ¢&öGV7E÷&VcÖf÷&Õ²'&öGV7E÷&Vb%ÒÀ¢FW7F–æF–öå÷&VcÖf÷&Õ²&FW7F–æF–öå÷&Vb%ÒÀ¢¢W†6WBW‡÷'E&W6V&6…VW7F–öä6öæfÆ–7B2W†3 ¢&—6R…EEW†6WF–öâ€¢C’ÂFWF–ÃÒ$U…õ%EôÄô4ÅõTU5D”ôåô4„ätTB"À¢’g&öÒW†0¢W†6WBÆVFvW$–çFVw&—G”W'&÷"2W†3 ¢&—6R…EEW†6WF–öâ€¢S2ÂFWF–ÃÒ%DT4„ä”4Åõ$Ud”UuõTäd”Ä$ÄR"À¢’g&öÒW†0¢W†6WBfÇVTW'&÷"2W†3 ¢&—6R…EEW†6WF–öâ€¢C#"ÂFWF–ÃÒ$”ådÄ”EôÄô4ÅõDU5Eôdõ$Ò"À¢’g&öÒW†0¢–b&W7VÇB—2æöæS ¢&—6R…EEW†6WF–öâƒCBÂFWF–ÃÒ$E$eEôäõEôdõTäB"¢&WGW&â&VF—&V7E&W7öç6R€¢"öFÖ–âöW‡÷'B÷&W6V&6‚öG&gG2ò"²V÷FR‡&Vb’À¢7FGW5ö6öFSÓ32À¢ ¢&÷WFW"ç÷7B‚"öFÖ–âöW‡÷'B÷&W6V&6‚öG&gG2÷·&VgÒöWf–FVæ6R×&VfW&Væ6R"¢7–æ2FVbW‡÷'EöFVÖõöWf–FVæ6U÷&VfW&Væ6Uö'&÷w6W"€¢&Vc¢7G"Â&WVW7C¢&WVW7BÀ¢6–C¢7G"ÂæöæRÒ6öö¶–R†FVfVÇCÔæöæRÂÆ–3Ö6öö¶–UöæÖR’À¢’Óâ&VF—&V7E&W7öç6S ¢&–æ6—ÂÂf÷&ÒÒv—B6†V6¶VEö'&÷w6W%öf÷&Ò€¢&WVW7BÂ6–BÀ¢f–VÆG3Ög&÷¦Vç6WB‡°¢&77&b"Â&7F–öåö–B"Â&66U÷fW'6–öâ"Â'VW7F–öå÷&Wf—6–öâ"À¢&Wf–FVæ6U÷&Wf—6–öâ"Â&Wf–FVæ6U÷&Vb"Â&6öææV7F÷%÷&Vb"À¢'6÷W&6U÷6æ6†÷EöF–vW7B"À¢Ò’À¢¢–b†æ÷BfÆ–EöWf–FVæ6U÷&Vg2€¢f÷&Õ²&Wf–FVæ6U÷&Vb%ÒÂf÷&Õ²&6öææV7F÷%÷&Vb%ÒÀ¢’÷"f÷&Õ²&Wf–FVæ6U÷&Vb%Òæ÷B–â€¢$DTÔòÔUd”DTä4RÔÅ„"Â$DTÔòÔUd”DTä4RÔ$UD"À¢’÷"f÷&Õ²&6öææV7F÷%÷&Vb%Òæ÷B–â€¢$DTÔòÔ4ôääT5Dõ"ÔÅ„"Â$DTÔòÔ4ôääT5Dõ"Ô$UD"À¢’÷"æ÷BfÆ–E÷6æ6†÷EöF–vW7B†f÷&Õ²'6÷W&6U÷6æ6†÷EöF–vW7B%Ò’“ ¢&—6R…EEW†6WF–öâƒC#"ÂFWF–ÃÒ$”ådÄ”EôÄô4ÅõDU5Eôdõ$Ò"¢G'“ ¢&W7VÇBÒFV6†æ–6Å÷&Wf–WuöÆVFvW"ç&V6÷&EöW‡÷'EöWf–FVæ6U÷&VfW&Væ6R€¢&VbÂ&–æ6—ÂÀ¢W‡V7FVEö66U÷fW'6–öãÖf÷&Õ÷fW'6–öâ€¢f÷&Õ²&66U÷fW'6–öâ%ÒÂ¦W&õöÆÆ÷vVCÔfÇ6RÀ¢’À¢W‡V7FVE÷VW7F–öå÷&Wf—6–öãÖf÷&Õ÷fW'6–öâ€¢f÷&Õ²'VW7F–öå÷&Wf—6–öâ%ÒÂ¦W&õöÆÆ÷vVCÔfÇ6RÀ¢’À¢W‡V7FVEöWf–FVæ6U÷&Wf—6–öãÖf÷&Õ÷fW'6–öâ€¢f÷&Õ²&Wf–FVæ6U÷&Wf—6–öâ%ÒÀ¢’À¢7F–öåö–CÖf÷&Õ²&7F–öåö–B%ÒÀ¢Wf–FVæ6U÷&VcÖf÷&Õ²&Wf–FVæ6U÷&Vb%ÒÀ¢6öææV7F÷%÷&VcÖf÷&Õ²&6öææV7F÷%÷&Vb%ÒÀ¢6÷W&6U÷6æ6†÷EöF–vW7CÖf÷&Õ²'6÷W&6U÷6æ6†÷EöF–vW7B%ÒÀ¢¢W†6WBW‡÷'DWf–FVæ6U&VfW&Væ6T6öæfÆ–7B2W†3 ¢&—6R…EEW†6WF–öâ€¢C’ÂFWF–ÃÒ$U…õ%EôUd”DTä4Uõ$TdU$Tä4Uô4„ätTB"À¢’g&öÒW†0¢W†6WBÆVFvW$–çFVw&—G”W'&÷"2W†3 ¢&—6R…EEW†6WF–öâ€¢S2ÂFWF–ÃÒ%DT4„ä”4Åõ$Ud”UuõTäd”Ä$ÄR"À¢’g&öÒW†0¢W†6WBfÇVTW'&÷"2W†3 ¢&—6R…EEW†6WF–öâ€¢C#"ÂFWF–ÃÒ$”ådÄ”EôÄô4ÅõDU5Eôdõ$Ò"À¢’g&öÒW†0¢–b&W7VÇB—2æöæS ¢&—6R…EEW†6WF–öâƒCBÂFWF–ÃÒ$E$eEôäõEôdõTäB"¢&WGW&â&VF—&V7E&W7öç6R€¢"öFÖ–âöW‡÷'B÷&W6V&6‚öG&gG2ò"²V÷FR‡&Vb’À¢7FGW5ö6öFSÓ32À¢ ¢&÷WFW"ç÷7B‚"öFÖ–âöW‡÷'B÷&W6V&6‚öG&gG2÷·&VgÒöf–æF–æw2"¢7–æ2FVbW‡÷'EöFVÖõöf–æF–æuö'&÷w6W"€¢&Vc¢7G"Â&WVW7C¢&WVW7BÀ¢6–C¢7G"ÂæöæRÒ6öö¶–R†FVfVÇCÔæöæRÂÆ–3Ö6öö¶–UöæÖR’À¢’Óâ&VF—&V7E&W7öç6S ¢&–æ6—ÂÂf÷&ÒÒv—B6†V6¶VEö'&÷w6W%öf÷&Ò€¢&WVW7BÂ6–BÂf–VÆG3Ög&÷¦Vç6WB‡°¢&77&b"Â&7F–öåö–B"Â&66U÷fW'6–öâ"Â'VW7F–öå÷&Wf—6–öâ"À¢&f–æF–æu÷&Wf—6–öâ"Â&Wf–FVæ6Uö&–æF–ær"Â&æ÷FR"À¢Ò’ÂÖ…ö'—FW3ÓC“bÂÖ…öf–VÆG3Ó‚ÂÖ…÷fÇVUöÆVæwFƒÓ#À¢¢G'“ ¢Wf–FVæ6U÷&Wf—6–öå÷FW‡BÂWf–FVæ6U÷&VbÒf÷&Õ²&Wf–FVæ6Uö&–æF–ær%Òç7Æ—B‚#¢"Â¢Wf–FVæ6U÷&Wf—6–öâÒf÷&Õ÷fW'6–öâ†Wf–FVæ6U÷&Wf—6–öå÷FW‡BÂ¦W&õöÆÆ÷vVCÔfÇ6R¢W†6WB…fÇVTW'&÷"ÂG—TW'&÷"’2W†3 ¢&—6R…EEW†6WF–öâƒC#"ÂFWF–ÃÒ$”ådÄ”EôU…õ%Eõ$U4T$4…ôd”äD”är"’g&öÒW†0¢G'“ ¢&W7VÇBÒFV6†æ–6Å÷&Wf–WuöÆVFvW"ç&V6÷&EöW‡÷'E÷&W6V&6…öf–æF–ær€¢&VbÂ&–æ6—ÂÀ¢W‡V7FVEö66U÷fW'6–öãÖf÷&Õ÷fW'6–öâ€¢f÷&Õ²&66U÷fW'6–öâ%ÒÂ¦W&õöÆÆ÷vVCÔfÇ6RÀ¢’À¢W‡V7FVE÷VW7F–öå÷&Wf—6–öãÖf÷&Õ÷fW'6–öâ€¢f÷&Õ²'VW7F–öå÷&Wf—6–öâ%ÒÂ¦W&õöÆÆ÷vVCÔfÇ6RÀ¢’À¢W‡V7FVEöf–æF–æu÷&Wf—6–öãÖf÷&Õ÷fW'6–öâ€¢f÷&Õ²&f–æF–æu÷&Wf—6–öâ%ÒÀ¢’À¢Wf–FVæ6U÷&Wf—6–öãÖWf–FVæ6U÷&Wf—6–öâÀ¢7F–öåö–CÖf÷&Õ²&7F–öåö–B%ÒÀ¢Wf–FVæ6U÷&VcÖWf–FVæ6U÷&VbÂæ÷FSÖf÷&Õ²&æ÷FR%ÒÀ¢¢W†6WBW‡÷'E&W6V&6„f–æF–æt6öæfÆ–7B2W†3 ¢&—6R…EEW†6WF–öâ€¢C’ÂFWF–ÃÒ$U…õ%Eõ$U4T$4…ôd”äD”äuô4„ätTB"À¢’g&öÒW†0¢W†6WB„ÆVFvW$–çFVw&—G”W'&÷"Â7Æ—FS2äW'&÷"’2W†3 ¢&—6R…EEW†6WF–öâ€¢S2ÂFWF–ÃÒ%DT4„ä”4Åõ$Ud”UuõTäd”Ä$ÄR"À¢’g&öÒW†0¢W†6WBfÇVTW'&÷"2W†3 ¢&—6R…EEW†6WF–öâ€¢C#"ÂFWF–ÃÒ$”ådÄ”EôU…õ%Eõ$U4T$4…ôd”äD”är"À¢’g&öÒW†0¢–b&W7VÇB—2æöæS ¢&—6R…EEW†6WF–öâƒCBÂFWF–ÃÒ$E$eEôäõEôdõTäB"¢&WGW&â&VF—&V7E&W7öç6R€¢"öFÖ–âöW‡÷'B÷&W6V&6‚öG&gG2ò"²V÷FR‡&Vb’Â7FGW5ö6öFSÓ32À¢ ¢–bW‡÷'E÷6÷W&6Uö6öææV7F÷'2—2æ÷BæöæS ¢&÷WFW"ç÷7B‚"öFÖ–âöW‡÷'B÷&W6V&6‚öG&gG2÷·&VgÒöWf–FVæ6R×&VfW&Væ6Rö6GW&R"¢7–æ2FVbW‡÷'EöFVÖõöWf–FVæ6U÷&VfW&Væ6Uö6GW&Uö'&÷w6W"€¢&Vc¢7G"Â&WVW7C¢&WVW7BÀ¢6–C¢7G"ÂæöæRÒ6öö¶–R†FVfVÇCÔæöæRÂÆ–3Ö6öö¶–UöæÖR’À¢’Óâ&VF—&V7E&W7öç6S ¢&–æ6—ÂÂf÷&ÒÒv—B6†V6¶VEö'&÷w6W%öf÷&Ò€¢&WVW7BÂ6–BÀ¢f–VÆG3Ög&÷¦Vç6WB‡°¢&77&b"Â&7F–öåö–B"Â&66U÷fW'6–öâ"Â'VW7F–öå÷&Wf—6–öâ"À¢&Wf–FVæ6U÷&Wf—6–öâ"Â&6öææV7F÷%÷&Vb"À¢Ò’À¢¢G'“ ¢&W7VÇBÒ6GW&UöW‡÷'E÷6÷W&6U÷&VfW&Væ6R€¢FV6†æ–6Å÷&Wf–WuöÆVFvW"ÂW‡÷'E÷6÷W&6Uö6öææV7F÷'2Â&VbÀ¢&–æ6—ÂÀ¢W‡V7FVEö66U÷fW'6–öãÖf÷&Õ÷fW'6–öâ€¢f÷&Õ²&66U÷fW'6–öâ%ÒÂ¦W&õöÆÆ÷vVCÔfÇ6RÀ¢’À¢W‡V7FVE÷VW7F–öå÷&Wf—6–öãÖf÷&Õ÷fW'6–öâ€¢f÷&Õ²'VW7F–öå÷&Wf—6–öâ%ÒÂ¦W&õöÆÆ÷vVCÔfÇ6RÀ¢’À¢W‡V7FVEöWf–FVæ6U÷&Wf—6–öãÖf÷&Õ÷fW'6–öâ€¢f÷&Õ²&Wf–FVæ6U÷&Wf—6–öâ%ÒÀ¢’À¢7F–öåö–CÖf÷&Õ²&7F–öåö–B%ÒÀ¢6öææV7F÷%÷&VcÖf÷&Õ²&6öææV7F÷%÷&Vb%ÒÀ¢¢W†6WBW‡÷'DWf–FVæ6U&VfW&Væ6T6öæfÆ–7B2W†3 ¢&—6R…EEW†6WF–öâ€¢C’ÂFWF–ÃÒ$U…õ%EôUd”DTä4Uõ$TdU$Tä4Uô4„ätTB"À¢’g&öÒW†0¢W†6WBW‡÷'E6÷W&6T6öææV7F÷%Væf–Æ&ÆR2W†3 ¢&—6R…EEW†6WF–öâ€¢S2ÂFWF–ÃÒ$U…õ%Eõ4õU$4Uô4ôääT5Dõ%õTäd”Ä$ÄR"À¢’g&öÒW†0¢W†6WB„ÆVFvW$–çFVw&—G”W'&÷"Â7Æ—FS2äW'&÷"’2W†3 ¢&—6R…EEW†6WF–öâ€¢S2ÂFWF–ÃÒ%DT4„ä”4Åõ$Ud”UuõTäd”Ä$ÄR"À¢’g&öÒW†0¢W†6WBfÇVTW'&÷"2W†3 ¢&—6R…EEW†6WF–öâ€¢C#"ÂFWF–ÃÒ$”ådÄ”EôU…õ%Eõ4õU$4Uô4ôääT5Dõ""À¢’g&öÒW†0¢–b&W7VÇB—2æöæS ¢&—6R…EEW†6WF–öâƒCBÂFWF–ÃÒ$E$eEôäõEôdõTäB"¢&WGW&â&VF—&V7E&W7öç6R€¢"öFÖ–âöW‡÷'B÷&W6V&6‚öG&gG2ò"²V÷FR‡&Vb’À¢7FGW5ö6öFSÓ32À¢ ¢–bWF†÷&—G•öVçV—'•öÆVFvW"—2æ÷BæöæS ¢&÷WFW"ævWB‚"öFÖ–âövFRÖWf–FVæ6R÷¶FöÖ–çÒ÷&VF–æW72"¢FVbFV6†æ–6Å÷&VF–æW75öÖG&—‚€¢FöÖ–ã¢7G"À¢6–C¢7G"ÂæöæRÒ6öö¶–R†FVfVÇCÔæöæRÂÆ–3Ö6öö¶–UöæÖR’À¢’Óâ…DÔÅ&W7öç6S ¢G'“ ¢6W76–öâÒfÆ÷rç6W76–öâ‡6–B¢W†6WB–çfÆ–EFö¶Vã ¢&—6R…EEW†6WF–öâƒCÂFWF–ÃÒ$”ådÄ”Eõ4U54”ôâ"’g&öÒæöæP¢W&Ö—GFVBÒæW‡B‚€¢F÷76–W"f÷"F÷76–W"–âf—6–&ÆUöF÷76–W'2€¢&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2¢¢–bF÷76–W"æFöÖ–âÓÒFöÖ–âæBF÷76–W"ç&öÆR–â6W76–öâç&öÆW0¢’ÂæöæR¢–bW&Ö—GFVB—2æöæS ¢2v÷fW&ææ6RÖ’&VBV&Æ–2vFRÖWFFFÂ'WB×W7Bæ÷@¢2–×Æ–6—FÇ’v–âFöÖ–â÷W&F÷"w2FV6†æ–6Âv÷&¶Æ—7Bà¢&—6R…EEW†6WF–öâƒCBÂFWF–ÃÒ%$TD”äU55ôÔE$•…ôäõEôdõTäB"¢ÖG&—‚ÒWF†÷&—G•öVçV—'•öÆVFvW"ç&VE÷&VF–æW75öÖG&—‚€¢&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2’ÂFöÖ–âÀ¢¢&÷w2ÒµÐ¢f÷"—FVÒ–âÖG&—…²&—FV×2%Ó ¢7FvRÒ—FVÕ²'FV6†æ–6Åö†æFöfb%Õ²'FV6†æ–6Å÷7FFR%Ð¢6†V6·2Ò}‰²ræ¦ö–â€¢6†V6µ²&6†V6µö¶–æB%Ò²#¢"²6†V6µ²'FV6†æ–6Å÷7FFR%Ð¢f÷"6†V6²–â—FVÕ²&WF†÷&—G•ö6†V6·2%Ð¢¢&÷w2æVæB€¢sÆÆ“ãÇ7G&öæsâr²W66R†—FVÕ²&Wf–FVæ6Uö–B%Ò’°¢sÂ÷7G&öæsâ(	BŠ}‹ŠÍŠ}‹“¢r²W66R‡7FvR’°¢r(	BŠ}‹=Š­‹˜MŠ}˜^(Í˜}Šs¢r²W66R†6†V6·2’°¢r(	B›í‹¸Í‹‹C¢˜]‹=Šý˜ŠóÂöÆ“âp¢¢&öG’Ò€¢sÆ'F–6ÆR6Æ73Ò'æVÂ#ãÆƒ#í˜]Š}Š­‹¸Í‹2˜˜m¸Â‹M˜Š}˜}Šòr°¢W66R†FöÖ–â’²sÂöƒ#âp¢sÇíŠ­˜]Š}˜R˜‹m‹¸ÍŠ®(Í˜}ŠrŠý‹¸Íª’Š­‹Š}ª˜m‹B˜Š}ŠÝŠýˆÂ›í‹2Š}‹"Š‹‹‹=¸Â¸Íª›íŠ}‹¨mªý¸ÂŠ­Š}‹¸ÍŠí¨m˜rŠí˜Š}˜mŠý˜r‹MŠý˜~(ÍŠ}˜mŠòãÂ÷âp¢sÇíŠ}¸Í˜bŠ}‹}˜MŠ}‹Š}Š¢˜m‹=Ší˜~(ÍŠ‹=Š­˜r˜‚‹­¸Í‹‹˜]˜M¸ÍŠ}Š­¸Â˜}‹=Š­˜mŠý‰²p¢}Š}‹]Š}˜MŠ¢˜]˜m‹MŠ=ˆÂŠÝ˜"Š}‹=Š­˜Š}Šý˜}ˆÂ‹]˜MŠ}ŠÝ¸ÍŠ¢ŠŠ}‹-Š¸Í˜b˜‚Š­‹]˜¸ÍŠ‚'W6–æW72p¢}˜}˜]¨m˜mŠ}˜bŠ­Š=¸Í¸ÍŠò˜m‹MŠý˜~(ÍŠ}˜mŠòãÂ÷âp¢sÇVÃâr²rræ¦ö–â‡&÷w2’²sÂ÷VÃâp¢sÇãÆ‡&VcÒ"öFÖ–âövFRÖWf–FVæ6Ròr°¢W66R†FöÖ–âÂV÷FSÕG'VR’°¢r#íŠŠ}‹-ªý‹MŠ¢Š˜rŠ}‹=˜mŠ}Šò‹M˜Š}˜}ŠòŠ}¸Í˜bŠÝ˜‹-˜sÂöãÂ÷ãÂö'F–6ÆSâp¢¢&WGW&âvR‚-‹˜˜mŠ}‹2(	B˜]Š}Š­‹¸Í‹2˜˜m¸Â‹M˜Š}˜}ŠòŠ-‹-˜]Š}¸Í‹M¸Â"À¢&öG’ÂÆövvVEö–ãÕG'VR ¢&÷WFW"ævWB‚"öFÖ–âövFRÖWf–FVæ6R÷¶FöÖ–çÒ"¢FVbvFUöWf–FVæ6UöFWF–Â€¢FöÖ–ã¢7G"À¢6–C¢7G"ÂæöæRÒ6öö¶–R†FVfVÇCÔæöæRÂÆ–3Ö6öö¶–UöæÖR’À¢’Óâ…DÔÅ&W7öç6S ¢G'“ ¢6W76–öâÒfÆ÷rç6W76–öâ‡6–B¢W†6WB–çfÆ–EFö¶Vã ¢&—6R…EEW†6WF–öâƒCÂFWF–ÃÒ$”ådÄ”Eõ4U54”ôâ"’g&öÒæöæP¢ÆÆ÷vVBÒæW‡B‚€¢Bf÷"B–âf—6–&ÆUöF÷76–W'2€¢&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2¢’–bBæFöÖ–âÓÒFöÖ–à¢’ÂæöæR¢–bÆÆ÷vVB—2æöæS ¢&—6R…EEW†6WF–öâƒCBÂFWF–ÃÒ$tDUôDõ54”U%ôäõEôdõTäB"¢fW&–g•÷–ææVEö'W6–æW75÷6÷W&6W2‚¢7W'&VçBÒF÷76–W%öFWF–Â†ÆÆ÷vVB¢†æFöfe÷7FFW3¢F–7E·7G"Â7G%ÒÒ·Ð¢VçV—'•÷7FFW3¢F–7E·7G"Â7G%ÒÒ·Ð¢&VfÆ–v‡Eöæ÷F–6RÒ" ¢–b†vFUö†æFöfeöÆVFvW"—2æ÷BæöæP¢æBÆÆ÷vVBç&öÆR–â6W76–öâç&öÆW2“ ¢&VfÆ–v‡BÒvFUö†æFöfeöÆVFvW"ç&VfÆ–v‡E÷v÷&¶Æ—7B€¢&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2’ÂFöÖ–âÀ¢¢†æFöfe÷7FFW2Ò°¢—FVÕ²&Wf–FVæ6Uö–B%Ó¢—FVÕ²'FV6†æ–6Å÷7FFR%Ð¢f÷"—FVÒ–â&VfÆ–v‡E²&—FV×2%Ð¢Ð¢&VfÆ–v‡Eöæ÷F–6RÒ€¢sÇíª˜mŠ­‹˜B›í‹¸Í‹‹B‹M˜Š}˜}Šó¢˜]‹=Šý˜Šý‰²Š}‹]Š}˜MŠ¢˜]˜m‹MŠ=ˆÂŠÝ˜"Š}‹=Š­˜Š}Šý˜rp¢}˜‚‹]˜MŠ}ŠÝ¸ÍŠ¢ŠŠ}‹-Š¸Í˜bŠ­Š=¸Í¸ÍŠò˜m‹MŠý˜rŠ}‹=Š¢âŠÝŠ­¸ÂŠ­‹}Š¸Í˜"˜}‹BDTÔòp¢}Š‹Š}¸ÂŠ­Š=¸Í¸ÍŠò'W6–æW72ªŠ}˜¸Â˜m¸Í‹=Š¢ãÂ÷âp¢¢–b†WF†÷&—G•öVçV—'•öÆVFvW"—2æ÷BæöæP¢æBÆÆ÷vVBç&öÆR–â6W76–öâç&öÆW2“ ¢VçV—'’ÒWF†÷&—G•öVçV—'•öÆVFvW"ç&VEö6†V6µ÷7FGW2€¢&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2’ÂFöÖ–âÀ¢¢w&÷WVBÒ·Ð¢f÷"—FVÒ–âVçV—'•²&—FV×2%Ó ¢–b—FVÕ²'FV6†æ–6Å÷7FFR%ÒÒ$äõõ$UTU5B# ¢w&÷WVBç6WFFVfVÇB†—FVÕ²&Wf–FVæ6Uö–B%ÒÂµÒ’æVæB€¢—FVÕ²&6†V6µö¶–æB%Ò²#¢"²—FVÕ²'FV6†æ–6Å÷7FFR%Ð¢¢VçV—'•÷7FFW2Ò·&Vc¢-‰²"æ¦ö–â‡'G2’f÷"&VbÂ'G2–âw&÷WVBæ—FV×2‚—Ð¢&VfÆ–v‡Eöæ÷F–6R³Ò€¢sÇíŠ}‹ŠÍŠ}‹ž(Í˜}Š}¸ÂŠ‹‹‹=¸Â˜]‹ŠÍ‹’˜]‹Š­Š‹˜˜-‹r˜˜m¸Â˜}‹=Š­˜mŠý‰²p¢}Š­Š=¸Í¸ÍŠò˜Š}˜-‹¸Â˜]˜m‹MŠ=ˆÂŠÝ˜-˜˜"¸ÍŠr‹]˜MŠ}ŠÝ¸ÍŠ¢ŠŠ}‹-Š¸Í˜b˜}˜m˜‹"˜ŠÍ˜Šò˜mŠýŠ}‹ŠòãÂ÷âp¢sÇãÆ‡&VcÒ"öFÖ–âövFRÖWf–FVæ6Ròr°¢W66R†FöÖ–âÂV÷FSÕG'VR’°¢r÷&VF–æW72#í˜m˜]Š}¸Â¸Íª›íŠ}‹¨m˜r›í¸Íªý¸Í‹¸Â˜˜m¸ÂŠ}¸Í˜bŠÝ˜‹-˜sÂöãÂ÷âp¢¢2ÆÂU$Ç2&RFW&—fVBW†6ÇW6—fVÇ’g&öÒ–ææVB&W÷6—F÷'’6öç7FçG2À¢2æ÷Bg&öÒVW'’÷"&&—G&'’W6W"×&÷f–FVB6÷W&6RF‚à¢öff–6–Å÷6÷W&6RÒ€¢&‡GG3¢òöv—F‡V"æ6öÒöÖ†F–Ö'¦ööv†“BÖFV'Vrõ&öæ2ö&Æö"ò ¢²%U4”äU55õ4õU$4Uõ4„²"ò"²7W'&VçE²'6÷W&6U÷F‚%Ð¢¢—77VRÒ€¢&‡GG3¢òöv—F‡V"æ6öÒöÖ†F–Ö'¦ööv†“BÖFV'Vrõ&öæ2ö—77VW2ò ¢²7G"†7W'&VçE²&vFUö—77VR%Ò¢¢Wf–FVæ6U÷&÷w2Òrræ¦ö–â€¢sÆÆ“ãÇ7G&öæsâr²W66R†U²&–B%Ò’²sÂ÷7G&öæsâ(	Bp¢²W66R†U²&Æ&VÂ%Ò’²s¢p¢²W66R†U²'6÷W&6U÷7FGW2%Ò¢²‚r+r›í¸Íªý¸Í‹¸ÂŠ}‹ŠÍŠ}‹’˜˜m¸Ã¢p¢²W66R††æFöfe÷7FFW5¶U²&–B%ÕÒ¢–bU²&–B%Ò–â†æFöfe÷7FFW2VÇ6Rrr¢²‚r+r›í¸Íªý¸Í‹¸ÂŠ}‹=Š­‹˜MŠ}˜R˜˜m¸Ã¢r²W66R†VçV—'•÷7FFW5¶U²&–B%ÕÒ¢–bU²&–B%Ò–âVçV—'•÷7FFW2VÇ6Rrr¢²sÂöÆ“âp¢f÷"R–â7W'&VçE²&Wf–FVæ6Uö—FV×2%Ð¢¢&öG’Ò€¢sÆ'F–6ÆR6Æ73Ò'æVÂ#ãÆƒ#í›í‹˜˜mŠý˜r‹M˜Š}˜}Šòr°¢W66R†7W'&VçE²&FöÖ–â%Ò’²sÂöƒ#âp¢sÇíŠ}¸Í˜b˜m˜]Š}¸Â˜m‹=Ší˜~(ÍŠ‹=Š­˜}ˆÂŠ­‹]˜]¸Í˜R‹-˜mŠý˜rªý¸ÍŠ¢¸ÍŠr˜]Šý‹ª’Š­Š=¸Í¸ÍŠý‹MŠý˜r˜m¸Í‹=Š¢ãÂ÷âp¢sÇí˜‹m‹¸ÍŠ¢Šý‹˜m‹=Ší˜r˜]˜mŠ‹“¢õTâ(	B˜]‹=Šm˜˜BŠ‹‹‹=¸Â˜}˜m˜‹"Š­‹¸Í¸Í˜b˜m‹MŠý˜rãÂ÷âp¢sÇí˜Š}¸Í˜N(Í˜}Š}¸Â˜}˜]¸Í˜b˜m‹=Ší˜r˜]ŠÝ˜M¸ÂŠŠr‹M˜mŠ}‹=˜rv—B˜]˜‹ŠòŠ}˜mŠ­‹Š}‹˜]‹}Š}Š˜-Š¢ŠýŠ}‹˜mŠý‰²p¢}Š}¸Í˜bŠ­Š=¸Í¸ÍŠýˆÂ˜‹m‹¸ÍŠ¢‹-˜mŠý˜rªý¸ÍŠ¢¸ÍŠr˜m‹=Ší˜rŠÍŠ}‹¸Â"˜m¸Í‹=Š¢ãÂ÷âp¢sÇí‹M˜mŠ}‹=˜r˜m‹=Ší˜r˜]˜mŠ‹“¢Æ6öFSâr²W66R„%U4”äU55õ4õU$4Uõ4„¢²sÂö6öFSãÂ÷âp¢sÇVÃâr²Wf–FVæ6U÷&÷w2²sÂ÷VÃâp¢sÇãÆ‡&VcÒ"r²W66R†öff–6–Å÷6÷W&6RÂV÷FSÕG'VR’°¢r#í‹=˜mŠò˜]ŠŠýŠ2˜m‹=Ší˜~(ÍŠ‹=Š­˜sÂöâ(	Bp¢sÆ‡&VcÒ"r²W66R†—77VRÂV÷FSÕG'VR’°¢r#íªý¸ÍŠ¢'W6–æW72Šý‹v—D‡V#ÂöãÂ÷âp¢²&VfÆ–v‡Eöæ÷F–6R°¢sÇí¸ÍŠ}ŠýŠýŠ}‹MŠ¢Š‹‹‹=¸Â˜˜m¸ÍˆÂŠ­Š=¸Í¸ÍŠòŠ}‹Š­ŠŠ}‹‹=˜mŠò¸ÍŠrŠ­‹]˜¸ÍŠ‚'W6–æW72˜m¸Í‹=Š¢ãÂ÷âp¢sÇí˜}¸Í¨bŠ­Š=¸Í¸ÍŠýˆÂŠ½ŠŠ¢˜]Šý‹ªˆÂŠ˜ŠýŠÍ˜}ˆÂ˜]‹Š}˜]˜M˜r¸ÍŠrŠ­‹]˜]¸Í˜]¸ÂŠý‹Š}¸Í˜b˜m˜]ŠrŠ}˜mŠÍŠ}˜R˜m˜]¸Î(Í‹M˜ŠòãÂ÷âp¢sÇãÆ‡&VcÒ"öFÖ–â#íŠŠ}‹-ªý‹MŠ¢Š˜r˜]Šý¸Í‹¸ÍŠ¢‹˜˜mŠ}‹3ÂöãÂ÷âp¢sÂö'F–6ÆSâp¢¢&WGW&âvR‚-˜]Šý¸Í‹¸ÍŠ¢‹˜˜mŠ}‹2(	B˜‹m‹¸ÍŠ¢˜m‹=Ší˜~(ÍŠ‹=Š­˜r‹M˜Š}˜}Šòªý¸ÍŠ¢"À¢&öG’ÂÆövvVEö–ãÕG'VR ¢&÷WFW"ævWB‚"öFÖ–âö÷W&F–öæÂ×&VF–æW72÷¶FöÖ–çÒ"¢FVb÷W&F–öæÅ÷&VF–æW75÷vR€¢FöÖ–ã¢7G"À¢6–C¢7G"ÂæöæRÒ6öö¶–R†FVfVÇCÔæöæRÂÆ–3Ö6öö¶–UöæÖR’À¢’Óâ…DÔÅ&W7öç6S ¢G'“ ¢6W76–öâÒfÆ÷rç6W76–öâ‡6–B¢W†6WB–çfÆ–EFö¶Vã ¢&—6R…EEW†6WF–öâƒCÂFWF–ÃÒ$”ådÄ”Eõ4U54”ôâ"’g&öÒæöæP¢–bæ÷Bç’€¢BæFöÖ–âÓÒFöÖ–âf÷"B–âf—6–&ÆUöF÷76–W'2€¢&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2¢¢“ ¢&—6R…EEW†6WF–öâƒCBÂFWF–ÃÒ%$TD”äU55ôäõEôdõTäB"¢7VÖÖ'’Ò&VF–æW72†FöÖ–â¢æVVG2Òrræ¦ö–â€¢sÆÆ“âr²W66R†—FVÕ²&Æ&VÂ%Ò’°¢r(	B˜]Šý‹ª’˜]‹Š­Š‹˜}˜m˜‹"Š}ŠÝ‹Š}‹"˜m‹MŠý˜rŠ}‹=Š¢ãÂöÆ“âp¢f÷"—FVÒ–â7VÖÖ'•²'VæF–æuöWf–FVæ6R%Ð¢¢6÷W&6W2Òrræ¦ö–â€¢sÆÆ“ãÇ7G&öæsâr²W66R†—FVÕ²&æÖR%Ò’²sÂ÷7G&öæsâp¢r(	BŠÝ˜"Š}‹=Š­˜Š}Šý˜r˜‚Š-˜]˜‹-‹B’Š}ŠÝ‹Š}‹"˜m‹MŠý˜}‰²˜]˜Š}˜m‹“¢p¢²W66R‚-ˆÂ"æ¦ö–â†—FVÕ²'&Wf–WuöfÆw2%Ò’’°¢r+rÆ‡&VcÒ"r²W66R†—FVÕ²&öff–6–Å÷FW&×5÷W&Ç2%Õ³ÒÂV÷FSÕG'VR¢²r#í‹M‹Š}¸Í‹r‹‹=˜]¸Â˜]˜mŠ‹“ÂöãÂöÆ“âp¢f÷"—FVÒ–â7VÖÖ'•²'6÷W&6W5öæ÷EöÆ–6Vç6VB%Ð¢¢6÷W&6Uö&÷‚Ò€¢sÆƒ3í˜]˜mŠ}Š‹’‹­‹ŠŠ}˜N(Í‹MŠý˜}ˆÂ˜m˜rŠýŠ}‹Š}¸Â˜]ŠÍ˜‹"Š}‹=Š­˜Š}Šý˜sÂöƒ3ãÇVÃâp¢²6÷W&6W2²sÂ÷VÃâp¢–b6÷W&6W2VÇ6Rrp¢¢f–ææ6RÒ€¢sÆƒ3í˜]˜]¸Í‹-¸Â‹ŠýŠý¸Â˜]˜mŠ‹ˆÂ˜m˜rŠ˜ŠýŠÍ˜sÂöƒ3ãÇíŠ}ŠíŠ­˜MŠ}˜‹=‹˜]Š}¸Í˜r˜m˜-˜N(Í‹MŠý˜s¢p¢²7G"‡7VÖÖ'•²'6÷W&6Uö&—F†ÖWF–5öæ÷Eö'VFvWB%Õ°¢&&—F†ÖWF–5÷VæW‡Æ–æVEöF–ffW&Væ6R ¢Ò’²r˜]¸Í˜M¸Í˜˜bŠ­˜˜]Š}˜m‰²Š­˜‹=¸Í‹ŠÝ‹=Š}ŠŠýŠ}‹¸Â˜}˜m˜‹"Š­‹]˜¸ÍŠ‚˜m‹MŠý˜rŠ}‹=Š¢ãÂ÷âp¢–bFöÖ–âÓÒ$d”ää4R"VÇ6Rrp¢¢—77VRÒ‚&‡GG3¢òöv—F‡V"æ6öÒöÖ†F–Ö'¦ööv†“BÖFV'Vrõ&öæ2ö—77VW2ò ¢²7G"‡7VÖÖ'•²&vFUö—77VR%Ò’¢&öG’Ò€¢sÆ'F–6ÆR6Æ73Ò'æVÂ#ãÆƒ#í˜]¸Í‹-ªŠ}‹Š­‹]˜]¸Í˜R‹˜]˜M¸ÍŠ}Š­¸Â(	Bp¢²W66R†FöÖ–â’²sÂöƒ#âp¢sÇí˜‹m‹¸ÍŠ¢Šý‹˜m‹=Ší˜r›í¸Í‹N(Í˜m˜¸Í‹3¢õTââŠ}¸Í˜b‹]˜ŠÝ˜r˜‹m‹¸ÍŠ¢p¢}‹-˜mŠý˜rv—D‡V"¸ÍŠrŠ­‹]˜¸ÍŠ‚˜]‹=Šm˜˜B‹Šr˜m‹MŠ}˜b˜m˜]¸Î(ÍŠý˜}ŠòãÂ÷âp¢sÆƒ3í‹M˜Š}˜}Šò˜MŠ}‹-˜RŠ‹Š}¸ÂŠ­‹]˜]¸Í˜R˜Š}˜-‹¸ÃÂöƒ3ãÇVÃâp¢²æVVG2²sÂ÷VÃâp¢sÇíŠÝ˜‹-˜~(Í˜}Š}¸Â›í¸Í‹M˜m˜}Š}Šý¸ÍˆÂ˜m˜r˜]ŠÍ˜‹"Š}ŠÍ‹Šs¢p¢²W66R‚-ˆÂ"æ¦ö–â‡7VÖÖ'•²&6æF–FFU÷66÷W5öæ÷Eö&÷fVB%Ò¢÷"-˜}˜m˜‹"Š}˜mŠ­ŠíŠ}Š‚˜m‹MŠý˜r"’²sÂ÷âp¢²6÷W&6Uö&÷‚²f–ææ6R°¢sÇíŠý‹¸ÍŠ}˜Š¢ŠýŠ}Šý˜r˜Š}˜-‹¸ÍˆÂŠ‹˜mŠ}˜]˜rª‹MŠ­ˆÂ›í©˜˜}‹BŠ­ŠÍŠ}‹¸ÂŠ­Š=¸Í¸ÍŠý‹MŠý˜}ˆÂp¢}Š-˜]˜‹-‹B˜]Šý˜MˆÂ›í‹ŠýŠ}ŠíŠ¢˜‚˜-‹Š}‹ŠýŠ}Šò‹˜]˜M¸ÍŠ}Š­¸ÂŠý‹Š}¸Í˜b‹]˜ŠÝ˜r˜‹Š}˜B˜m¸Í‹=Š¢ãÂ÷âp¢sÇãÆ‡&VcÒ"r²W66R†—77VRÂV÷FSÕG'VR’°¢r#í›í¸Íªý¸Í‹¸Â˜]ŠýŠ}‹ª’˜‚Š­‹]˜]¸Í˜Rªý¸ÍŠ¢Šý‹v—D‡V#ÂöãÂ÷âp¢sÇãÆ‡&VcÒ"öFÖ–â#íŠŠ}‹-ªý‹MŠ¢Š˜r˜]Šý¸Í‹¸ÍŠ¢‹˜˜mŠ}‹3ÂöãÂ÷ãÂö'F–6ÆSâp¢¢&WGW&âvR‚-‹˜˜mŠ}‹2(	B‹M˜Š}˜}Šò˜MŠ}‹-˜RŠ‹Š}¸ÂŠ­‹]˜]¸Í˜R‹˜]˜M¸ÍŠ}Š­¸Â"À¢&öG’ÂÆövvVEö–ãÕG'VR ¢&÷WFW"ævWB‚"öFÖ–âöf–ææ6R÷6÷W&6RÖ&—F†ÖWF–2"¢FVbf–ææ6U÷6÷W&6U÷&Wf–Wu÷vR€¢6–C¢7G"ÂæöæRÒ6öö¶–R†FVfVÇCÔæöæRÂÆ–3Ö6öö¶–UöæÖR’À¢’Óâ…DÔÅ&W7öç6S ¢G'“ ¢6W76–öâÒfÆ÷rç6W76–öâ‡6–B¢W†6WB–çfÆ–EFö¶Vã ¢&—6R…EEW†6WF–öâƒCÂFWF–ÃÒ$”ådÄ”Eõ4U54”ôâ"’g&öÒæöæP¢–b&f–ææ6R"æ÷B–â6W76–öâç&öÆW3 ¢&—6R…EEW†6WF–öâƒCBÂFWF–ÃÒ%4õU$4Uõ$Ud”UuôäõEôdõTäB"¢fW&–g•÷–ææVEö'W6–æW75÷6÷W&6W2‚¢&W÷'BÒ6÷W&6Uö&—F†ÖWF–2‚¢&öG’Ò€¢sÆ'F–6ÆR6Æ73Ò'æVÂ#ãÆƒ#íŠ‹‹‹=¸Â‹ŠýŠý¸Â˜]˜mŠ‹’d”âÓ"p¢r‹]‹˜Š}˜²‹=˜mŠòŠ­Š}‹¸ÍŠí¸Â“Âöƒ#âp¢sÇí˜}˜]˜r˜]˜-Š}Šý¸Í‹Š‹ŠÝ‹=Š‚˜]¸Í˜M¸Í˜˜bŠ­˜˜]Š}˜b˜‚˜m˜-˜M™‹}‹ŠÞ(Í˜mŠ}˜]˜~(ÍŠ}˜mŠý‰²p¢}Š˜ŠýŠÍ˜}ˆÂ˜}‹-¸Í˜m˜r˜Š}˜-‹¸ÍˆÂ˜ŠÍ˜r˜m˜-Šò¸ÍŠr‹=‹˜]Š}¸Í˜r˜]˜‹ŠòŠ­Š=¸Í¸ÍŠò˜m¸Í‹=Š­˜mŠòãÂ÷âp¢sÇVÃãÆÆ“í‹=‹˜]Š}¸Í˜rŠ}˜˜M¸Í˜r˜m˜-˜N(Í‹MŠý˜s¢p¢²7G"‡&W÷'E²'&W÷'FVEö–æ—F–Åö6—FÂ%Ò’²sÂöÆ“âp¢sÆÆ“íŠ­ŠÍ˜}¸Í‹-Š}Š£¢r²7G"‡&W÷'E²'&W÷'FVEöWV—ÖVçB%Ò’²sÂöÆ“âp¢sÆÆ“í›í¸Í‹BŠ}‹"Š˜}‹˜~(ÍŠ‹ŠýŠ}‹¸Ã¢p¢²7G"‡&W÷'E²'&W÷'FVE÷&Uö÷W&F–ær%Ò’²sÂöÆ“âp¢sÆÆ“íŠÍ˜]‹’Šý˜‚˜]ŠM˜M˜˜s¢p¢²7G"‡&W÷'E²&&—F†ÖWF–5ö6ö×öæVçE÷7VÒ%Ò’²sÂöÆ“âp¢sÆÆ“íŠ}ŠíŠ­˜MŠ}˜ŠŠr‹˜-˜RŠ}˜˜M¸Í˜s¢p¢²7G"‡&W÷'E²&&—F†ÖWF–5÷VæW‡Æ–æVEöF–ffW&Væ6R%Ò’²sÂöÆ“âp¢sÆÆ“í˜}‹-¸Í˜m˜r‹˜]˜M¸ÍŠ}Š­¸Â‹=Š}˜B˜mŠí‹=Š¢Šý‹˜]˜mŠ‹“¢p¢²7G"‡&W÷'E²'&W÷'FVE÷–V%ööæUö÷W&F–æuö6÷7B%Ò’²sÂöÆ“ãÂ÷VÃâp¢sÇíŠ‹Š}Š‹¸ÂŠ}ŠíŠ­˜MŠ}˜˜‚˜}‹-¸Í˜m˜r‹=Š}˜B˜mŠí‹=Š¢¸Íª’˜]‹MŠ}˜}Šý˜r‹ŠýŠý¸ÂŠ}‹=Š­‰²p¢}˜m˜‹’‹=‹˜]Š}¸Í˜rý˜}‹-¸Í˜m˜}ˆÂŠí‹}Šr¸ÍŠrŠý˜ŠŠ}‹˜~(Í‹M˜]Š}‹¸Â‹ŠrŠ}Š½ŠŠ}Š¢˜m˜]¸Î(Íª˜mŠòãÂ÷âp¢sÇäd”âÓŠ­Šrd”âÓr˜‚ªý¸ÍŠ¢˜]Š}˜M¸Â3BŠŠ}‹"˜}‹=Š­˜mŠòâp¢}˜}¸Í¨b˜m‹ŠíˆÂŠ˜ŠýŠÍ˜rŠ}‹]˜MŠ}ŠÝ¸ÍˆÂ›í‹ŠýŠ}ŠíŠ¢¸ÍŠrŠ­‹=˜¸Í˜r˜‹Š}˜B˜m¸Í‹=Š¢ãÂ÷âp¢sÇí˜}‹B˜m‹=Ší˜r˜Š}¸Í˜B˜]Š}˜M¸Ã¢Æ6öFSâp¢²W66R‡&W÷'E²'6÷W&6Uö&Æö%÷6†%Ò’²sÂö6öFSãÂ÷âp¢sÇãÆ‡&VcÒ"öFÖ–âövFRÖWf–FVæ6Rôd”ää4R#âp¢}‹M˜Š}˜}ŠòŠ­‹]˜]¸Í˜R˜]Š}˜M¸ÃÂöâ+rÆ‡&VcÒ"öFÖ–â#âp¢}ŠŠ}‹-ªý‹MŠ¢Š˜r˜]Šý¸Í‹¸ÍŠ¢‹˜˜mŠ}‹3ÂöãÂ÷ãÂö'F–6ÆSâp¢¢&WGW&âvR‚-‹˜˜mŠ}‹2(	BŠ­‹}Š¸Í˜"Š}‹˜-Š}˜R˜]˜mŠ‹’˜]Š}˜M¸Â"Â&öG’ÂÆövvVEö–ãÕG'VR ¢&÷WFW"ævWB‚"öFÖ–â"¢FVbFÖ–å÷V’€¢6–C¢7G"ÂæöæRÒ6öö¶–R†FVfVÇCÔæöæRÂÆ–3Ö6öö¶–UöæÖR’À¢FöÖW7F–5ögFW%÷&Vc¢7G"ÂæöæRÒæöæRÀ¢W‡÷'EögFW%÷&Vc¢7G"ÂæöæRÒæöæRÀ¢’Óâ…DÔÅ&W7öç6S ¢G'“ ¢6W76–öâÒfÆ÷rç6W76–öâ‡6–B¢W†6WB–çfÆ–EFö¶Vã ¢6W76–öâÒæöæP¢w&çG2Ò6W76–öâç&öÆW2–b6W76–öâ—2æ÷BæöæRVÇ6RæöæP¢–bw&çG2—2æöæS ¢&WGW&âvR‚-˜]Šý¸Í‹¸ÍŠ¢‹˜˜mŠ}‹2(	B˜‹˜ŠòŠ}˜M‹-Š}˜]¸Â"ÂsÇí˜‹˜ŠòŠ}˜]˜b˜MŠ}‹-˜RŠ}‹=Š¢ãÂ÷ârÀ¢ÆövvVEö–ãÔfÇ6RÂ6öFSÓCÂÆöv–å÷&WGW&å÷FƒÒ"öFÖ–â"¢7F—fRÒ²†æÖRÂÆ&VÂ’f÷"æÖRÂÆ&VÂ–âDÔ”åõ$ôÄU2æ—FV×2‚’–bæÖR–âw&çG5Ð¢–bæ÷B7F—fS ¢&WGW&âvR‚-Šý‹=Š­‹‹=¸Â˜]Šý¸Í‹¸ÍŠ¢˜]ŠÍŠ}‹"˜m¸Í‹=Š¢"À¢sÇí˜]ŠÍ˜‹"˜‹˜ŠòŠ˜r˜}¸Í¨n(Í¸Íª’Š}‹"¨m˜}Š}‹ŠÝ˜‹-˜r˜]Šý¸Í‹¸ÍŠ¢˜ŠÍ˜Šò˜mŠýŠ}‹ŠòãÂ÷ârÀ¢ÆövvVEö–ãÕG'VRÂ6öFSÓC2¢6&G2ÒµÐ¢G'“ ¢fW&–g•÷–ææVEö'W6–æW75÷6÷W&6W2‚¢vFU÷6÷W&6U÷W6&ÆRÒG'VP¢W†6WB'W6–æW756÷W&6U6æ6†÷DW'&÷# ¢2¶VWVç&VÆFVBÆö6ÂFÖ–â&VBÖöFVÇ2f–Æ&ÆRÂv†–ÆP¢2v—F††öÆF–ærÆÂö'6öÆWFRvFRÆ–æ·2æB6†÷v–ærv&æ–ærà¢vFU÷6÷W&6U÷W6&ÆRÒfÇ6P¢f÷"&öÆRÂÆ&VÂ–â7F—fS ¢æ÷FRÒ°¢&FöÖW7F–5ö÷2#¢-˜m˜]˜˜m˜r›í‹˜˜mŠý˜rŠíŠ}˜m˜Š}‹DTÔòÔƒ‰²‹‹mŠ}¸ÍŠ¢˜‚Š­Š=¸Í¸ÍŠòªŠ}‹‹M˜mŠ}‹2˜ŠÍ˜Šò˜mŠýŠ}‹Šòâ"À¢&W‡÷'Eö÷2#¢-˜m˜]˜˜m˜r›í©˜˜}‹BDTÔòÕ4õU$4RÓ‰²ŠÝ˜-˜˜"˜]˜mŠ‹’˜‚Ší‹¸ÍŠýŠ}‹Š}ŠÝ‹Š}‹"˜m‹MŠý˜rŠ}‹=Š¢â"À¢&f–ææ6R#¢-›í‹ŠýŠ}ŠíŠ­ˆÂŠ­‹=˜¸Í˜r˜‚Š}˜mŠ­˜-Š}˜B˜ŠÍ˜r‹­¸Í‹˜‹Š}˜B˜}‹=Š­˜mŠòâ"À¢&v÷fW&ææ6R#¢-‹Š}˜}Š‹¸ÂŠ˜r˜]‹˜m¸Â˜]ŠÍ˜‹"Ší˜ŠýªŠ}‹˜]Š}˜M¸ÍˆÂª‹MŠ}˜‹‹-¸Â¸ÍŠr‹]Š}Šý‹Š}Š¢˜m¸Í‹=Š¢â"À¢Õ·&öÆUÐ¢v÷&¶Æ—7BÒ" ¢–bFV6†æ–6Å÷&Wf–WuöÆVFvW"—2æ÷BæöæRæB6W76–öâ—2æ÷BæöæS ¢–b&öÆRÓÒ&FöÖW7F–5ö÷2# ¢v÷&¶Æ—7BÒFV6†æ–6Å÷v÷&¶Æ—7B€¢$DôÔU5D”2"Â&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2’À¢FöÖW7F–5ögFW%÷&VbÀ¢¢VÆ–b&öÆRÓÒ&W‡÷'Eö÷2# ¢v÷&¶Æ—7BÒ€¢sÇãÆ‡&VcÒ"öFÖ–âöW‡÷'B÷&W6V&6‚#âp¢}˜]‹˜‹˜‚˜¸Í˜MŠ­‹›í‹˜˜mŠý˜~(Í˜}Š}¸Â›í©˜˜}‹B‹]Š}Šý‹Š}Š£ÂöãÂ÷âp¢²FV6†æ–6Å÷v÷&¶Æ—7B€¢$U…õ%B"Â&–æ6—Â‡6W76–öâç7V&¦V7BÂ6W76–öâç&öÆW2’À¢W‡÷'EögFW%÷&VbÀ¢¢¢FöÖ–âÒ°¢&FöÖW7F–5ö÷2#¢$DôÔU5D”2"À¢&W‡÷'Eö÷2#¢$U…õ%B"À¢&f–ææ6R#¢$d”ää4R"À¢ÒævWB‡&öÆR¢2v÷fW&ææ6R6â–ç7V7BÆÂV&Æ–2'W6–æW72vFRÖWFFFÂ'W@¢2F†—2FöW2æ÷Bw&çB66W72Fò66RöWf–FVæ6R&—fFR&V6÷&G2à¢FöÖ–ç2Ò¶FöÖ–åÒ–bFöÖ–âVÇ6R€¢²$DôÔU5D”2"Â$U…õ%B"Â$d”ää4R%Ð¢–b&öÆRÓÒ&v÷fW&ææ6R"VÇ6RµÐ¢¢vFUöÆ–æ·2Ò‚rræ¦ö–â€¢sÇãÆ‡&VcÒ"öFÖ–âövFRÖWf–FVæ6Ròr²¶W¢²r#í‹M˜Š}˜}ŠòŠŠ}‹"'W6–æW72(	Br²¶W’²sÂöâp¢r‹]‹˜Š}˜²˜m‹=Ší˜~(ÍŠ‹=Š­˜r˜‚‹­¸Í‹‹˜]˜M¸ÍŠ}Š­¸Â“Â÷âp¢f÷"¶W’–âFöÖ–ç0¢’–bvFU÷6÷W&6U÷W6&ÆRVÇ6P¢sÇí˜m‹=Ší˜r˜]ŠÝ˜M¸ÂŠ}‹=˜mŠ}Šò‹M˜Š}˜}Šò˜]‹Š­Š‹˜m¸Í‹=Š­‰²p¢}›í¸Í˜˜mŠý˜}Š}¸Âªý¸ÍŠ¢˜]˜˜-Š­Š}˜²‹­¸Í‹˜‹Š}˜N(ÍŠ}˜mŠòãÂ÷âr¢–bvFU÷6÷W&6U÷W6&ÆS ¢G'“ ¢fW&–g•öFV6—6–öå÷6÷W&6W2‚¢W†6WB'W6–æW756÷W&6U6æ6†÷DW'&÷# ¢vFUöÆ–æ·2³Ò€¢sÇíŠ}‹=˜mŠ}ŠòŠ­‹]˜]¸Í˜R‹˜]˜M¸ÍŠ}Š­¸ÂŠŠr˜m‹=Ší˜rŠ­Š=¸Í¸ÍŠý˜m‹MŠý˜rŠ­‹­¸Í¸Í‹p¢}ª‹Šý˜~(ÍŠ}˜mŠý‰²›í¸Í˜˜mŠý˜}Šr‹­¸Í‹˜‹Š}˜B˜}‹=Š­˜mŠòãÂ÷âp¢¢VÇ6S ¢vFUöÆ–æ·2³Òrræ¦ö–â€¢sÇãÆ‡&VcÒ"öFÖ–âö÷W&F–öæÂ×&VF–æW72òp¢²¶W’²r#í‹M˜Š}˜}Šò˜MŠ}‹-˜RŠ‹Š}¸ÂŠ­‹]˜]¸Í˜R‹˜]˜M¸ÍŠ}Š­¸Â(	Bp¢²¶W’²sÂöãÂ÷âp¢f÷"¶W’–âFöÖ–ç0¢¢–b&öÆRÓÒ&f–ææ6R"æBvFU÷6÷W&6U÷W6&ÆS ¢vFUöÆ–æ·2³Ò€¢sÇãÆ‡&VcÒ"öFÖ–âöf–ææ6R÷6÷W&6RÖ&—F†ÖWF–2#âp¢}˜]˜]¸Í‹-¸Â‹ŠýŠý¸Â˜m‹=Ší˜~(ÍŠ‹=Š­˜rd”âÓ"ŠŠý˜˜bŠ­‹]˜¸ÍŠ‚Š˜ŠýŠÍ˜r’p¢sÂöãÂ÷âp¢¢6&G2æVæB‚sÆ'F–6ÆR6Æ73Ò'æVÂ#ãÆƒ#âr²W66R†Æ&VÂ’²sÂöƒ#ãÇâp¢²W66R†æ÷FR’²sÂ÷âr²v÷&¶Æ—7B²vFUöÆ–æ·0¢²sÂö'F–6ÆSâr¢&WGW&âvR‚-˜]Šý¸Í‹¸ÍŠ¢‹˜˜mŠ}‹2(	B›í˜m˜B˜Š}ŠÝŠòŠŠrŠý‹=Š­‹‹=¸Â˜]ŠÍ‹-Šr"À¢sÆF—b6Æ73Ò&6öÇVÖç2#âr²rræ¦ö–â†6&G2’²sÂöF—cârÂÆövvVEö–ãÕG'VR ¢&WGW&â&÷WFW 

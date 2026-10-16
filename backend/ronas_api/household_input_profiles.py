@@ -1048,6 +1048,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
             )
             items.append({
                 "revision": revision, "stage_ref": stage_ref,
+                "case_version": version, "input_revision": input_revision,
                 "observed_at": observed_at,
                 "observation_artifact_digest": artifact_digest,
                 "receipt_digest": digest,

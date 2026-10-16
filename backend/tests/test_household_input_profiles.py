@@ -42,6 +42,7 @@ from ronas_api.domestic_surplus_publication import (
 from ronas_api.domestic_surplus_drafts import (
     SqliteSyntheticSurplusDraftLedger, SurplusDraftStorageError,
 )
+from ronas_api.domestic_surplus_producer_consent import SqliteSyntheticProducerConsentLedger
 from ronas_api.internal_cultivation_plan_contract import (
     InternalCultivationProposal, ProposedCultivationStage,
 )
@@ -193,7 +194,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
 
     def make_app(self, *, schema=True, authority=True, stage_authority=True,
                  artifact_store=None, surplus_authority=None,
-                 surplus_draft_ledger=None):
+                 surplus_draft_ledger=None, surplus_consent_ledger=None):
         return create_app(
             self.config, self.flow, scoped_registry=self.ledger,
             technical_review_ledger=self.ledger,
@@ -205,6 +206,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             household_stage_artifact_store=artifact_store,
             household_surplus_publication_authority=surplus_authority,
             household_surplus_draft_ledger=surplus_draft_ledger,
+            household_surplus_producer_consent_ledger=surplus_consent_ledger,
         )
 
     def stage_command(self, *, action="DEMO-STAGE-OBS-1", revision=0):
@@ -2207,6 +2209,78 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             f'/my-drafts/{REF}/surplus-offers">بازگشت به فهرست پیشنهادها',
             response.text,
         )
+
+    def test_surplus_producer_consent_browser_form_approves_and_withdraws_exact_version(self):
+        draft_path = str(self.path.parent / "surplus-consent-drafts.sqlite3")
+        draft_ledger = SqliteSyntheticSurplusDraftLedger(
+            draft_path, self.schema, self.allowed,
+        )
+        owner = Principal(OWNER, frozenset({"household"}))
+        offer_ref = "DEMO-OFFER-CONSENT-UI"
+        saved = draft_ledger.save(
+            owner, REF, offer_ref, action_id="DEMO-CONSENT-DRAFT",
+            expected_revision=0,
+            values={"field_alpha": "sample offer", "field_choice": "sample-a"},
+        )
+        consent = SqliteSyntheticProducerConsentLedger(
+            str(self.path.parent / "surplus-consent-journal.sqlite3"),
+            draft_ledger,
+        )
+
+        def resolver(principal, household_ref, requested_offer):
+            current = draft_ledger.read_owned(principal, household_ref, requested_offer)
+            return OfferRevision(
+                current.offer_ref, current.household_ref, current.producer_subject,
+                current.revision, current.payload_digest,
+            ), PublicationAuthorities()
+
+        app = self.make_app(
+            surplus_authority=resolver, surplus_draft_ledger=draft_ledger,
+            surplus_consent_ledger=consent,
+        )
+        client = TestClient(app, base_url=ORIGIN)
+        session = self.browser_session()
+        sid = next(key for key, value in self.sessions.sessions.items()
+                   if value is session)
+        client.cookies.set("__Host-ronas_session", sid)
+        path = f"/my-drafts/{REF}/surplus-publication-readiness"
+        readiness = client.get(path, params={"offer_ref": offer_ref})
+        self.assertEqual(readiness.status_code, 200, readiness.text)
+        self.assertIn("موافقت با انتشار همین نسخه", readiness.text)
+        self.assertIn("به‌تنهایی باعث انتشار نمی‌شود", readiness.text)
+        form = {
+            "csrf": session.csrf, "action_id": "DEMO-CONSENT-UI-1",
+            "offer_revision": str(saved.revision),
+            "payload_digest": saved.payload_digest, "approved": "true",
+        }
+        posted = client.post(
+            f"/my-drafts/{REF}/surplus-offers/{offer_ref}/publication-consent",
+            content=urlencode(form),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(posted.status_code, 303, posted.text)
+        approved = client.get(path, params={"offer_ref": offer_ref})
+        self.assertIn("پس‌گرفتن موافقت انتشار همین نسخه", approved.text)
+        self.assertNotIn("تأیید تولیدکننده ثبت نشده است", approved.text)
+        self.assertIn("بررسی مستقل کیفیت و ایمنی ثبت نشده است", approved.text)
+        self.assertIn("وضعیت انتشار: منتشر نشده", approved.text)
+        form.update(action_id="DEMO-CONSENT-UI-2", approved="false")
+        withdrawn = client.post(
+            f"/my-drafts/{REF}/surplus-offers/{offer_ref}/publication-consent",
+            content=urlencode(form),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(withdrawn.status_code, 303, withdrawn.text)
+        after_withdrawal = client.get(path, params={"offer_ref": offer_ref})
+        self.assertIn("موافقت با انتشار همین نسخه", after_withdrawal.text)
+        self.assertIn("تأیید تولیدکننده ثبت نشده است", after_withdrawal.text)
+        self.assertFalse(draft_ledger.read_owned(
+            owner, REF, offer_ref,
+        ).published)
 
     def test_surplus_readiness_ui_hides_cross_household_and_redacts_authority_error(self):
         calls = []

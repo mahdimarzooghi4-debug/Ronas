@@ -2350,7 +2350,9 @@ def build_authenticated_ui_router(
                                     for item in context.requirements
                                 )):
                             raise HTTPException(
-                                409, detail="STAGE_OBSERVATION_C                        declared_size = _declared_upload_size(
+                                409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                            )
+                        declared_size = _declared_upload_size(
                             request.headers.get("content-length"),
                         )
                         chunks, size = [], 0

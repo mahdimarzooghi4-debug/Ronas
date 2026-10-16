@@ -2372,6 +2372,69 @@ def build_authenticated_ui_router(
                             "stored": True,
                         })
 
+                    @router.get(
+                        "/my-drafts/{ref}/stage-observations/artifacts/"
+                        "{stage_ref}/{digest}",
+                    )
+                    def household_stage_artifact_download(
+                        ref: str, stage_ref: str, digest: str,
+                        sid: str | None = Cookie(default=None, alias=cookie_name),
+                    ) -> Response:
+                        try:
+                            session = flow.session(sid)
+                        except InvalidToken:
+                            raise HTTPException(401, detail="INVALID_SESSION") from None
+                        principal = Principal(session.subject, session.roles)
+                        try:
+                            permitted = household_profile_access_authority(
+                                principal, ref, household_profile_schema.schema_ref,
+                            )
+                        except Exception as exc:
+                            raise HTTPException(
+                                503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                            ) from exc
+                        if permitted is not True:
+                            raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
+                        try:
+                            history = household_input_ledger.read_owned_stage_observations(
+                                ref, principal,
+                                context_authority=household_stage_context_authority,
+                            )
+                        except StageObservationConflict as exc:
+                            raise HTTPException(
+                                409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                            ) from exc
+                        except (LedgerIntegrityError, sqlite3.Error) as exc:
+                            raise HTTPException(
+                                503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                            ) from exc
+                        receipt_exists = bool(history and any(
+                            item["stage_ref"] == stage_ref
+                            and item["observation_artifact_digest"] == digest
+                            for item in history["observations"]
+                        ))
+                        if not receipt_exists:
+                            raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
+                        try:
+                            stored = household_stage_artifact_store.get(
+                                session.subject, ref + ":" + stage_ref, digest,
+                            )
+                        except (ValueError, StageArtifactStoreError) as exc:
+                            raise HTTPException(
+                                503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
+                            ) from exc
+                        if stored is None:
+                            raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
+                        artifact, content = stored
+                        return Response(
+                            content=content, media_type=artifact.content_type,
+                            headers={
+                                "Content-Disposition": 'attachment; filename="stage-observation"',
+                                "Cache-Control": "private, no-store",
+                                "X-Content-Type-Options": "nosniff",
+                            },
+                        )
+
                 @router.get(
                     "/my-drafts/{ref}/stage-observations",
                     response_class=HTMLResponse,
@@ -2513,8 +2576,8 @@ def build_authenticated_ui_router(
                            + ' اصلاح شد' if item["is_superseded"] else '')
                         + (' · رسید مشاهده شد (بدون داوری)'
                            if item["receipt_inspected"] else '')
-                        + (' · <a href="/api/v1/domestic/household-intake/my-drafts/'
-                           + quote(ref) + '/stage-observations/artifacts/'
+                        + (' · <a href="/my-drafts/' + quote(ref)
+                           + '/stage-observations/artifacts/'
                            + quote(item["stage_ref"]) + '/'
                            + escape(item["observation_artifact_digest"], quote=True)
                            + '">دریافت فایل</a>'

@@ -1767,8 +1767,13 @@ def build_authenticated_ui_router(
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
             notes = ''.join(
                 '<li><time>' + escape(item["reported_at"]) + '</time> · '
-                + ('نسخه جاری پرونده' if item["current_case_version"] else
-                   'نسخه تاریخی پرونده ' + str(item["case_version"]))
+                + ('زمینه جاری پرونده و ورودی'
+                   if item["current_case_version"] and item["current_input_context"]
+                   else 'زمینه ورودی ثبت‌نشده؛ تاریخی'
+                   if item["input_revision"] is None
+                   else 'نسخه تاریخی پرونده ' + str(item["case_version"])
+                   if not item["current_case_version"]
+                   else 'نسخه تاریخی ورودی ' + str(item["input_revision"]))
                 + ' — ' + escape(item["note"]) + '</li>'
                 for item in result["notes"]
             )
@@ -1783,6 +1788,8 @@ def build_authenticated_ui_router(
                 + str(result["case_version"]) + '">'
                 '<input type="hidden" name="revision" value="'
                 + str(result["current_revision"]) + '">'
+                '<input type="hidden" name="input_revision" value="'
+                + str(result["current_input_revision"]) + '">'
                 '<label for="reported-at">زمان گزارش‌شده با منطقه زمانی</label>'
                 '<input id="reported-at" name="reported_at" maxlength="40" '
                 'placeholder="2026-10-12T10:30:00+03:30" required>'
@@ -1813,7 +1820,8 @@ def build_authenticated_ui_router(
         ) -> RedirectResponse:
             principal, form = await checked_browser_form(
                 request, sid, fields=frozenset({
-                    "csrf", "action_id", "case_version", "revision", "reported_at", "note",
+                    "csrf", "action_id", "case_version", "revision",
+                    "input_revision", "reported_at", "note",
                 }),
             )
             try:
@@ -1824,6 +1832,7 @@ def build_authenticated_ui_router(
                         form["case_version"], zero_allowed=False,
                     ),
                     expected_revision=form_version(form["revision"]),
+                    expected_input_revision=form_version(form["input_revision"]),
                     reported_at=form["reported_at"], note=form["note"],
                 )
             except InputRevisionConflict as exc:

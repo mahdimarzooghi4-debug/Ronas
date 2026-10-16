@@ -174,7 +174,7 @@ class PostgresSurplusDraftLedgerTests(unittest.TestCase):
             )
             cases.append_owned_input_manifest(
                 self.household, self.principal,
-                action_id="PG-INPUT-INITIAL", expected_case_version=1,
+                action_id="DEMO-PG-INPUT-INITIAL", expected_case_version=1,
                 expected_input_revision=0, synthetic_manifest_digest="a" * 64,
             )
             app = create_app(

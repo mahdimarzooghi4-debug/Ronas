@@ -634,11 +634,13 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         self.assertNotIn("اقدام بعدی", resp.text)
 
 
-    def progress_command(self, revision=0, action="DEMO-PROGRESS-A",
+    def progress_command(self, revision=0, input_revision=0, action="DEMO-PROGRESS-A",
                          note="DEMO: observed leaves", reported_at="2026-10-12T10:30:00+03:30"):
         return {
             "action_id": action, "expected_case_version": 3,
-            "expected_revision": revision, "reported_at": reported_at,
+            "expected_revision": revision,
+            "expected_input_revision": input_revision,
+            "reported_at": reported_at,
             "note": note,
         }
 
@@ -656,16 +658,56 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 201, replay.text)
         self.assertTrue(replay.json()["idempotent_replay"])
         history = self.client.get(root, headers=self.headers()).json()
+        self.assertEqual(history["current_input_revision"], 0)
         self.assertEqual(history["notes"], [{
-            "case_version": 3, "revision": 1,
+            "case_version": 3, "input_revision": 0, "revision": 1,
             "reported_at": "2026-10-12T10:30:00+03:30",
             "note": "DEMO: observed leaves", "current_case_version": True,
+            "current_input_context": True,
         }])
         self.assertTrue(self.ledger.verify_integrity())
         self.ledger = self.reopen()
         self.assertEqual(self.ledger.read_owned_progress_notes(
             "DEMO-D-1", Principal(OWNER, frozenset({"household"}))
         )["current_revision"], 1)
+
+    def test_progress_notes_become_historical_after_input_revision_changes(self):
+        root = "/api/v1/domestic/household-intake/my-drafts/DEMO-D-1/progress-notes"
+        first = self.client.post(root, json=self.progress_command(), headers=self.headers())
+        self.assertEqual(first.status_code, 201, first.text)
+        updated_input = self.client.post(
+            ROOT, json=self.command(
+                revision=0, digest=DIGEST1, action="DEMO-INPUT-AFTER-PROGRESS",
+            ), headers=self.headers(),
+        )
+        self.assertEqual(updated_input.status_code, 201, updated_input.text)
+
+        history = self.client.get(root, headers=self.headers()).json()
+        self.assertEqual(history["current_input_revision"], 1)
+        self.assertFalse(history["notes"][0]["current_input_context"])
+        stale = self.client.post(
+            root,
+            json=self.progress_command(
+                revision=1, input_revision=0, action="DEMO-PROGRESS-STALE-INPUT",
+                note="DEMO: based on old input",
+            ),
+            headers=self.headers(),
+        )
+        self.assertEqual(stale.status_code, 409, stale.text)
+
+        second = self.client.post(
+            root,
+            json=self.progress_command(
+                revision=1, input_revision=1, action="DEMO-PROGRESS-NEW-INPUT",
+                note="DEMO: reviewed new input",
+            ),
+            headers=self.headers(),
+        )
+        self.assertEqual(second.status_code, 201, second.text)
+        history = self.client.get(root, headers=self.headers()).json()
+        self.assertEqual([item["current_input_context"] for item in history["notes"]],
+                         [False, True])
+        self.assertEqual([item["input_revision"] for item in history["notes"]], [0, 1])
 
     def test_progress_note_api_rejects_stale_owner_role_and_real_claims(self):
         root = "/api/v1/domestic/household-intake/my-drafts/DEMO-D-1/progress-notes"
@@ -713,7 +755,7 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         form = {
             "csrf": self.sessions.get_session(self.client.cookies.get("__Host-ronas_session")).csrf,
             "action_id": action.group(1),
-            "case_version": "3", "revision": "0",
+            "case_version": "3", "input_revision": "0", "revision": "0",
             "reported_at": "2026-10-12T10:30:00+03:30",
             "note": 'DEMO: <script>alert("x")</script>',
         }
@@ -740,7 +782,7 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         view = self.client.get(route)
         self.assertIn("&lt;script&gt;", view.text)
         self.assertNotIn("<script>", view.text)
-        self.assertIn("نسخه جاری پرونده", view.text)
+        self.assertIn("زمینه جاری پرونده و ورودی", view.text)
         self.assertEqual(view.text.count("<li><time>"), 1)
         self.assertEqual(self.ledger.read_owned_progress_notes(
             "DEMO-D-1", Principal(OWNER, frozenset({"household"})),
@@ -748,6 +790,40 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         self.assertEqual(self.client.get("/my-drafts/DEMO-D-1").status_code, 200)
         self.assertIn("/my-drafts/DEMO-D-1/progress-notes",
                       self.client.get("/my-drafts/DEMO-D-1").text)
+
+    def test_progress_note_browser_marks_input_context_stale_and_rejects_old_form(self):
+        self.browser()
+        route = "/my-drafts/DEMO-D-1/progress-notes"
+        before = self.client.get(route)
+        csrf = self.sessions.get_session(
+            self.client.cookies.get("__Host-ronas_session")
+        ).csrf
+        action = re.search(r'name="action_id" value="(DEMO-PROGRESS-[A-Z0-9]+)"', before.text)
+        self.assertIsNotNone(action)
+        old_form = {
+            "csrf": csrf, "action_id": action.group(1),
+            "case_version": "3", "input_revision": "0", "revision": "0",
+            "reported_at": "2026-10-12T10:30:00+03:30",
+            "note": "DEMO: initial context note",
+        }
+        saved = self.client.post(route, data=old_form, headers={"Origin": ORIGIN},
+                                 follow_redirects=False)
+        self.assertEqual(saved.status_code, 303, saved.text)
+        changed = self.client.post(
+            ROOT, json=self.command(
+                revision=0, digest=DIGEST1, action="DEMO-INPUT-AFTER-BROWSER-NOTE",
+            ), headers=self.headers(),
+        )
+        self.assertEqual(changed.status_code, 201, changed.text)
+
+        current = self.client.get(route)
+        self.assertIn("نسخه تاریخی ورودی 0", current.text)
+        self.assertIn('name="input_revision" value="1"', current.text)
+        stale_form = {**old_form, "action_id": "DEMO-PROGRESS-STALE-BROWSER",
+                      "revision": "1", "note": "DEMO: stale browser context"}
+        stale = self.client.post(route, data=stale_form,
+                                 headers={"Origin": ORIGIN}, follow_redirects=False)
+        self.assertEqual(stale.status_code, 409, stale.text)
 
     def test_progress_note_form_is_disabled_for_wrong_owner_and_export(self):
         self.browser(subject="synthetic-household-other")

@@ -1004,14 +1004,37 @@ class ExportResearchQueueTests(unittest.TestCase):
         changed = json.loads(json.dumps(workspace))
         changed["case_version"] += 1
         with self.assertRaises(ExportResearchPacketConflict):
-            build_export_research_packet(workspace, expected, changed)
+            build_export_research_packet(workspace, expected, expected, changed)
+        changed_findings = json.loads(json.dumps(expected))
+        changed_findings[0]["note"] = "DEMO: concurrent append"
+        with self.assertRaises(ExportResearchPacketConflict):
+            build_export_research_packet(
+                workspace, expected, changed_findings, workspace,
+            )
         prohibited = json.loads(json.dumps(workspace))
         prohibited["source_rights_verified"] = True
         with self.assertRaises(ExportResearchPacketIntegrityError):
-            build_export_research_packet(prohibited, expected, prohibited)
+            build_export_research_packet(
+                prohibited, expected, expected, prohibited,
+            )
         self.assertEqual(client.get(
             path, headers=self.headers("synthetic-export-other"),
         ).status_code, 404)
+
+        changing_ledger = PostgresExportResearchFindingLedger.__new__(
+            PostgresExportResearchFindingLedger,
+        )
+        changing_ledger._workspace_reader = self.ledger.read_export_research_workspace
+        changed_findings = json.loads(json.dumps(expected))
+        changed_findings.append(dict(expected[0], revision=2,
+                                     note="DEMO: concurrent append"))
+        reads = iter((expected, changed_findings))
+        changing_ledger.read_history = lambda ref, principal: next(reads)
+        changing_client = self.client_for(
+            self.ledger, export_research_finding_ledger=changing_ledger,
+        )
+        changed_packet = changing_client.get(path, headers=self.headers())
+        self.assertEqual(changed_packet.status_code, 409, changed_packet.text)
 
         self.client = self.client_for(
             self.ledger, export_research_finding_ledger=finding_ledger,

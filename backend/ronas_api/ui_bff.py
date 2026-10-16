@@ -3989,15 +3989,23 @@ def build_authenticated_ui_router(
                 if before is None:
                     raise HTTPException(404, detail="DRAFT_NOT_FOUND")
                 if export_research_finding_ledger is not None:
-                    findings = export_research_finding_ledger.read_history(ref, principal)
+                    findings_before = export_research_finding_ledger.read_history(
+                        ref, principal,
+                    )
+                    findings_after = export_research_finding_ledger.read_history(
+                        ref, principal,
+                    )
                 else:
-                    findings = before.get("local_test_findings")
+                    findings_before = before.get("local_test_findings")
+                    findings_after = findings_before
                 after = technical_review_ledger.read_export_research_workspace(
                     ref, principal,
                 )
-                if findings is None or after is None:
+                if findings_before is None or findings_after is None or after is None:
                     raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-                packet = build_export_research_packet(before, findings, after)
+                packet = build_export_research_packet(
+                    before, findings_before, findings_after, after,
+                )
             except HTTPException:
                 raise
             except ExportResearchPacketConflict as exc:

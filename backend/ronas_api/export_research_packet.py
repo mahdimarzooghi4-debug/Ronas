@@ -58,8 +58,10 @@ def _digest(value: object) -> bool:
             and all(char in "0123456789abcdef" for char in value))
 
 
-def build_export_research_packet(workspace_before: dict, findings: list,
-                                 workspace_after: dict) -> dict:
+def build_export_research_packet(
+    workspace_before: dict, findings_before: list, findings_after: list,
+    workspace_after: dict,
+) -> dict:
     """Bind a packet to one stable case/question/evidence snapshot.
 
     The packet contains only opaque source references and analyst DEMO notes;
@@ -68,8 +70,11 @@ def build_export_research_packet(workspace_before: dict, findings: list,
     before, after = _context(workspace_before), _context(workspace_after)
     if _fingerprint(before) != _fingerprint(after):
         raise ExportResearchPacketConflict("Export context changed during packet assembly")
-    if not isinstance(findings, list):
+    if not isinstance(findings_before, list) or not isinstance(findings_after, list):
         raise ExportResearchPacketIntegrityError("Export finding collection is malformed")
+    if _fingerprint(findings_before) != _fingerprint(findings_after):
+        raise ExportResearchPacketConflict("Export findings changed during packet assembly")
+    findings = findings_before
     question = before["question"]
     if question is not None:
         if (question.get("question_state") != "UNVERIFIED_LOCAL_TEST_DRAFT"

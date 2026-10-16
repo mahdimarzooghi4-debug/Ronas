@@ -827,12 +827,26 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         history = self.client.get(page_path)
         self.assertIn("دریافت فایل", history.text)
         download_path = (
-            "/api/v1/domestic/household-intake/my-drafts/" + REF
+            "/my-drafts/" + REF
             + "/stage-observations/artifacts/DEMO-STAGE-01/" + digest
         )
+        self.assertIn(download_path, history.text)
         downloaded = self.client.get(download_path)
         self.assertEqual(downloaded.status_code, 200, downloaded.text)
         self.assertEqual(downloaded.content, image)
+        self.assertEqual(downloaded.headers["cache-control"], "no-store")
+        self.assertEqual(downloaded.headers["x-content-type-options"], "nosniff")
+        unlinked = self.client.get(
+            "/my-drafts/" + REF
+            + "/stage-observations/artifacts/DEMO-STAGE-01/" + "d" * 64,
+        )
+        self.assertEqual(unlinked.status_code, 404)
+        other = TestClient(
+            self.make_app(artifact_store=self.artifact_store), base_url=ORIGIN,
+        )
+        self.assertEqual(other.get(download_path).status_code, 401)
+        self.browser_session(subject="synthetic-other")
+        self.assertEqual(self.client.get(download_path).status_code, 404)
         self.assertTrue(self.ledger.verify_integrity())
 
     def test_stage_observation_is_not_offered_without_current_plan(self):

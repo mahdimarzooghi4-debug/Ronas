@@ -28,6 +28,7 @@ from ronas_api.export_source_connector import (
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
+from ronas_api.postgres_export_findings import PostgresExportResearchFindingLedger
 
 ISS = "https://id.example.test/realms/ronas"
 API, WEB, ORIGIN = "ronas-api", "ronas-web", "https://ronas.example.test"
@@ -105,11 +106,13 @@ class ExportResearchQueueTests(unittest.TestCase):
             ),
         )
 
-    def client_for(self, ledger, export_source_connectors=None):
+    def client_for(self, ledger, export_source_connectors=None,
+                   export_research_finding_ledger=None):
         return TestClient(create_app(
             self.config, self.flow,
             scoped_registry=ledger, technical_review_ledger=ledger,
             export_source_connectors=export_source_connectors,
+            export_research_finding_ledger=export_research_finding_ledger,
         ), base_url=ORIGIN)
 
     def token(self, subject="synthetic-export-001", roles=("export_ops",)):
@@ -927,6 +930,31 @@ class ExportResearchQueueTests(unittest.TestCase):
             {"HISTORICAL"},
         )
         self.assertTrue(self.reopen().verify_integrity())
+
+    def test_postgres_finding_history_api_is_scoped_and_draft_only(self):
+        finding_ledger = PostgresExportResearchFindingLedger.__new__(
+            PostgresExportResearchFindingLedger,
+        )
+        finding_ledger._workspace_reader = self.ledger.read_export_research_workspace
+        expected = [{"revision": 1, "note": "DEMO: private research note",
+                     "draft_only": True, "report_approved": False}]
+        finding_ledger.read_history = lambda ref, principal: (
+            expected if ref == "DEMO-E-001"
+            and principal.subject == "synthetic-export-001" else None
+        )
+        client = self.client_for(
+            self.ledger, export_research_finding_ledger=finding_ledger,
+        )
+        path = "/api/v1/admin/export/research/drafts/DEMO-E-001/findings"
+        self.assertEqual(client.get(path).status_code, 401)
+        response = client.get(path, headers=self.headers())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["engine"], "EXPORT")
+        self.assertEqual(response.json()["items"], expected)
+        self.assertFalse(response.json()["report_approved"])
+        self.assertEqual(client.get(
+            path, headers=self.headers("synthetic-export-other"),
+        ).status_code, 404)
 
     def test_export_finding_browser_form_uses_current_evidence_and_csrf(self):
         self.assertEqual(self.post_question().status_code, 201)

@@ -454,4 +454,21 @@ def build_technical_review_read_router(
             raise HTTPException(404, detail="DRAFT_NOT_FOUND")
         return result
 
+    if export_research_finding_ledger is not None:
+        @router.get("/api/v1/admin/export/research/drafts/{ref}/findings")
+        def read_export_findings(
+            ref: str, p: Principal = Depends(verified_principal),
+        ) -> dict:
+            try:
+                result = export_research_finding_ledger.read_history(ref, p)
+            except ExportFindingStorageError as exc:
+                raise HTTPException(
+                    503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+                ) from exc
+            if result is None:
+                # Keep unknown and unauthorized cases indistinguishable.
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return {"engine": "EXPORT", "ref": ref, "items": result,
+                    "draft_only": True, "report_approved": False}
+
     return router

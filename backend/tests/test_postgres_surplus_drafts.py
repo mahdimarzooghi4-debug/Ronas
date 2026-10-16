@@ -24,10 +24,10 @@ from ronas_api.household_input_profiles import (
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.postgres_surplus_drafts import PostgresSurplusDraftLedger
-from ronas_api.scoped_drafts import ScopedDraft
+from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
 
 DSN = os.environ.get("RONAS_TEST_POSTGRES_DSN")
-OWNER = "postgres-surplus-owner"
+OWNER = "synthetic-postgres-surplus-owner"
 HOUSEHOLD = "DEMO-H-" + secrets.token_hex(8).upper()
 OFFER = "DEMO-OFFER-" + secrets.token_hex(8).upper()
 SCHEMA = HouseholdInputSchema("RONAS-SURPLUS-TEST", 1, (
@@ -153,7 +153,10 @@ class PostgresSurplusDraftLedgerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             cases = SqliteSyntheticHouseholdProfileLedger(
                 Path(directory) / "household.sqlite3",
-                (ScopedDraft(self.household, "DOMESTIC", self.owner, 1, ()),),
+                (ScopedDraft(
+                    self.household, "DOMESTIC", self.owner, 1,
+                    (ScopedGrant("synthetic-domestic-ops", "domestic_ops"),),
+                ),),
                 profile_schema=SCHEMA,
                 trusted_revoke_authorizer=lambda *_: False,
                 trusted_human_review_authorizer=lambda *_: False,

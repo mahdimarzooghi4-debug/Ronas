@@ -30,6 +30,7 @@ from .stage_observation_artifacts import StageArtifactStore
 from .domestic_surplus_drafts import (
     SurplusDraftLedger, is_surplus_draft_ledger,
 )
+from .domestic_surplus_producer_consent import SqliteSyntheticProducerConsentLedger
 
 
 class LocalBFFConfigurationError(ValueError):
@@ -123,6 +124,7 @@ def _validate_synthetic_composition(
     household_stage_artifact_store,
     household_surplus_publication_authority,
     household_surplus_draft_ledger,
+    household_surplus_producer_consent_ledger,
 ) -> None:
     if case_ledger is not None and not isinstance(
         case_ledger, SqliteSyntheticExpertQuestionLedger,
@@ -156,6 +158,16 @@ def _validate_synthetic_composition(
         raise LocalBFFConfigurationError(
             "surplus drafts require the shared household profile owner authority"
         )
+    if household_surplus_producer_consent_ledger is not None and (
+            not isinstance(household_surplus_producer_consent_ledger,
+                           SqliteSyntheticProducerConsentLedger)
+            or household_surplus_draft_ledger is None
+            or household_surplus_producer_consent_ledger._draft_ledger
+                is not household_surplus_draft_ledger
+            or household_surplus_publication_authority is None):
+        raise LocalBFFConfigurationError(
+            "producer consent requires the same surplus draft/readiness ledgers"
+        )
     if agronomy_workspace is not None and (
         case_ledger is None
         or not isinstance(agronomy_workspace, SyntheticAgronomyWorkspace)
@@ -177,12 +189,14 @@ def _compose_local_test_bff(
     household_stage_artifact_store: StageArtifactStore | None = None,
     household_surplus_publication_authority=None,
     household_surplus_draft_ledger: SurplusDraftLedger | None = None,
+    household_surplus_producer_consent_ledger: SqliteSyntheticProducerConsentLedger | None = None,
 ) -> FastAPI:
     _validate_synthetic_composition(
         case_ledger, agronomy_workspace, household_profile_schema,
         household_profile_access_authority, household_stage_context_authority,
         household_stage_artifact_store, household_surplus_publication_authority,
         household_surplus_draft_ledger,
+        household_surplus_producer_consent_ledger,
     )
     cfg = BrowserOIDCConfig(keycloak, callback_url)
 
@@ -210,6 +224,7 @@ def _compose_local_test_bff(
         household_stage_artifact_store=household_stage_artifact_store,
         household_surplus_publication_authority=household_surplus_publication_authority,
         household_surplus_draft_ledger=household_surplus_draft_ledger,
+        household_surplus_producer_consent_ledger=household_surplus_producer_consent_ledger,
     )
     app.state.ronas_local_test_only = True
     return app
@@ -227,6 +242,7 @@ def create_local_test_bff(
     household_stage_artifact_store: StageArtifactStore | None = None,
     household_surplus_publication_authority=None,
     household_surplus_draft_ledger: SurplusDraftLedger | None = None,
+    household_surplus_producer_consent_ledger: SqliteSyntheticProducerConsentLedger | None = None,
 ) -> FastAPI:
     """Explicit local SQLite BFF composition; default app remains disabled."""
     if not isinstance(settings, LocalBFFSettings):
@@ -236,6 +252,7 @@ def create_local_test_bff(
         household_profile_access_authority, household_stage_context_authority,
         household_stage_artifact_store, household_surplus_publication_authority,
         household_surplus_draft_ledger,
+        household_surplus_producer_consent_ledger,
     )
     try:
         directory = settings.session_database.parent.lstat()
@@ -256,6 +273,7 @@ def create_local_test_bff(
         household_stage_artifact_store=household_stage_artifact_store,
         household_surplus_publication_authority=household_surplus_publication_authority,
         household_surplus_draft_ledger=household_surplus_draft_ledger,
+        household_surplus_producer_consent_ledger=household_surplus_producer_consent_ledger,
     )
     app.state.ronas_local_bff_session_backend = "sqlite"
     return app
@@ -323,6 +341,7 @@ def create_postgres_local_test_bff(
     household_stage_artifact_store: StageArtifactStore | None = None,
     household_surplus_publication_authority=None,
     household_surplus_draft_ledger: SurplusDraftLedger | None = None,
+    household_surplus_producer_consent_ledger: SqliteSyntheticProducerConsentLedger | None = None,
 ) -> FastAPI:
     """Opt-in LOCAL/TEST composition using the shared PostgreSQL session adapter."""
     if not isinstance(settings, PostgresLocalBFFSettings):
@@ -332,6 +351,7 @@ def create_postgres_local_test_bff(
         household_profile_access_authority, household_stage_context_authority,
         household_stage_artifact_store, household_surplus_publication_authority,
         household_surplus_draft_ledger,
+        household_surplus_producer_consent_ledger,
     )
     from .postgres_session import PostgresBrowserSessionStore
     try:
@@ -349,6 +369,7 @@ def create_postgres_local_test_bff(
         household_stage_artifact_store=household_stage_artifact_store,
         household_surplus_publication_authority=household_surplus_publication_authority,
         household_surplus_draft_ledger=household_surplus_draft_ledger,
+        household_surplus_producer_consent_ledger=household_surplus_producer_consent_ledger,
     )
     app.state.ronas_local_bff_session_backend = "postgresql"
     return app

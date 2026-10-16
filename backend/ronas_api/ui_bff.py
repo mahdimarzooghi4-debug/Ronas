@@ -78,6 +78,10 @@ from .domestic_surplus_drafts import (
     SurplusDraftStorageError,
     is_surplus_draft_ledger,
 )
+from .domestic_surplus_producer_consent import (
+    ProducerConsentConflict, ProducerConsentIntegrityError,
+    SqliteSyntheticProducerConsentLedger,
+)
 ADMIN_ROLES = {
     "domestic_ops": "عملیات داخلی",
     "export_ops": "عملیات صادرات",
@@ -338,6 +342,7 @@ def build_authenticated_ui_router(
     export_source_connectors: ExportSourceConnectorRegistry | None = None,
     household_surplus_publication_authority=None,
     household_surplus_draft_ledger: SurplusDraftLedger | None = None,
+    household_surplus_producer_consent_ledger: SqliteSyntheticProducerConsentLedger | None = None,
 ) -> APIRouter:
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
@@ -363,6 +368,15 @@ def build_authenticated_ui_router(
                 != household_profile_access_authority):
         raise ValueError(
             "surplus draft UI requires the shared owner-scoped household authority"
+        )
+    if household_surplus_producer_consent_ledger is not None and (
+            not isinstance(household_surplus_producer_consent_ledger,
+                           SqliteSyntheticProducerConsentLedger)
+            or household_surplus_draft_ledger is None
+            or household_surplus_producer_consent_ledger._draft_ledger
+                is not household_surplus_draft_ledger):
+        raise ValueError(
+            "producer consent must share the exact surplus draft ledger"
         )
     # Only the opt-in same-instance ledger injected by create_app may
     # provide the synthetic worklist. Never trust a client-side role list.
@@ -3273,6 +3287,7 @@ def build_authenticated_ui_router(
                     identity, ref, offer_ref, household_surplus_draft_ledger,
                     (household_input_ledger.read_owned_input_revisions
                      if household_input_ledger is not None else None),
+                    household_surplus_producer_consent_ledger,
                 )
             except HTTPException as exc:
                 if exc.status_code == 404:
@@ -3325,6 +3340,40 @@ def build_authenticated_ui_router(
             items = ''.join(
                 '<li>' + blocker_labels[code] + '</li>' for code in blockers
             ) or '<li>مانعی در کنترل‌های فنی ثبت نشده است</li>'
+            consent_state = result.get("producer_consent_state", "NOT_RECORDED")
+            consent_form = ""
+            if household_surplus_producer_consent_ledger is not None:
+                if consent_state not in ("NOT_RECORDED", "APPROVED", "WITHDRAWN"):
+                    return page(
+                        "روناس — آمادگی پیشنهاد مازاد",
+                        '<p role="status">وضعیت موافقت قابل نمایش نیست.</p>',
+                        logged_in=True, code=503,
+                    )
+                next_approval = consent_state != "APPROVED"
+                button = (
+                    "موافقت با انتشار همین نسخه" if next_approval
+                    else "پس‌گرفتن موافقت انتشار همین نسخه"
+                )
+                consent_form = (
+                    '<h3>موافقت تولیدکننده</h3><p>وضعیت نسخه جاری: '
+                    + escape(consent_state) + '</p>'
+                    '<p>این اقدام فقط موافقت یا پس‌گرفتن موافقت برای همین نسخه است؛ '
+                    'به‌تنهایی باعث انتشار نمی‌شود.</p>'
+                    '<form method="post" action="/my-drafts/'
+                    + quote(ref) + '/surplus-offers/' + quote(offer_ref)
+                    + '/publication-consent">'
+                    '<input type="hidden" name="csrf" value="'
+                    + escape(session.csrf, quote=True) + '">'
+                    '<input type="hidden" name="action_id" value="DEMO-CONSENT-'
+                    + secrets.token_hex(10).upper() + '">'
+                    '<input type="hidden" name="offer_revision" value="'
+                    + str(result["revision"]) + '">'
+                    '<input type="hidden" name="payload_digest" value="'
+                    + escape(result["payload_digest"], quote=True) + '">'
+                    '<input type="hidden" name="approved" value="'
+                    + ("true" if next_approval else "false") + '">'
+                    '<button type="submit">' + button + '</button></form>'
+                )
             body = (
                 '<article class="panel"><h2>آمادگی فنی پیشنهاد مازاد</h2>'
                 '<p>' + state + '</p>'
@@ -3332,10 +3381,53 @@ def build_authenticated_ui_router(
                 'نمایش به خریدار، مجوز فروش، تأیید علمی کیفیت یا اقدام مالی نیست.</p>'
                 '<p>وضعیت انتشار: منتشر نشده</p>'
                 '<h3>موارد نیازمند توجه</h3><ul>' + items + '</ul>'
-                '<p><a href="/my-drafts/' + quote(ref)
+                + consent_form
+                + '<p><a href="/my-drafts/' + quote(ref)
                 + '/surplus-offers">بازگشت به فهرست پیشنهادها</a></p></article>'
             )
             return page("روناس — آمادگی پیشنهاد مازاد", body, logged_in=True)
+
+        if household_surplus_producer_consent_ledger is not None:
+            @router.post(
+                "/my-drafts/{ref}/surplus-offers/{offer_ref}/publication-consent",
+            )
+            async def household_surplus_publication_consent_submit(
+                ref: str, offer_ref: str, request: Request,
+                sid: str | None = Cookie(default=None, alias=cookie_name),
+            ) -> RedirectResponse:
+                principal, form = await checked_browser_form(
+                    request, sid,
+                    fields=frozenset({"csrf", "action_id", "offer_revision",
+                                      "payload_digest", "approved"}),
+                    max_bytes=4096, max_fields=5, max_value_length=128,
+                )
+                if form["approved"] not in ("true", "false"):
+                    raise HTTPException(422, detail="INVALID_PRODUCER_CONSENT")
+                try:
+                    household_surplus_producer_consent_ledger.record(
+                        principal, ref, offer_ref,
+                        expected_offer_revision=form_version(
+                            form["offer_revision"], zero_allowed=False,
+                        ),
+                        expected_payload_digest=form["payload_digest"],
+                        action_id=form["action_id"],
+                        approved=form["approved"] == "true",
+                    )
+                except ProducerConsentConflict as exc:
+                    raise HTTPException(409, detail="PRODUCER_CONSENT_STALE") from exc
+                except LookupError as exc:
+                    raise HTTPException(404, detail="OFFER_NOT_FOUND") from exc
+                except ProducerConsentIntegrityError as exc:
+                    raise HTTPException(503, detail="PRODUCER_CONSENT_INTEGRITY_FAILURE") from exc
+                except (sqlite3.Error, RuntimeError) as exc:
+                    raise HTTPException(503, detail="PRODUCER_CONSENT_UNAVAILABLE") from exc
+                except ValueError as exc:
+                    raise HTTPException(422, detail="INVALID_PRODUCER_CONSENT") from exc
+                return RedirectResponse(
+                    "/my-drafts/" + quote(ref)
+                    + "/surplus-publication-readiness?offer_ref=" + quote(offer_ref),
+                    status_code=303,
+                )
 
     if isinstance(household_input_ledger, SqliteSyntheticExpertQuestionLedger):
         @router.get("/my-drafts/{ref}/question-responses")

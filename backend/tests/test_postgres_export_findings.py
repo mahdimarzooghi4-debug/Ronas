@@ -95,3 +95,48 @@ class PostgresExportFindingLedgerTests(unittest.TestCase):
             db.execute("ALTER TABLE ronas_export_research_finding ENABLE TRIGGER ronas_export_finding_no_update_delete")
         with self.assertRaises(ExportFindingStorageError):
             self.ledger.read_history(self.ref, self.principal)
+
+    def test_key_rotation_reencrypts_rows_without_mutating_finding_history(self):
+        first = self.record("DEMO-PG-EXPORT-KEY-OLD-1")
+        self.ledger.record_export_research_finding(
+            self.ref, self.principal, expected_case_version=2,
+            expected_question_revision=1, expected_finding_revision=1,
+            evidence_revision=1, action_id="DEMO-PG-EXPORT-KEY-OLD-2",
+            evidence_ref="DEMO-EVIDENCE-1", note="DEMO: second encrypted finding",
+        )
+        new_key = secrets.token_bytes(32)
+        rotated = PostgresExportResearchFindingLedger(
+            DSN, self.workspace,
+            keyring={"default": self.key, "rotation-2026-10": new_key},
+            active_key_id="rotation-2026-10",
+        )
+        self.assertEqual(rotated.read_history(self.ref, self.principal)[0], first)
+        self.assertEqual(rotated.rotate_batch(limit=1), 1)
+        self.assertEqual(rotated.rotate_batch(limit=1), 1)
+        self.assertEqual(rotated.rotate_batch(limit=1), 0)
+        with psycopg.connect(DSN) as db:
+            ids = db.execute("""SELECT DISTINCT encryption_key_id
+                FROM ronas_export_research_finding WHERE ref=%s""",
+                (self.ref,)).fetchall()
+            with self.assertRaises(psycopg.errors.RaiseException):
+                with db.transaction():
+                    db.execute("""UPDATE ronas_export_research_finding
+                        SET revision=revision+10 WHERE ref=%s""", (self.ref,))
+        self.assertEqual(ids, [("rotation-2026-10",)])
+        history = rotated.read_history(self.ref, self.principal)
+        self.assertEqual([item["note"] for item in history],
+                         ["DEMO: sample market signal", "DEMO: second encrypted finding"])
+
+    def test_rotation_requires_old_key_and_rejects_unsafe_batch_size(self):
+        self.record("DEMO-PG-EXPORT-KEY-MISSING-OLD")
+        replacement = PostgresExportResearchFindingLedger(
+            DSN, self.workspace,
+            keyring={"new": secrets.token_bytes(32)}, active_key_id="new",
+        )
+        with self.assertRaises(ExportFindingStorageError):
+            replacement.read_history(self.ref, self.principal)
+        with self.assertRaises(ExportFindingStorageError):
+            replacement.rotate_batch()
+        for limit in (0, 501):
+            with self.assertRaises(ValueError):
+                replacement.rotate_batch(limit)

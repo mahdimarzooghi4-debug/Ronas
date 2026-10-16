@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
+from collections.abc import Mapping
 
 import psycopg
 from cryptography.exceptions import InvalidTag
@@ -16,6 +18,9 @@ from .export_research_findings import (
 )
 from .scoped_drafts import _synthetic_ref
 
+_KEY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_MAX_ROTATION_BATCH = 500
+
 
 class ExportFindingStorageError(RuntimeError):
     """Storage or integrity failure; callers must fail closed."""
@@ -24,16 +29,33 @@ class ExportFindingStorageError(RuntimeError):
 class PostgresExportResearchFindingLedger:
     """Encrypted append-only journal, authorized against the live case ledger."""
 
-    def __init__(self, dsn: str, workspace_reader, encryption_key: bytes, *,
-                 connect_timeout: int = 3):
+    def __init__(self, dsn: str, workspace_reader, encryption_key: bytes | None = None, *,
+                 keyring: Mapping[str, bytes] | None = None,
+                 active_key_id: str = "default", connect_timeout: int = 3):
         if (not isinstance(dsn, str) or not dsn or len(dsn) > 4096 or "\x00" in dsn
                 or not callable(workspace_reader)
-                or not isinstance(encryption_key, bytes) or len(encryption_key) != 32
                 or type(connect_timeout) is not int or not 1 <= connect_timeout <= 15):
             raise ValueError("PostgreSQL workspace reader and private key required")
+        if not isinstance(active_key_id, str) or not _KEY_ID.fullmatch(active_key_id):
+            raise ValueError("valid active encryption key id required")
+        if keyring is None:
+            if not isinstance(encryption_key, bytes) or len(encryption_key) != 32:
+                raise ValueError("Export finding AES-256 key must contain 32 bytes")
+            keys = {active_key_id: encryption_key}
+        else:
+            if encryption_key is not None or not isinstance(keyring, Mapping) or not keyring:
+                raise ValueError("provide either one key or a non-empty keyring")
+            keys = dict(keyring)
+            if any(not isinstance(k, str) or not _KEY_ID.fullmatch(k)
+                   or not isinstance(v, bytes) or len(v) != 32
+                   for k, v in keys.items()):
+                raise ValueError("keyring ids and AES-256 keys are invalid")
+            if active_key_id not in keys:
+                raise ValueError("active encryption key is absent from keyring")
         self._dsn = dsn
         self._workspace_reader = workspace_reader
-        self._cipher = AESGCM(encryption_key)
+        self._ciphers = {key_id: AESGCM(key) for key_id, key in keys.items()}
+        self._active_key_id = active_key_id
         self._connect_timeout = connect_timeout
         self._initialize()
 
@@ -58,14 +80,28 @@ class PostgresExportResearchFindingLedger:
                     connector_ref TEXT NOT NULL,
                     source_snapshot_digest CHAR(64) NOT NULL CHECK (source_snapshot_digest ~ '^[0-9a-f]{64}$'),
                     note_ciphertext BYTEA NOT NULL CHECK (octet_length(note_ciphertext) >= 28),
+                    encryption_key_id TEXT NOT NULL DEFAULT 'default',
                     note_digest CHAR(64) NOT NULL CHECK (note_digest ~ '^[0-9a-f]{64}$'),
                     previous_digest CHAR(64) NOT NULL CHECK (previous_digest ~ '^[0-9a-f]{64}$'),
                     receipt_digest CHAR(64) NOT NULL UNIQUE CHECK (receipt_digest ~ '^[0-9a-f]{64}$'),
                     UNIQUE(ref, question_revision, revision)
                 )""")
+                db.execute("""ALTER TABLE ronas_export_research_finding
+                    ADD COLUMN IF NOT EXISTS encryption_key_id TEXT NOT NULL DEFAULT 'default'""")
+                db.execute("""CREATE INDEX IF NOT EXISTS ronas_export_finding_key_rotation
+                    ON ronas_export_research_finding
+                    (encryption_key_id, ref, question_revision, revision)""")
                 db.execute("""CREATE OR REPLACE FUNCTION ronas_reject_export_finding_mutation()
                     RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
-                    RAISE EXCEPTION 'Export research finding history is immutable'; END; $$""")
+                    IF TG_OP = 'DELETE' THEN
+                        RAISE EXCEPTION 'Export research finding history is immutable';
+                    END IF;
+                    IF (to_jsonb(NEW) - 'note_ciphertext' - 'encryption_key_id')
+                       IS DISTINCT FROM
+                       (to_jsonb(OLD) - 'note_ciphertext' - 'encryption_key_id') THEN
+                        RAISE EXCEPTION 'Export research finding history is immutable';
+                    END IF;
+                    RETURN NEW; END; $$""")
                 db.execute("""DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger
                     WHERE tgname='ronas_export_finding_no_update_delete'
                     AND tgrelid='ronas_export_research_finding'::regclass AND NOT tgisinternal)
@@ -156,17 +192,19 @@ class PostgresExportResearchFindingLedger:
                     binding.update(source_ref=ev["source_ref"], connector_ref=ev["connector_ref"],
                                    source_snapshot_digest=ev["source_snapshot_digest"])
                     receipt = finding_digest(binding)
-                    nonce = secrets.token_bytes(12)
-                    aad = (ref + ":" + str(expected_question_revision) + ":" + str(current + 1)).encode()
-                    ciphertext = nonce + self._cipher.encrypt(nonce, note.encode(), aad)
+                    ciphertext = self._encrypt_note(
+                        ref, expected_question_revision, current + 1, note.encode(),
+                        self._active_key_id,
+                    )
                     row = db.execute("""INSERT INTO ronas_export_research_finding
                         (action_id,ref,case_version,question_revision,evidence_revision,revision,
                         actor_digest,evidence_ref,source_ref,connector_ref,source_snapshot_digest,
-                        note_ciphertext,note_digest,previous_digest,receipt_digest)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                        note_ciphertext,encryption_key_id,note_digest,previous_digest,receipt_digest)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
                         (action_id,ref,expected_case_version,expected_question_revision,evidence_revision,
                          current+1,actor,evidence_ref,ev.get("source_ref", ""),ev.get("connector_ref", ""),
-                         ev.get("source_snapshot_digest", "0"*64),ciphertext,note_digest,previous,receipt)).fetchone()
+                         ev.get("source_snapshot_digest", "0"*64),ciphertext,self._active_key_id,
+                         note_digest,previous,receipt)).fetchone()
                 latest = self._workspace(ref, principal)
                 latest_question = (latest or {}).get("local_test_draft_question") or {}
                 latest_evidence = next((e for e in (latest or {}).get("local_test_evidence_references", [])
@@ -204,14 +242,7 @@ class PostgresExportResearchFindingLedger:
             raise ExportFindingStorageError("Export finding storage unavailable") from exc
 
     def _project(self, row, rows, workspace):
-        aad = (row["ref"] + ":" + str(row["question_revision"]) + ":" + str(row["revision"])).encode()
-        try:
-            note = self._cipher.decrypt(bytes(row["note_ciphertext"][:12]),
-                                       bytes(row["note_ciphertext"])[12:], aad).decode()
-        except (InvalidTag, UnicodeDecodeError) as exc:
-            raise ExportFindingStorageError("Export finding note integrity failure") from exc
-        if hashlib.sha256(note.encode("utf-8")).hexdigest() != row["note_digest"].strip():
-            raise ExportFindingStorageError("Export finding note digest failure")
+        note = self._decrypt_note(row)
         current_question = (workspace.get("local_test_draft_question") or {}).get("question_revision")
         evidence_rows = workspace.get("local_test_evidence_references", [])
         current_evidence_revision = max(
@@ -231,6 +262,72 @@ class PostgresExportResearchFindingLedger:
             "question_binding": "CURRENT" if row["question_revision"] == current_question else "HISTORICAL",
             "evidence_binding": "CURRENT" if evidence_is_current else "HISTORICAL",
             "draft_only": True, "report_approved": False}
+
+    @staticmethod
+    def _aad(ref: str, question_revision: int, revision: int, key_id: str) -> bytes:
+        # Preserve original v1 AAD for rows written before key ids existed.
+        suffix = "" if key_id == "default" else ":" + key_id
+        return (ref + ":" + str(question_revision) + ":" + str(revision)
+                + suffix).encode("utf-8")
+
+    def _encrypt_note(self, ref: str, question_revision: int, revision: int,
+                      note: bytes, key_id: str) -> bytes:
+        nonce = secrets.token_bytes(12)
+        return nonce + self._ciphers[key_id].encrypt(
+            nonce, note, self._aad(ref, question_revision, revision, key_id),
+        )
+
+    def _decrypt_note(self, row) -> str:
+        key_id = row.get("encryption_key_id", "default")
+        cipher = self._ciphers.get(key_id) if isinstance(key_id, str) else None
+        encrypted = row.get("note_ciphertext")
+        if cipher is None or not isinstance(encrypted, (bytes, memoryview)):
+            raise ExportFindingStorageError("Export finding encryption key is unavailable")
+        encrypted = bytes(encrypted)
+        if len(encrypted) < 28:
+            raise ExportFindingStorageError("Export finding ciphertext is invalid")
+        try:
+            note = cipher.decrypt(
+                encrypted[:12], encrypted[12:],
+                self._aad(row["ref"], row["question_revision"], row["revision"], key_id),
+            ).decode("utf-8")
+        except (InvalidTag, UnicodeDecodeError) as exc:
+            raise ExportFindingStorageError("Export finding note integrity failure") from exc
+        if hashlib.sha256(note.encode("utf-8")).hexdigest() != row["note_digest"].strip():
+            raise ExportFindingStorageError("Export finding note digest failure")
+        return note
+
+    def rotate_batch(self, limit: int = 100) -> int:
+        """Atomically re-encrypt at most limit rows; safe for concurrent workers."""
+        if type(limit) is not int or not 1 <= limit <= _MAX_ROTATION_BATCH:
+            raise ValueError("rotation batch must be between 1 and 500")
+        changed = 0
+        try:
+            with self._connect() as db:
+                rows = db.execute("""SELECT * FROM ronas_export_research_finding
+                    WHERE encryption_key_id <> %s
+                    ORDER BY ref,question_revision,revision
+                    LIMIT %s FOR UPDATE SKIP LOCKED""",
+                    (self._active_key_id, limit)).fetchall()
+                for row in rows:
+                    note = self._decrypt_note(row)
+                    replacement = self._encrypt_note(
+                        row["ref"], row["question_revision"], row["revision"],
+                        note.encode("utf-8"), self._active_key_id,
+                    )
+                    result = db.execute("""UPDATE ronas_export_research_finding
+                        SET note_ciphertext=%s,encryption_key_id=%s
+                        WHERE action_id=%s AND encryption_key_id=%s""",
+                        (replacement, self._active_key_id, row["action_id"],
+                         row["encryption_key_id"]))
+                    if result.rowcount != 1:
+                        raise ExportFindingStorageError("finding rotation lost its row lock")
+                    changed += 1
+        except ExportFindingStorageError:
+            raise
+        except psycopg.Error as exc:
+            raise ExportFindingStorageError("Export finding key rotation failed") from exc
+        return changed
 
     def _verify_chain(self, ref, rows):
         previous_by_question = {}

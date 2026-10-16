@@ -20,6 +20,7 @@ from .human_review_sqlite import (
 from .scoped_audit import GrantConflict, GrantNotAuthorized
 from .export_research_question import ExportResearchQuestionConflict
 from .export_research_evidence import ExportEvidenceReferenceConflict
+from .export_research_findings import ExportResearchFindingConflict
 from .export_source_connector import (
     ExportSourceConnectorRegistry, ExportSourceConnectorUnavailable,
     capture_export_source_reference,
@@ -44,6 +45,17 @@ class SyntheticExportEvidenceReferenceCommand(BaseModel):
     evidence_ref: StrictStr
     connector_ref: StrictStr
     source_snapshot_digest: StrictStr
+
+
+class SyntheticExportFindingCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: StrictStr
+    expected_case_version: StrictInt
+    expected_question_revision: StrictInt
+    expected_finding_revision: StrictInt
+    evidence_revision: StrictInt
+    evidence_ref: StrictStr
+    note: StrictStr
 
 
 class SyntheticEvidenceReviewRequestCommand(BaseModel):
@@ -400,5 +412,38 @@ def build_technical_review_read_router(
             if result is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
             return result
+
+    @router.post(
+        "/api/v1/admin/export/research/drafts/{ref}/findings",
+        status_code=201,
+    )
+    def append_export_finding(
+        ref: str, command: SyntheticExportFindingCommand,
+        authorization: str | None = Header(default=None),
+        p: Principal = Depends(verified_principal),
+    ) -> dict:
+        require_bearer(authorization)
+        try:
+            result = ledger.record_export_research_finding(
+                ref, p, expected_case_version=command.expected_case_version,
+                expected_question_revision=command.expected_question_revision,
+                expected_finding_revision=command.expected_finding_revision,
+                evidence_revision=command.evidence_revision,
+                action_id=command.action_id, evidence_ref=command.evidence_ref,
+                note=command.note,
+            )
+        except ExportResearchFindingConflict as exc:
+            raise HTTPException(
+                409, detail="EXPORT_RESEARCH_FINDING_CHANGED",
+            ) from exc
+        except (LedgerIntegrityError, sqlite3.Error) as exc:
+            raise HTTPException(
+                503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(422, detail="INVALID_EXPORT_RESEARCH_FINDING") from exc
+        if result is None:
+            raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+        return result
 
     return router

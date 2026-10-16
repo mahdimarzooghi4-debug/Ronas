@@ -80,7 +80,7 @@ from .domestic_surplus_drafts import (
 )
 from .domestic_surplus_producer_consent import (
     ProducerConsentConflict, ProducerConsentIntegrityError,
-    SqliteSyntheticProducerConsentLedger,
+    ProducerConsentLedger, is_producer_consent_ledger,
 )
 ADMIN_ROLES = {
     "domestic_ops": "عملیات داخلی",
@@ -342,7 +342,7 @@ def build_authenticated_ui_router(
     export_source_connectors: ExportSourceConnectorRegistry | None = None,
     household_surplus_publication_authority=None,
     household_surplus_draft_ledger: SurplusDraftLedger | None = None,
-    household_surplus_producer_consent_ledger: SqliteSyntheticProducerConsentLedger | None = None,
+    household_surplus_producer_consent_ledger: ProducerConsentLedger | None = None,
 ) -> APIRouter:
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
@@ -370,11 +370,11 @@ def build_authenticated_ui_router(
             "surplus draft UI requires the shared owner-scoped household authority"
         )
     if household_surplus_producer_consent_ledger is not None and (
-            not isinstance(household_surplus_producer_consent_ledger,
-                           SqliteSyntheticProducerConsentLedger)
-            or household_surplus_draft_ledger is None
-            or household_surplus_producer_consent_ledger._draft_ledger
-                is not household_surplus_draft_ledger):
+            household_surplus_draft_ledger is None
+            or not is_producer_consent_ledger(
+                household_surplus_producer_consent_ledger,
+                household_surplus_draft_ledger,
+            )):
         raise ValueError(
             "producer consent must share the exact surplus draft ledger"
         )

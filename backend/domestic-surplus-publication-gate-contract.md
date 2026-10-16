@@ -39,14 +39,16 @@ older household context appearing eligible.
 
 ## Producer approval command (LOCAL/TEST)
 
-The optional `SqliteSyntheticProducerConsentLedger` records an explicit
-household-owner decision for one exact saved offer revision and payload digest.
-Approval and withdrawal are append-only events in a hash-linked journal;
-identical action retries are idempotent, action reuse with different content is
-rejected, and stale revision/digest commands return a conflict. Updating an
-offer leaves its old consent history intact but the old consent is no longer
-current. The owner can withdraw approval for the current version by appending a
-new event.
+The optional `SqliteSyntheticProducerConsentLedger` and
+`PostgresSurplusProducerConsentLedger` record an explicit household-owner
+decision for one exact saved offer revision and payload digest. Approval and
+withdrawal are append-only events in a hash-linked journal; identical action
+retries are idempotent, action reuse with different content is rejected, and
+stale revision/digest commands return a conflict. PostgreSQL serializes consent
+commands by action and offer revision, encrypts the producer identity at rest,
+and rejects row updates/deletes at the database. Updating an offer leaves its
+old consent history intact but the old consent is no longer current. The owner
+can withdraw approval for the current version by appending a new event.
 
 When composed with readiness, only the current producer approval is derived
 from this owner-scoped ledger. It cannot replace or attest to the independent
@@ -54,10 +56,11 @@ quality/safety authority. Consent alone never makes `can_publish` true unless
 every other technical gate independently passes, and no route in this feature
 publishes a listing or exposes it to buyers. The authenticated browser form
 uses the same exact-version compare-and-swap command with CSRF and Origin
-checks; the bearer API requires a strict command payload. The adapter and
-persistence remain LOCAL/TEST and are not a Production storage decision.
+checks; the bearer API requires a strict command payload. Either adapter can be
+composed only with the exact draft ledger it verifies. Both adapters remain
+LOCAL/TEST compositions and do not make any Production persistence decision.
 
 Tests cover owner and role isolation, version drift, withdrawal, replay,
-immutable history, integrity failures, HTTP/readiness integration and the
-invariant that quality/safety remains a separate blocker after producer
-approval.
+concurrent ordering, encrypted PostgreSQL identity, immutable history,
+integrity failures, API and browser/readiness integration and the invariant
+that quality/safety remains a separate blocker after producer approval.

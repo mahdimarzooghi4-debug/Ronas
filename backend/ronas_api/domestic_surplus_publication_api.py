@@ -13,7 +13,7 @@ from .domestic_surplus_publication import (
 from .domestic_surplus_drafts import SurplusDraftLedger, is_surplus_draft_ledger
 from .domestic_surplus_producer_consent import (
     ProducerConsentConflict, ProducerConsentIntegrityError,
-    SqliteSyntheticProducerConsentLedger,
+    ProducerConsentLedger, is_producer_consent_ledger,
 )
 
 PublicationAuthority = Callable[
@@ -30,7 +30,7 @@ def publication_readiness_snapshot(
     offer_ref: str,
     draft_ledger: SurplusDraftLedger | None = None,
     input_revision_reader: InputRevisionReader | None = None,
-    producer_consent_ledger: SqliteSyntheticProducerConsentLedger | None = None,
+    producer_consent_ledger: ProducerConsentLedger | None = None,
 ) -> dict:
     """One owner and version check shared by API and authenticated UI."""
     if (not isinstance(principal, Principal)
@@ -157,7 +157,7 @@ def build_domestic_surplus_publication_router(
     verified_principal: Callable[..., Principal],
     draft_ledger: SurplusDraftLedger | None = None,
     input_revision_reader: InputRevisionReader | None = None,
-    producer_consent_ledger: SqliteSyntheticProducerConsentLedger | None = None,
+    producer_consent_ledger: ProducerConsentLedger | None = None,
 ) -> APIRouter:
     """Mount only with a live, owner-scoped authority resolver."""
     if (not callable(authority) or not callable(verified_principal)
@@ -166,9 +166,9 @@ def build_domestic_surplus_publication_router(
             or input_revision_reader is not None
             and not callable(input_revision_reader)
             or producer_consent_ledger is not None
-            and (not isinstance(producer_consent_ledger,
-                                SqliteSyntheticProducerConsentLedger)
-                 or producer_consent_ledger._draft_ledger is not draft_ledger)):
+            and not is_producer_consent_ledger(
+                producer_consent_ledger, draft_ledger,
+            )):
         raise ValueError("trusted publication and identity authorities required")
     router = APIRouter()
 

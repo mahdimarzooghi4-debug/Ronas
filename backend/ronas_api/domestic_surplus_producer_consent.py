@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from typing import Protocol, runtime_checkable
 
 from .auth import Principal
 from .domestic_surplus_publication import (
@@ -30,6 +31,33 @@ class ProducerConsentConflict(ValueError):
 
 class ProducerConsentIntegrityError(RuntimeError):
     """The append-only consent chain failed verification."""
+
+
+class ProducerConsentStorageError(RuntimeError):
+    """Consent persistence is unavailable."""
+
+
+@runtime_checkable
+class ProducerConsentLedger(Protocol):
+    """Storage-neutral exact-version consent interface."""
+    _draft_ledger: SurplusDraftLedger
+
+    def record(self, principal, household_ref, offer_ref, *,
+               expected_offer_revision, expected_payload_digest, action_id,
+               approved): ...
+    def current(self, principal, household_ref, offer_ref): ...
+    def publication_attestation(self, principal, offer): ...
+
+
+def is_producer_consent_ledger(value, draft_ledger=None) -> bool:
+    return (
+        value is not None
+        and callable(getattr(value, "record", None))
+        and callable(getattr(value, "current", None))
+        and callable(getattr(value, "publication_attestation", None))
+        and hasattr(value, "_draft_ledger")
+        and (draft_ledger is None or value._draft_ledger is draft_ledger)
+    )
 
 
 @dataclass(frozen=True, slots=True)

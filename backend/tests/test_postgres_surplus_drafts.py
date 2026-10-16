@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from ronas_api.app import create_app
 from ronas_api.auth import Principal
 from ronas_api.domestic_surplus_drafts_api import build_domestic_surplus_drafts_router
+from ronas_api.domestic_surplus_publication import OfferRevision, PublicationAuthorities
 from ronas_api.household_input_profiles import (
     HouseholdInputField, HouseholdInputSchema,
     SqliteSyntheticHouseholdProfileLedger,
@@ -24,6 +25,7 @@ from ronas_api.household_input_profiles import (
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.postgres_surplus_drafts import PostgresSurplusDraftLedger
+from ronas_api.postgres_surplus_producer_consent import PostgresSurplusProducerConsentLedger
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
 
 DSN = os.environ.get("RONAS_TEST_POSTGRES_DSN")
@@ -177,12 +179,31 @@ class PostgresSurplusDraftLedgerTests(unittest.TestCase):
                 action_id="DEMO-PG-INPUT-INITIAL", expected_case_version=1,
                 expected_input_revision=0, synthetic_manifest_digest="a" * 64,
             )
+
+            def publication_authority(principal, household_ref, requested_offer):
+                try:
+                    draft = self.ledger.read_owned(
+                        principal, household_ref, requested_offer,
+                    )
+                except LookupError:
+                    return None
+                offer = OfferRevision(
+                    draft.offer_ref, draft.household_ref, draft.producer_subject,
+                    draft.revision, draft.payload_digest,
+                )
+                return offer, PublicationAuthorities(current_offer=offer)
+
+            consent = PostgresSurplusProducerConsentLedger(
+                DSN, self.ledger, secrets.token_bytes(32), secrets.token_bytes(32),
+            )
             app = create_app(
                 config, browser_flow=flow, scoped_registry=cases,
                 technical_review_ledger=cases,
                 household_profile_schema=SCHEMA,
                 household_profile_access_authority=self.authority,
                 household_surplus_draft_ledger=self.ledger,
+                household_surplus_publication_authority=publication_authority,
+                household_surplus_producer_consent_ledger=consent,
             )
             client = TestClient(app, base_url=origin, follow_redirects=False)
             client.cookies.set("__Host-ronas_session", "pg-surplus-session")
@@ -225,6 +246,34 @@ class PostgresSurplusDraftLedgerTests(unittest.TestCase):
                 self.principal, self.household, offer_ref,
             )
             self.assertEqual((saved.revision, saved.input_revision), (1, 1))
+            readiness_path = f"/my-drafts/{self.household}/surplus-publication-readiness"
+            readiness = client.get(readiness_path, params={"offer_ref": offer_ref})
+            self.assertEqual(readiness.status_code, 200, readiness.text)
+            self.assertIn("موافقت با انتشار همین نسخه", readiness.text)
+            consent_path = (
+                f"/my-drafts/{self.household}/surplus-offers/{offer_ref}"
+                "/publication-consent"
+            )
+            consent_action = re.search(
+                r'name="action_id" value="(DEMO-CONSENT-[A-F0-9]+)"',
+                readiness.text,
+            )[1]
+            recorded = client.post(
+                consent_path,
+                data={
+                    "csrf": session.csrf, "action_id": consent_action,
+                    "offer_revision": str(saved.revision),
+                    "payload_digest": saved.payload_digest, "approved": "true",
+                },
+                headers={"Origin": origin},
+            )
+            self.assertEqual(recorded.status_code, 303, recorded.text)
+            readiness_after = client.get(
+                readiness_path, params={"offer_ref": offer_ref},
+            )
+            self.assertIn("پس‌گرفتن موافقت انتشار همین نسخه", readiness_after.text)
+            self.assertIn("بررسی مستقل کیفیت و ایمنی ثبت نشده است", readiness_after.text)
+            self.assertIn("وضعیت انتشار: منتشر نشده", readiness_after.text)
             cases.append_owned_input_manifest(
                 self.household, self.principal,
                 action_id="DEMO-PG-INPUT-CORRECTED", expected_case_version=1,

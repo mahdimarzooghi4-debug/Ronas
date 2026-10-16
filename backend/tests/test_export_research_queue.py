@@ -873,6 +873,107 @@ class ExportResearchQueueTests(unittest.TestCase):
             headers=headers if headers is not None else self.headers(),
         )
 
+    def finding_payload(self, *, action="DEMO-FINDING-ONE", question_rev=1,
+                        finding_rev=0, evidence_rev=1,
+                        evidence="DEMO-EVIDENCE-ALPHA", note="DEMO: sample finding"):
+        return {
+            "action_id": action, "expected_case_version": 3,
+            "expected_question_revision": question_rev,
+            "expected_finding_revision": finding_rev,
+            "evidence_revision": evidence_rev, "evidence_ref": evidence,
+            "note": note,
+        }
+
+    def post_finding(self, *, payload=None, headers=None):
+        return self.client.post(
+            "/api/v1/admin/export/research/drafts/DEMO-E-001/findings",
+            json=payload if payload is not None else self.finding_payload(),
+            headers=headers if headers is not None else self.headers(),
+        )
+
+    def test_export_findings_are_immutable_question_and_evidence_bound_drafts(self):
+        self.assertEqual(self.post_question().status_code, 201)
+        self.assertEqual(self.post_evidence().status_code, 201)
+        first = self.post_finding()
+        self.assertEqual(first.status_code, 201, first.text)
+        self.assertEqual(first.json()["question_binding"], "CURRENT")
+        self.assertFalse(first.json()["report_approved"])
+        self.assertEqual(self.post_finding().status_code, 201)  # retry
+        self.assertEqual(self.post_finding(payload=self.finding_payload(
+            note="DEMO: conflicting body",
+        )).status_code, 409)
+        self.assertEqual(self.post_finding(payload=self.finding_payload(
+            action="DEMO-FINDING-STALE", evidence_rev=2,
+        )).status_code, 409)
+        self.assertEqual(self.post_finding(payload=self.finding_payload(
+            action="DEMO-FINDING-REAL", note="unbounded market claim",
+        )).status_code, 422)
+        second = self.post_finding(payload=self.finding_payload(
+            action="DEMO-FINDING-TWO", finding_rev=1,
+            note="DEMO: second analyst note",
+        ))
+        self.assertEqual(second.status_code, 201, second.text)
+        question = self.post_question(payload=self.question_payload(
+            action="DEMO-Q-NEXT", rev=1,
+        ))
+        self.assertEqual(question.status_code, 201)
+        workspace = self.client.get(
+            "/api/v1/admin/export/research/drafts/DEMO-E-001/workspace",
+            headers=self.headers(),
+        ).json()
+        self.assertEqual(len(workspace["local_test_findings"]), 2)
+        self.assertEqual(
+            {item["question_binding"] for item in workspace["local_test_findings"]},
+            {"HISTORICAL"},
+        )
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_export_finding_browser_form_uses_current_evidence_and_csrf(self):
+        self.assertEqual(self.post_question().status_code, 201)
+        self.assertEqual(self.post_evidence().status_code, 201)
+        self.login()
+        base = "/admin/export/research/drafts/DEMO-E-001"
+        page = self.client.get(base)
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("export-research-findings", page.text)
+        self.assertIn("DEMO-EVIDENCE-ALPHA", page.text)
+        sid = self.client.cookies.get("__Host-ronas_session")
+        session = self.store.get_session(sid)
+        form = {
+            "csrf": session.csrf, "action_id": "DEMO-UI-FINDING-ONE",
+            "case_version": "3", "question_revision": "1",
+            "finding_revision": "0", "evidence_binding": "1:DEMO-EVIDENCE-ALPHA",
+            "note": "DEMO: browser note",
+        }
+        response = self.client.post(
+            base + "/findings", data=form, headers={"Origin": ORIGIN},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303, response.text)
+        self.assertIn("DEMO: browser note", self.client.get(base).text)
+        self.assertEqual(self.client.post(
+            base + "/findings", data=form, follow_redirects=False,
+        ).status_code, 403)
+
+    def test_export_finding_audit_failure_rolls_back_note(self):
+        self.assertEqual(self.post_question().status_code, 201)
+        self.assertEqual(self.post_evidence().status_code, 201)
+        with sqlite3.connect(self.path) as db:
+            db.execute("""
+                CREATE TRIGGER reject_finding_audit
+                BEFORE INSERT ON audit_event
+                WHEN NEW.payload LIKE '%EXPORT_RESEARCH_FINDING_RECORDED%'
+                BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
+            """)
+        response = self.post_finding()
+        self.assertEqual(response.status_code, 503, response.text)
+        with sqlite3.connect(self.path) as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM export_research_finding_draft"
+            ).fetchone()[0], 0)
+            db.execute("DROP TRIGGER reject_finding_audit")
+        self.assertTrue(self.reopen().verify_integrity())
+
     def demo_export_evidence_form(self, *, question_rev=1,
                                   evidence_rev=0, case_version=3,
                                   evidence="DEMO-EVIDENCE-ALPHA",

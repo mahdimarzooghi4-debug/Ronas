@@ -22,6 +22,10 @@ from .export_research_evidence import (
     evidence_binding, evidence_digest, evidence_preview, valid_evidence_refs,
     valid_snapshot_digest,
 )
+from .export_research_findings import (
+    RECORDED as EXPORT_FINDING_RECORDED,
+    ExportResearchFindingConflict, finding_binding, finding_digest,
+)
 from .domestic_preparation_preview import domestic_preparation_preview
 from .grant_ledger_sqlite import (
     LedgerIntegrityError, SqliteSyntheticGrantLedger, _hash, _json,
@@ -151,6 +155,23 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                 CREATE TRIGGER IF NOT EXISTS export_evidence_no_delete
                 BEFORE DELETE ON export_research_evidence_reference
                 BEGIN SELECT RAISE(ABORT, 'evidence reference history immutable'); END;
+                CREATE TABLE IF NOT EXISTS export_research_finding_draft (
+                    action_id TEXT PRIMARY KEY,
+                    ref TEXT NOT NULL, case_version INTEGER NOT NULL,
+                    question_revision INTEGER NOT NULL, evidence_revision INTEGER NOT NULL,
+                    revision INTEGER NOT NULL, actor_digest TEXT NOT NULL,
+                    evidence_ref TEXT NOT NULL, note TEXT NOT NULL,
+                    note_digest TEXT NOT NULL, previous_digest TEXT NOT NULL,
+                    receipt_digest TEXT NOT NULL UNIQUE, audit_sequence INTEGER NOT NULL UNIQUE,
+                    UNIQUE(ref, question_revision, revision),
+                    FOREIGN KEY(audit_sequence) REFERENCES audit_event(sequence)
+                );
+                CREATE TRIGGER IF NOT EXISTS export_finding_no_update
+                BEFORE UPDATE ON export_research_finding_draft
+                BEGIN SELECT RAISE(ABORT, 'finding history immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS export_finding_no_delete
+                BEFORE DELETE ON export_research_finding_draft
+                BEGIN SELECT RAISE(ABORT, 'finding history immutable'); END;
             """)
         self._review_ready = True
         with self._transaction() as db:
@@ -159,6 +180,7 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
     def _extended_audit_kinds(self) -> frozenset[str]:
         return super()._extended_audit_kinds() | frozenset({
             EXPORT_QUESTION_RECORDED, EXPORT_EVIDENCE_RECORDED,
+            EXPORT_FINDING_RECORDED,
         })
 
     def _verify(self, db: sqlite3.Connection) -> None:
@@ -351,6 +373,74 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             paired_evidence.add(sequence)
         if paired_evidence != set(expected_evidence):
             raise LedgerIntegrityError("orphan Export evidence audit event")
+
+        finding_triggers = {r[0] for r in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' "
+            "AND tbl_name='export_research_finding_draft'"
+        )}
+        if finding_triggers != {"export_finding_no_update", "export_finding_no_delete"}:
+            raise LedgerIntegrityError("Export finding immutable triggers missing")
+        expected_findings = {
+            int(seq): json.loads(payload)
+            for seq, payload in db.execute("SELECT sequence,payload FROM audit_event")
+            if json.loads(payload).get("kind") == EXPORT_FINDING_RECORDED
+        }
+        paired_findings: set[int] = set()
+        finding_revisions: dict[tuple[str, int], tuple[int, str]] = {}
+        for row in db.execute(
+            "SELECT action_id,ref,case_version,question_revision,evidence_revision,"
+            "revision,actor_digest,evidence_ref,note,note_digest,previous_digest,"
+            "receipt_digest,audit_sequence FROM export_research_finding_draft "
+            "ORDER BY audit_sequence"
+        ):
+            (action, ref, case_version, question_revision, evidence_revision,
+             revision, actor_digest, evidence_ref, note, note_hash, previous,
+             receipt, sequence) = row
+            event = expected_findings.get(sequence)
+            question = db.execute(
+                "SELECT 1 FROM export_research_question_draft WHERE ref=? AND revision=?",
+                (ref, question_revision),
+            ).fetchone()
+            evidence = db.execute(
+                "SELECT 1 FROM export_research_evidence_reference "
+                "WHERE ref=? AND question_revision=? AND revision=? AND evidence_ref=?",
+                (ref, question_revision, evidence_revision, evidence_ref),
+            ).fetchone()
+            prior_revision, prior_digest = finding_revisions.get(
+                (ref, question_revision), (0, "0" * 64),
+            )
+            try:
+                binding = finding_binding(
+                    action_id=action, ref=ref, case_version=case_version,
+                    question_revision=question_revision,
+                    evidence_revision=evidence_revision, revision=revision,
+                    actor_digest=actor_digest, evidence_ref=evidence_ref,
+                    note_digest=note_hash, previous_digest=previous,
+                )
+            except (ValueError, TypeError) as exc:
+                raise LedgerIntegrityError("invalid Export finding row") from exc
+            record = self._catalogue.get(("EXPORT", ref))
+            if (record is None or record.version != case_version or question is None
+                    or evidence is None or not isinstance(note, str)
+                    or not note.startswith("DEMO:") or note != note.strip()
+                    or not 8 <= len(note) <= 2000
+                    or _hash(note) != note_hash or previous != prior_digest
+                    or revision != prior_revision + 1 or event is None
+                    or sequence in paired_findings
+                    or finding_digest(binding) != receipt
+                    or event.get("kind") != EXPORT_FINDING_RECORDED
+                    or event.get("engine") != "EXPORT" or event.get("ref") != ref
+                    or event.get("case_version") != case_version
+                    or event.get("action_id") != action
+                    or event.get("actor_digest") != actor_digest
+                    or event.get("reason_ref") != evidence_ref
+                    or event.get("target_digest") != receipt
+                    or event.get("access_mode") != "EXPORT_RESEARCH_FINDING_DRAFT"):
+                raise LedgerIntegrityError("Export finding/evidence/audit binding mismatch")
+            finding_revisions[(ref, question_revision)] = (revision, receipt)
+            paired_findings.add(sequence)
+        if paired_findings != set(expected_findings):
+            raise LedgerIntegrityError("orphan Export finding audit event")
 
     def _active_operator(self, db, engine: str, ref: str, principal: Principal) -> bool:
         if (not isinstance(principal, Principal)
@@ -828,6 +918,111 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                 db, ref, expected_question_revision,
             )[-1]
 
+    def _export_finding_history(self, db, ref: str,
+                                current_question_revision: int) -> list[dict]:
+        rows = db.execute(
+            "SELECT question_revision,evidence_revision,revision,evidence_ref,note "
+            "FROM export_research_finding_draft WHERE ref=? "
+            "ORDER BY question_revision,revision", (ref,),
+        )
+        return [{
+            "question_revision": qrev, "evidence_revision": erev,
+            "revision": revision, "evidence_ref": evidence_ref,
+            "note": note, "question_binding": (
+                "CURRENT" if qrev == current_question_revision else "HISTORICAL"
+            ), "draft_only": True, "report_approved": False,
+        } for qrev, erev, revision, evidence_ref, note in rows]
+
+    def record_export_research_finding(
+        self, ref: str, principal: Principal, *, expected_case_version: int,
+        expected_question_revision: int, expected_finding_revision: int,
+        evidence_revision: int, action_id: str, evidence_ref: str, note: str,
+    ) -> dict | None:
+        """Append a synthetic analyst note bound to current question evidence."""
+        if (not _synthetic_ref(ref) or type(expected_case_version) is not int
+                or type(expected_question_revision) is not int
+                or expected_question_revision < 1
+                or type(expected_finding_revision) is not int
+                or expected_finding_revision < 0
+                or type(evidence_revision) is not int or evidence_revision < 1
+                or not _synthetic_ref(action_id)
+                or not _synthetic_ref(evidence_ref)
+                or not evidence_ref.startswith("DEMO-EVIDENCE-")
+                or not isinstance(note, str) or not note.startswith("DEMO:")
+                or note != note.strip() or not 8 <= len(note) <= 2000):
+            raise ValueError("invalid DEMO Export finding command")
+        with self._transaction() as db:
+            self._verify(db)
+            record = self._catalogue.get(("EXPORT", ref))
+            if (record is None
+                    or not self._active_operator(db, "EXPORT", ref, principal)):
+                return None
+            if record.version != expected_case_version:
+                raise ExportResearchFindingConflict("stale Export case version")
+            question = self._current_export_question(db, ref)
+            if (question is None
+                    or question["question_revision"] != expected_question_revision):
+                raise ExportResearchFindingConflict("stale Export question revision")
+            evidence = db.execute(
+                "SELECT evidence_ref FROM export_research_evidence_reference "
+                "WHERE ref=? AND question_revision=? AND revision=?",
+                (ref, expected_question_revision, evidence_revision),
+            ).fetchone()
+            if evidence is None or evidence[0] != evidence_ref:
+                raise ExportResearchFindingConflict("evidence reference is not current")
+            current_row = db.execute(
+                "SELECT revision,receipt_digest FROM export_research_finding_draft "
+                "WHERE ref=? AND question_revision=? ORDER BY revision DESC LIMIT 1",
+                (ref, expected_question_revision),
+            ).fetchone()
+            current, previous = current_row if current_row else (0, "0" * 64)
+            actor_digest = _hash(principal.subject)
+            note_hash = _hash(note)
+            replay = db.execute(
+                "SELECT ref,case_version,question_revision,evidence_revision,revision,"
+                "actor_digest,evidence_ref,note_digest FROM export_research_finding_draft "
+                "WHERE action_id=?", (action_id,),
+            ).fetchone()
+            expected = (ref, record.version, expected_question_revision,
+                        evidence_revision, expected_finding_revision + 1,
+                        actor_digest, evidence_ref, note_hash)
+            if replay is not None:
+                if replay != expected or current != replay[4]:
+                    raise ExportResearchFindingConflict("conflicting finding replay")
+                return self._export_finding_history(
+                    db, ref, expected_question_revision,
+                )[-1]
+            if expected_finding_revision != current:
+                raise ExportResearchFindingConflict("stale finding revision")
+            revision = current + 1
+            binding = finding_binding(
+                action_id=action_id, ref=ref, case_version=record.version,
+                question_revision=expected_question_revision,
+                evidence_revision=evidence_revision, revision=revision,
+                actor_digest=actor_digest, evidence_ref=evidence_ref,
+                note_digest=note_hash, previous_digest=previous,
+            )
+            receipt = finding_digest(binding)
+            event = self._append(
+                db, kind=EXPORT_FINDING_RECORDED, engine="EXPORT", ref=ref,
+                actor=principal.subject, action_id=action_id,
+                reason_ref=evidence_ref, target=_json(binding),
+                mode="EXPORT_RESEARCH_FINDING_DRAFT",
+            )
+            db.execute(
+                "INSERT INTO export_research_finding_draft "
+                "(action_id,ref,case_version,question_revision,evidence_revision,"
+                "revision,actor_digest,evidence_ref,note,note_digest,previous_digest,"
+                "receipt_digest,audit_sequence) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (action_id, ref, record.version, expected_question_revision,
+                 evidence_revision, revision, actor_digest, evidence_ref, note,
+                 note_hash, previous, receipt, event.sequence),
+            )
+            self._verify(db)
+            return self._export_finding_history(
+                db, ref, expected_question_revision,
+            )[-1]
+
     def read_export_research_workspace(
         self, ref: str, principal: Principal,
     ) -> dict | None:
@@ -884,6 +1079,11 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                             (self._current_export_question(db, ref) or {})
                             .get("question_revision", 0),
                         )
+                    ),
+                    "local_test_findings": self._export_finding_history(
+                        db, ref,
+                        (self._current_export_question(db, ref) or {})
+                        .get("question_revision", 0),
                     ),
                     "review_revision": len(steps),
                     "technical_review_state": review_state_for_steps(steps),

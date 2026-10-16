@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from .auth import InvalidToken, Principal
 from .human_review_sqlite import SqliteSyntheticHumanReviewLedger, STATES as TECHNICAL_STATES
 from .export_research_evidence import ExportEvidenceReferenceConflict
+from .export_research_findings import ExportResearchFindingConflict
 from .export_source_connector import (
     ExportSourceConnectorRegistry, ExportSourceConnectorUnavailable,
     capture_export_source_reference,
@@ -4111,6 +4112,50 @@ def build_authenticated_ui_router(
                     if question is not None else
                     '<p>ثبت ارجاع منبع باز است تا پرسش نسخه‌دار تعریف شود.</p>'
                 )
+                + '<section id="export-research-findings"><h3>یافته‌های پژوهشی پیش‌نویس</h3>'
+                '<p>یادداشت‌ها باید با پیشوند DEMO باشند و به ارجاع شواهد پرسش جاری متصل شوند. '
+                'این یادداشت‌ها واقعیت بازار یا گزارش تأییدشده نیستند.</p>'
+                '<ol>' + ''.join(
+                    '<li>پرسش نسخه ' + str(item["question_revision"])
+                    + ' · یافته نسخه ' + str(item["revision"])
+                    + ' · ارجاع ' + escape(item["evidence_ref"])
+                    + ' · ' + escape(item["question_binding"])
+                    + '<p>' + escape(item["note"]) + '</p></li>'
+                    for item in data.get("local_test_findings", [])
+                ) + '</ol>'
+                + (
+                    '<form method="post" action="/admin/export/research/drafts/'
+                    + quote(ref) + '/findings">'
+                    '<input type="hidden" name="csrf" value="'
+                    + escape(session.csrf, quote=True) + '">'
+                    '<input type="hidden" name="action_id" value="DEMO-UI-FINDING-'
+                    + secrets.token_hex(10).upper() + '">'
+                    '<input type="hidden" name="case_version" value="'
+                    + str(data["case_version"]) + '">'
+                    '<input type="hidden" name="question_revision" value="'
+                    + str(question["question_revision"]) + '">'
+                    '<input type="hidden" name="finding_revision" value="'
+                    + str(sum(1 for item in data.get("local_test_findings", [])
+                              if item["question_revision"] == question["question_revision"])) + '">'
+                    '<label for="export-finding-evidence">ارجاع شواهد پرسش جاری</label>'
+                    '<select id="export-finding-evidence" name="evidence_binding">'
+                    + ''.join(
+                        '<option value="' + str(item["evidence_revision"]) + ':'
+                        + escape(item["evidence_ref"], quote=True) + '">'
+                        + escape(item["evidence_ref"]) + ' · نسخه '
+                        + str(item["evidence_revision"]) + '</option>'
+                        for item in data["local_test_evidence_references"]
+                        if item["question_binding"] == "CURRENT"
+                    )
+                    + '</select><label for="export-finding-note">یادداشت DEMO</label>'
+                    '<textarea id="export-finding-note" name="note" minlength="8" '
+                    'maxlength="2000" required></textarea>'
+                    '<button type="submit">ثبت نسخه پیش‌نویس</button></form>'
+                    if question is not None and any(
+                        item["question_binding"] == "CURRENT"
+                        for item in data["local_test_evidence_references"]
+                    ) else '<p>برای ثبت یادداشت، پرسش جاری و حداقل یک ارجاع شواهد لازم است.</p>'
+                ) + '</section>'
                 + '<p>مرجع منبع صرفاً آزمایشی: '
                 + escape(data["source_ref"]) + '</p>'
                 '<p>حقوق استفاده و بازنشر این منبع احراز نشده است.</p>'
@@ -4233,6 +4278,56 @@ def build_authenticated_ui_router(
             return RedirectResponse(
                 "/admin/export/research/drafts/" + quote(ref),
                 status_code=303,
+            )
+
+        @router.post("/admin/export/research/drafts/{ref}/findings")
+        async def export_demo_finding_browser(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            principal, form = await checked_browser_form(
+                request, sid, fields=frozenset({
+                    "csrf", "action_id", "case_version", "question_revision",
+                    "finding_revision", "evidence_binding", "note",
+                }), max_bytes=4096, max_fields=8, max_value_length=2100,
+            )
+            try:
+                evidence_revision_text, evidence_ref = form["evidence_binding"].split(":", 1)
+                evidence_revision = form_version(evidence_revision_text, zero_allowed=False)
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(422, detail="INVALID_EXPORT_RESEARCH_FINDING") from exc
+            try:
+                result = technical_review_ledger.record_export_research_finding(
+                    ref, principal,
+                    expected_case_version=form_version(
+                        form["case_version"], zero_allowed=False,
+                    ),
+                    expected_question_revision=form_version(
+                        form["question_revision"], zero_allowed=False,
+                    ),
+                    expected_finding_revision=form_version(
+                        form["finding_revision"],
+                    ),
+                    evidence_revision=evidence_revision,
+                    action_id=form["action_id"],
+                    evidence_ref=evidence_ref, note=form["note"],
+                )
+            except ExportResearchFindingConflict as exc:
+                raise HTTPException(
+                    409, detail="EXPORT_RESEARCH_FINDING_CHANGED",
+                ) from exc
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(
+                    422, detail="INVALID_EXPORT_RESEARCH_FINDING",
+                ) from exc
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return RedirectResponse(
+                "/admin/export/research/drafts/" + quote(ref), status_code=303,
             )
 
         if export_source_connectors is not None:

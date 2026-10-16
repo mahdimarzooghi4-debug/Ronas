@@ -802,6 +802,28 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(self.client.put(
             upload_path, content=image, headers=stale_context,
         ).status_code, 409)
+        for invalid_length in ("-1", "+1", "not-a-length"):
+            with self.subTest(content_length=invalid_length):
+                malformed = dict(upload_headers, **{"Content-Length": invalid_length})
+                rejected_length = self.client.put(
+                    upload_path, content=image, headers=malformed,
+                )
+                self.assertEqual(rejected_length.status_code, 400)
+                self.assertEqual(
+                    rejected_length.json()["detail"], "INVALID_CONTENT_LENGTH",
+                )
+        oversized = dict(
+            upload_headers,
+            **{"Content-Length": str(8 * 1024 * 1024 + 1)},
+        )
+        rejected_size = self.client.put(
+            upload_path, content=image, headers=oversized,
+        )
+        self.assertEqual(rejected_size.status_code, 413)
+        mismatched = dict(upload_headers, **{"Content-Length": str(len(image) - 1)})
+        mismatch = self.client.put(upload_path, content=image, headers=mismatched)
+        self.assertEqual(mismatch.status_code, 400, mismatch.text)
+        self.assertEqual(mismatch.json()["detail"], "CONTENT_LENGTH_MISMATCH")
         uploaded = self.client.put(upload_path, content=image, headers=upload_headers)
         self.assertEqual(uploaded.status_code, 201, uploaded.text)
         digest = uploaded.json()["digest"]

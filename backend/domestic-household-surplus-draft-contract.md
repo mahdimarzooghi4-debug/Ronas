@@ -7,11 +7,12 @@ Let an authenticated household create and revise a private Domestic surplus draf
 ## Data contract
 
 - The product schema is supplied by the current application composition. The implementation must not invent product fields, units, price, availability rules, or quality criteria.
-- A draft revision binds the household reference, offer reference, producer subject, schema reference/version/digest, canonical payload digest, revision, previous revision receipt digest, and an idempotency action reference.
+- A draft revision binds the household reference, offer reference, producer subject, schema reference/version/digest, canonical payload digest, revision, previous revision receipt digest, and an idempotency action reference. When the household input ledger is available, it also binds the exact current household input revision; legacy/API callers may leave this unset and remain visibly unbound.
 - Only the current owner may read or revise the draft. A revision uses compare-and-swap against the expected current revision; stale writes return a conflict and never overwrite history.
 - Replaying an action reference with identical command content returns the original receipt. Reusing it with different content is rejected.
 - The owner can read the integrity-checked revision history; database failures return a generic unavailable response without storage details. Historical revisions are immutable. A schema change requires a new revision and never silently reinterprets prior values. When a draft's stored schema differs from the active schema, API and browser projections hide the old values, identify the mismatch, and require re-entry under the active schema.
 - Reads, idempotent retries, and new writes verify each stored command, payload, revision link, and receipt digest across the full offer history; damaged chains fail closed without returning stored values.
+- The browser form captures the input revision rendered with the form and rejects submission when the household input has since changed. The owner-only list and history identify drafts whose input revision differs from the current one or was never bound. Saving a reviewed new draft revision binds it to the latest input; prior versions remain historical and unchanged.
 
 ## Security and state
 
@@ -23,7 +24,7 @@ Let an authenticated household create and revise a private Domestic surplus draf
 
 ## Verification
 
-Tests cover owner isolation, role enforcement, injected-schema validation, stale revision conflicts, immutable history, schema-version binding, idempotent retry, conflicting replay, tampered-chain fail-closed behavior, schema-drift value hiding and re-entry, summary-list redaction and owner isolation, revision-history integrity, schema-drift redaction in API/UI history, unsaved-form cancellation, safe Persian rendering, browser CSRF/Origin, cookie-only API write rejection, and the invariant that no draft transition publishes an offer.
+Tests cover owner isolation, role enforcement, injected-schema validation, stale revision conflicts, immutable history, schema-version and household-input-revision binding, idempotent retry, conflicting replay, tampered-chain fail-closed behavior, schema-drift value hiding and re-entry, summary-list redaction and owner isolation, revision-history integrity, schema-drift redaction in API/UI history, unsaved-form cancellation, safe Persian rendering, browser CSRF/Origin, cookie-only API write rejection, and the invariant that no draft transition publishes an offer.
 
 ## Revision comparison
 

@@ -348,6 +348,12 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         if household_surplus_draft_ledger is not None:
             app.include_router(build_domestic_surplus_drafts_router(
                 household_surplus_draft_ledger, principal,
+                input_revision_reader=(
+                    scoped_registry.read_owned_input_revisions
+                    if isinstance(scoped_registry,
+                                  SqliteSyntheticHouseholdInputLedger)
+                    else None
+                ),
             ))
         if household_stage_artifact_store is not None:
             app.include_router(build_stage_artifact_router(

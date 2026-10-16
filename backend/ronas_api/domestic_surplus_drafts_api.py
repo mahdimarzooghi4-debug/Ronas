@@ -35,9 +35,12 @@ def _revision_diff(current: Any, previous: Any | None, active_schema_digest: str
 def build_domestic_surplus_drafts_router(
     ledger: SurplusDraftLedger,
     verified_principal: Callable[..., Principal],
+    input_revision_reader: Callable[[str, Principal], dict | None] | None = None,
 ) -> APIRouter:
     if (not is_surplus_draft_ledger(ledger)
-            or not callable(verified_principal)):
+            or not callable(verified_principal)
+            or input_revision_reader is not None
+            and not callable(input_revision_reader)):
         raise ValueError("explicit draft ledger and verified identity required")
     router = APIRouter()
     base = (
@@ -47,7 +50,7 @@ def build_domestic_surplus_drafts_router(
 
     def project(record) -> dict[str, Any]:
         return {
-            "contract_version": "ronas.domestic.surplus-draft.v1",
+            "contract_version": "ronas.domestic.surplus-draft.v2",
             "household_ref": record.household_ref,
             "offer_ref": record.offer_ref,
             "schema_ref": record.schema_ref,
@@ -58,6 +61,7 @@ def build_domestic_surplus_drafts_router(
             "active_schema_digest": ledger.schema.digest,
             "schema_changed": record.schema_digest != ledger.schema.digest,
             "revision": record.revision,
+            "input_revision": record.input_revision,
             "values": (record.values if record.schema_digest == ledger.schema.digest
                        else {}),
             "payload_digest": record.payload_digest,
@@ -89,7 +93,7 @@ def build_domestic_surplus_drafts_router(
         except sqlite3.Error as exc:
             raise HTTPException(503, detail="DRAFT_STORAGE_UNAVAILABLE") from exc
         return {
-            "contract_version": "ronas.domestic.surplus-draft-list.v1",
+            "contract_version": "ronas.domestic.surplus-draft-list.v2",
             "household_ref": household_ref,
             "offers": [
                 {
@@ -102,6 +106,7 @@ def build_domestic_surplus_drafts_router(
                     "active_schema_digest": ledger.schema.digest,
                     "schema_changed": record.schema_digest != ledger.schema.digest,
                     "revision": record.revision,
+                    "input_revision": record.input_revision,
                     "published": False,
                     "real_data": False,
                 }
@@ -128,7 +133,7 @@ def build_domestic_surplus_drafts_router(
         except sqlite3.Error as exc:
             raise HTTPException(503, detail="DRAFT_STORAGE_UNAVAILABLE") from exc
         return {
-            "contract_version": "ronas.domestic.surplus-draft-history.v2",
+            "contract_version": "ronas.domestic.surplus-draft-history.v3",
             "household_ref": household_ref,
             "offer_ref": offer_ref,
             "revisions": [
@@ -138,6 +143,7 @@ def build_domestic_surplus_drafts_router(
                     "schema_digest": record.schema_digest,
                     "schema_changed": record.schema_digest != ledger.schema.digest,
                     "revision": record.revision,
+                    "input_revision": record.input_revision,
                     "values": (record.values
                                if record.schema_digest == ledger.schema.digest else {}),
                     **_revision_diff(
@@ -181,14 +187,31 @@ def build_domestic_surplus_drafts_router(
     ) -> dict:
         if not request.headers.get("authorization", "").startswith("Bearer "):
             raise HTTPException(401, detail="BEARER_TOKEN_REQUIRED")
-        if set(payload) != {"action_id", "expected_revision", "values"}:
+        required = {"action_id", "expected_revision", "values"}
+        allowed = required | {"input_revision"}
+        if not required.issubset(payload) or not set(payload).issubset(allowed):
             raise HTTPException(422, detail="INVALID_SURPLUS_DRAFT_COMMAND")
+        if input_revision_reader is not None:
+            try:
+                input_state = input_revision_reader(household_ref, principal)
+            except Exception as exc:
+                raise HTTPException(
+                    503, detail="HOUSEHOLD_INPUT_HISTORY_UNAVAILABLE",
+                ) from exc
+            if input_state is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            current_input_revision = input_state["current_input_revision"]
+            if payload.get("input_revision") != current_input_revision:
+                raise HTTPException(
+                    409, detail="HOUSEHOLD_INPUT_REVISION_CHANGED",
+                )
         try:
             record = ledger.save(
                 principal, household_ref, offer_ref,
                 action_id=payload["action_id"],
                 expected_revision=payload["expected_revision"],
                 values=payload["values"],
+                input_revision=payload.get("input_revision"),
             )
         except SurplusDraftConflict as exc:
             raise HTTPException(409, detail="SURPLUS_DRAFT_VERSION_CONFLICT") from exc

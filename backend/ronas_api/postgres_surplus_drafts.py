@@ -24,6 +24,13 @@ from .household_input_profiles import HouseholdInputSchema
 from .scoped_drafts import _synthetic_ref
 
 
+def surplus_offer_lock_key(household_ref: str, offer_ref: str) -> str:
+    """Shared transaction-lock namespace for offer edits and consent writes."""
+    return "ronas-surplus-offer:" + json.dumps(
+        [household_ref, offer_ref], separators=(",", ":"),
+    )
+
+
 class PostgresSurplusDraftLedger:
     """Encrypted owner-scoped draft journal with per-offer serialization."""
 
@@ -279,9 +286,7 @@ class PostgresSurplusDraftLedger:
                 db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                            ("ronas-surplus-action:" + action_id,))
                 db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                           ("ronas-surplus-offer:" + json.dumps(
-                               [household_ref, offer_ref], separators=(",", ":"),
-                           ),))
+                           (surplus_offer_lock_key(household_ref, offer_ref),))
                 replay = db.execute(
                     "SELECT * FROM ronas_domestic_surplus_draft_revision WHERE action_id=%s",
                     (action_id,),

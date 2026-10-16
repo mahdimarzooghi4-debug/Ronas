@@ -45,9 +45,12 @@ decision for one exact saved offer revision and payload digest. Approval and
 withdrawal are append-only events in a hash-linked journal; identical action
 retries are idempotent, action reuse with different content is rejected, and
 stale revision/digest commands return a conflict. PostgreSQL serializes consent
-commands by action and offer revision, encrypts the producer identity at rest,
-and rejects row updates/deletes at the database. Updating an offer leaves its
-old consent history intact but the old consent is no longer current. The owner
+commands by action and offer, encrypts the producer identity at rest,
+and shares the same per-offer transaction lock as draft edits. It re-reads the
+draft after acquiring that lock, so an edit that wins the race makes a waiting
+stale consent fail. Both adapters must address the same PostgreSQL database.
+The journal rejects row updates/deletes at the database. Updating an offer
+leaves its old consent history intact but the old consent is no longer current. The owner
 can withdraw approval for the current version by appending a new event.
 
 When composed with readiness, only the current producer approval is derived
@@ -61,6 +64,7 @@ composed only with the exact draft ledger it verifies. Both adapters remain
 LOCAL/TEST compositions and do not make any Production persistence decision.
 
 Tests cover owner and role isolation, version drift, withdrawal, replay,
-concurrent ordering, encrypted PostgreSQL identity, immutable history,
+concurrent ordering, draft-edit/consent races, encrypted PostgreSQL identity,
+immutable history,
 integrity failures, API and browser/readiness integration and the invariant
 that quality/safety remains a separate blocker after producer approval.

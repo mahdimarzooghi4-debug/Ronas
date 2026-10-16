@@ -1754,7 +1754,8 @@ def build_authenticated_ui_router(
     if household_input_ledger is not None:
         @router.get("/my-drafts/{ref}/progress-notes")
         def household_progress_notes_page(
-            ref: str, sid: str | None = Cookie(default=None, alias=cookie_name),
+            ref: str, corrects_revision: int = 0,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
         ) -> HTMLResponse:
             try:
                 session = flow.session(sid)
@@ -1765,6 +1766,13 @@ def build_authenticated_ui_router(
             )
             if result is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            correction_target = None
+            if corrects_revision:
+                correction_target = next((item for item in result["notes"]
+                                          if item["revision"] == corrects_revision
+                                          and not item["is_superseded"]), None)
+                if correction_target is None:
+                    raise HTTPException(404, detail="PROGRESS_NOTE_NOT_FOUND")
             notes = ''.join(
                 '<li><time>' + escape(item["reported_at"]) + '</time> · '
                 + ('زمینه جاری پرونده و ورودی'
@@ -1774,7 +1782,13 @@ def build_authenticated_ui_router(
                    else 'نسخه تاریخی پرونده ' + str(item["case_version"])
                    if not item["current_case_version"]
                    else 'نسخه تاریخی ورودی ' + str(item["input_revision"]))
-                + ' — ' + escape(item["note"]) + '</li>'
+                + ' — ' + escape(item["note"])
+                + (' · اصلاح شماره ' + str(item["superseded_by_revision"])
+                   if item["is_superseded"] else '')
+                + ('' if item["is_superseded"] else
+                   ' · <a href="/my-drafts/' + quote(ref)
+                   + '/progress-notes?corrects_revision=' + str(item["revision"])
+                   + '">اصلاح این یادداشت</a>') + '</li>'
                 for item in result["notes"]
             )
             form = (
@@ -1790,13 +1804,20 @@ def build_authenticated_ui_router(
                 + str(result["current_revision"]) + '">'
                 '<input type="hidden" name="input_revision" value="'
                 + str(result["current_input_revision"]) + '">'
-                '<label for="reported-at">زمان گزارش‌شده با منطقه زمانی</label>'
+                '<input type="hidden" name="corrects_revision" value="'
+                + str(corrects_revision or 0) + '">'
+                + ('<p>ثبت اصلاح برای یادداشت شماره '
+                   + str(correction_target["revision"]) + '</p>'
+                   if correction_target is not None else '')
+                + '<label for="reported-at">زمان گزارش‌شده با منطقه زمانی</label>'
                 '<input id="reported-at" name="reported_at" maxlength="40" '
                 'placeholder="2026-10-12T10:30:00+03:30" required>'
                 '<label for="progress-note">یادداشت ساختگی</label>'
                 '<textarea id="progress-note" name="note" maxlength="150" '
                 'required>DEMO: </textarea>'
-                '<button type="submit">ثبت یادداشت DEMO</button></form>'
+                '<button type="submit">'
+                + ('ثبت اصلاح DEMO' if correction_target is not None
+                   else 'ثبت یادداشت DEMO') + '</button></form>'
             )
             body = (
                 '<article class="panel"><h2>یادداشت‌های پیشرفت پرونده (DEMO)</h2>'
@@ -1821,7 +1842,7 @@ def build_authenticated_ui_router(
             principal, form = await checked_browser_form(
                 request, sid, fields=frozenset({
                     "csrf", "action_id", "case_version", "revision",
-                    "input_revision", "reported_at", "note",
+                    "input_revision", "corrects_revision", "reported_at", "note",
                 }),
             )
             try:
@@ -1833,6 +1854,7 @@ def build_authenticated_ui_router(
                     ),
                     expected_revision=form_version(form["revision"]),
                     expected_input_revision=form_version(form["input_revision"]),
+                    corrects_revision=(form_version(form["corrects_revision"]) or None),
                     reported_at=form["reported_at"], note=form["note"],
                 )
             except InputRevisionConflict as exc:

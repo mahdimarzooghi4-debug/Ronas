@@ -15,12 +15,15 @@ audit event in the same SQLite transaction. Integrity verification checks the
 whole finding chain and its question/evidence references before serving the
 Export workspace.
 
-The UI labels old-question findings `HISTORICAL`. Creating a new question does
-not rewrite or carry forward old notes. Findings are notes only: the contract
+The UI tracks question and evidence lineage independently. A note is marked
+`HISTORICAL` for evidence when a newer evidence-reference revision is recorded
+for the same question, even if the question itself remains current. Creating a
+new question does not rewrite or carry forward old notes. Findings are notes only: the contract
 does not establish source rights, market truth, HS classification, report
 approval, buyer verification, pricing, contract, or commercial actions. All
 such approval flags remain false.
 
 Validation: `backend/tests/test_export_research_queue.py` covers append/replay,
 conflict handling, stale source and question rejection, immutable lineage,
-historical projection, browser CSRF/Origin handling, and workspace rendering.
+historical question and evidence projection, browser CSRF/Origin handling, and
+workspace rendering.

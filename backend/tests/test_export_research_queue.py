@@ -955,6 +955,32 @@ class ExportResearchQueueTests(unittest.TestCase):
             base + "/findings", data=form, follow_redirects=False,
         ).status_code, 403)
 
+    def test_export_finding_becomes_historical_when_evidence_advances(self):
+        self.assertEqual(self.post_question().status_code, 201)
+        self.assertEqual(self.post_evidence().status_code, 201)
+        created = self.post_finding()
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.json()["evidence_binding"], "CURRENT")
+
+        advanced = self.post_evidence(payload=self.evidence_payload(
+            action="DEMO-EVIDENCE-ACTION-2", evidence_rev=1,
+            evidence="DEMO-EVIDENCE-BETA",
+        ))
+        self.assertEqual(advanced.status_code, 201, advanced.text)
+        workspace = self.client.get(
+            "/api/v1/admin/export/research/drafts/DEMO-E-001/workspace",
+            headers=self.headers(),
+        ).json()
+        finding = workspace["local_test_findings"][0]
+        self.assertEqual(finding["question_binding"], "CURRENT")
+        self.assertEqual(finding["evidence_binding"], "HISTORICAL")
+        self.login()
+        page = self.client.get(
+            "/admin/export/research/drafts/DEMO-E-001"
+        )
+        self.assertIn("شواهد: HISTORICAL", page.text)
+        self.assertTrue(self.reopen().verify_integrity())
+
     def test_export_finding_audit_failure_rolls_back_note(self):
         self.assertEqual(self.post_question().status_code, 201)
         self.assertEqual(self.post_evidence().status_code, 201)

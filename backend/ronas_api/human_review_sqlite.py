@@ -921,17 +921,28 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
     def _export_finding_history(self, db, ref: str,
                                 current_question_revision: int) -> list[dict]:
         rows = db.execute(
-            "SELECT question_revision,evidence_revision,revision,evidence_ref,note "
-            "FROM export_research_finding_draft WHERE ref=? "
-            "ORDER BY question_revision,revision", (ref,),
+            "SELECT question_revision,evidence_revision,revision,evidence_ref,note, "
+            "(SELECT e.revision FROM export_research_evidence_reference e "
+            "WHERE e.ref=f.ref AND e.question_revision=f.question_revision "
+            "ORDER BY e.revision DESC LIMIT 1), "
+            "(SELECT e.evidence_ref FROM export_research_evidence_reference e "
+            "WHERE e.ref=f.ref AND e.question_revision=f.question_revision "
+            "ORDER BY e.revision DESC LIMIT 1) "
+            "FROM export_research_finding_draft f "
+            "WHERE f.ref=? ORDER BY question_revision,revision", (ref,),
         )
         return [{
             "question_revision": qrev, "evidence_revision": erev,
             "revision": revision, "evidence_ref": evidence_ref,
             "note": note, "question_binding": (
                 "CURRENT" if qrev == current_question_revision else "HISTORICAL"
+            ), "evidence_binding": (
+                "CURRENT" if (latest_evidence_revision == erev
+                              and latest_evidence_ref == evidence_ref)
+                else "HISTORICAL"
             ), "draft_only": True, "report_approved": False,
-        } for qrev, erev, revision, evidence_ref, note in rows]
+        } for (qrev, erev, revision, evidence_ref, note,
+               latest_evidence_revision, latest_evidence_ref) in rows]
 
     def record_export_research_finding(
         self, ref: str, principal: Principal, *, expected_case_version: int,

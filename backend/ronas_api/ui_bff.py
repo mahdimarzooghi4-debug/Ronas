@@ -4119,7 +4119,8 @@ def build_authenticated_ui_router(
                     '<li>پرسش نسخه ' + str(item["question_revision"])
                     + ' · یافته نسخه ' + str(item["revision"])
                     + ' · ارجاع ' + escape(item["evidence_ref"])
-                    + ' · ' + escape(item["question_binding"])
+                    + ' · پرسش: ' + escape(item["question_binding"])
+                    + ' · شواهد: ' + escape(item["evidence_binding"])
                     + '<p>' + escape(item["note"]) + '</p></li>'
                     for item in data.get("local_test_findings", [])
                 ) + '</ol>'

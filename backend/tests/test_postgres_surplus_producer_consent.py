@@ -1,6 +1,7 @@
 """PostgreSQL integration tests for version-bound producer consent."""
 import os
 import secrets
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 
@@ -119,6 +120,38 @@ class PostgresSurplusProducerConsentTests(unittest.TestCase):
             self.owner_principal, self.household, self.offer_ref,
         )
         self.assertIn(current, receipts)
+
+    def test_draft_edit_winning_lock_rejects_waiting_stale_consent(self):
+        entering_connection = threading.Event()
+        continue_consent = threading.Event()
+        connect = self.consent._connect
+
+        def paused_connect():
+            entering_connection.set()
+            if not continue_consent.wait(timeout=5):
+                raise TimeoutError("consent test synchronization timed out")
+            return connect()
+
+        self.consent._connect = paused_connect
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(
+                self.record, "PG-CONSENT-RACE-STALE-" + secrets.token_hex(4),
+            )
+            self.assertTrue(entering_connection.wait(timeout=5))
+            revised = self.drafts.save(
+                self.owner_principal, self.household, self.offer_ref,
+                action_id="PG-CONSENT-DRAFT-RACE-" + secrets.token_hex(4),
+                expected_revision=self.draft.revision,
+                values={"product": "new-current-synthetic-product"},
+            )
+            continue_consent.set()
+            with self.assertRaises(ProducerConsentConflict):
+                pending.result(timeout=5)
+
+        self.assertEqual(revised.revision, self.draft.revision + 1)
+        self.assertIsNone(self.consent.current(
+            self.owner_principal, self.household, self.offer_ref,
+        ))
 
     def test_authenticated_api_readiness_keeps_independent_quality_gate(self):
         current = OfferRevision(

@@ -18,6 +18,7 @@ from .domestic_surplus_producer_consent import (
     ProducerConsentReceipt, ProducerConsentStorageError, _ACTION,
 )
 from .domestic_surplus_publication import OfferRevision, PublicationAttestation
+from .postgres_surplus_drafts import surplus_offer_lock_key
 from .scoped_drafts import _synthetic_ref
 
 
@@ -29,10 +30,13 @@ class PostgresSurplusProducerConsentLedger:
                  connect_timeout: int = 3):
         if (not isinstance(dsn, str) or not dsn or len(dsn) > 4096 or "\x00" in dsn
                 or not callable(getattr(draft_ledger, "read_owned", None))
+                or getattr(draft_ledger, "_dsn", None) != dsn
                 or not isinstance(encryption_key, bytes) or len(encryption_key) != 32
                 or not isinstance(scope_key, bytes) or len(scope_key) != 32
                 or type(connect_timeout) is not int or not 1 <= connect_timeout <= 15):
-            raise ValueError("PostgreSQL, exact draft ledger, and private keys required")
+            raise ValueError(
+                "same PostgreSQL database, exact draft ledger, and private keys required"
+            )
         self._dsn = dsn
         self._draft_ledger = draft_ledger
         self._cipher = AESGCM(encryption_key)
@@ -201,12 +205,6 @@ class PostgresSurplusProducerConsentLedger:
                 or not isinstance(action_id, str) or not _ACTION.fullmatch(action_id)
                 or type(approved) is not bool):
             raise ValueError("invalid producer consent command")
-        draft = self._draft_ledger.read_owned(principal, household_ref, offer_ref)
-        if (draft.producer_subject != principal.subject
-                or draft.revision != expected_offer_revision
-                or draft.payload_digest != expected_payload_digest
-                or draft.schema_digest != self._draft_ledger.schema.digest):
-            raise ProducerConsentConflict("offer changed before consent")
         state = "APPROVED" if approved else "WITHDRAWN"
         command = {
             "household_ref": household_ref, "offer_ref": offer_ref,
@@ -220,10 +218,17 @@ class PostgresSurplusProducerConsentLedger:
                 db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                            ("ronas-surplus-consent-action:" + action_id,))
                 db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                           ("ronas-surplus-consent-offer:" + json.dumps(
-                               [household_ref, offer_ref, expected_offer_revision],
-                               separators=(",", ":"),
-                           ),))
+                           (surplus_offer_lock_key(household_ref, offer_ref),))
+                # Re-read after acquiring the same per-offer lock as draft.save.
+                # This closes the edit/consent race between preflight and insert.
+                draft = self._draft_ledger.read_owned(
+                    principal, household_ref, offer_ref,
+                )
+                if (draft.producer_subject != principal.subject
+                        or draft.revision != expected_offer_revision
+                        or draft.payload_digest != expected_payload_digest
+                        or draft.schema_digest != self._draft_ledger.schema.digest):
+                    raise ProducerConsentConflict("offer changed before consent")
                 replay = db.execute("""
                     SELECT * FROM ronas_domestic_surplus_producer_consent
                     WHERE action_id=%s

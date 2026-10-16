@@ -227,7 +227,7 @@ class PostgresSurplusDraftLedgerTests(unittest.TestCase):
             self.assertEqual((saved.revision, saved.input_revision), (1, 1))
             cases.append_owned_input_manifest(
                 self.household, self.principal,
-                action_id="PG-INPUT-CORRECTED", expected_case_version=1,
+                action_id="DEMO-PG-INPUT-CORRECTED", expected_case_version=1,
                 expected_input_revision=1, synthetic_manifest_digest="b" * 64,
             )
             stale_listing = client.get(listing_path)

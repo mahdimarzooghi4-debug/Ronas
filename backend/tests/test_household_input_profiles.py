@@ -1035,6 +1035,8 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             )
 
         nonce_holder = {}
+        state_hash = None
+        session_hash = None
 
         def token_response(req):
             self.assertEqual(req.method, "POST")
@@ -1092,6 +1094,9 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             query = parse_qs(urlsplit(start.headers["location"]).query)
             self.assertEqual(query["code_challenge_method"], ["S256"])
             self.assertEqual(query["redirect_uri"], [callback])
+            state_hash = hashlib.sha256(
+                query["state"][0].encode("ascii"),
+            ).hexdigest()
             nonce_holder["nonce"] = query["nonce"][0]
             browser_b.cookies.update(browser_a.cookies)
             callback_response = browser_b.get(
@@ -1104,6 +1109,9 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             session = browser_b.get("/api/auth/session")
             self.assertEqual(session.status_code, 200, session.text)
             self.assertNotIn("access_token", session.text)
+            sid = browser_b.cookies.get("__Host-ronas_session")
+            self.assertIsInstance(sid, str)
+            session_hash = hashlib.sha256(sid.encode("ascii")).hexdigest()
 
             page = "/my-drafts/" + REF + "/stage-observations"
             upload = browser_b.put(
@@ -1174,6 +1182,20 @@ class HouseholdProfileFlowTests(unittest.TestCase):
                     "WHERE owner_hash=%s AND case_hash=%s",
                     (owner_hash, case_hash),
                 )
+                if state_hash is not None:
+                    db.execute(
+                        "DELETE FROM ronas_browser_pending_login WHERE state_hash=%s",
+                        (state_hash,),
+                    )
+                if session_hash is not None:
+                    db.execute(
+                        "DELETE FROM ronas_browser_session_refresh_lock "
+                        "WHERE sid_hash=%s", (session_hash,),
+                    )
+                    db.execute(
+                        "DELETE FROM ronas_browser_session WHERE sid_hash=%s",
+                        (session_hash,),
+                    )
 
     def test_stage_observation_is_not_offered_without_current_plan(self):
         self.assertEqual(self.client.post(

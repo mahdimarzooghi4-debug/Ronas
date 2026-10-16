@@ -481,11 +481,15 @@ def build_technical_review_read_router(
         ) -> dict:
             try:
                 before = ledger.read_export_research_workspace(ref, p)
-                findings = export_research_finding_ledger.read_history(ref, p)
+                findings_before = export_research_finding_ledger.read_history(ref, p)
+                findings_after = export_research_finding_ledger.read_history(ref, p)
                 after = ledger.read_export_research_workspace(ref, p)
-                if before is None or findings is None or after is None:
+                if (before is None or findings_before is None
+                        or findings_after is None or after is None):
                     raise HTTPException(404, detail="DRAFT_NOT_FOUND")
-                return build_export_research_packet(before, findings, after)
+                return build_export_research_packet(
+                    before, findings_before, findings_after, after,
+                )
             except HTTPException:
                 raise
             except ExportResearchPacketConflict as exc:

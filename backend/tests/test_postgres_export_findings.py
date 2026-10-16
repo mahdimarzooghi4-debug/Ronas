@@ -29,7 +29,9 @@ class PostgresExportFindingLedgerTests(unittest.TestCase):
                            "source_ref": "DEMO-SOURCE-1", "connector_ref": "DEMO-CONNECTOR-1",
                            "source_snapshot_digest": "b" * 64},
                       ]}
-        self.key = secrets.token_bytes(32)
+        # The persistent integration table is shared by test methods; the
+        # default key id must identify the same key across all of them.
+        self.key = bytes(range(32))
         self.ledger = PostgresExportResearchFindingLedger(
             DSN, self.workspace, self.key,
         )

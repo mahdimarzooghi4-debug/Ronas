@@ -2257,10 +2257,15 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             path, self.schema, self.allowed,
         )
         owner = Principal(OWNER, frozenset({"household"}))
+        self.ledger.append_owned_input_manifest(
+            REF, owner, action_id="DEMO-BOUND-INPUT-1",
+            expected_case_version=2, expected_input_revision=0,
+            synthetic_manifest_digest="7" * 64,
+        )
         offer_ref = "DEMO-OFFER-BOUND-1"
         ledger.save(
             owner, REF, offer_ref, action_id="DEMO-BOUND-A1",
-            expected_revision=0,
+            expected_revision=0, input_revision=1,
             values={"field_alpha": "first value", "field_choice": "sample-a"},
         )
         old = OfferRevision(
@@ -2295,13 +2300,13 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         first = client.get(readiness_path, headers=self.bearer())
         self.assertEqual(first.status_code, 200, first.text)
         self.assertEqual(first.json()["contract_version"],
-                         "ronas.domestic.surplus-publication-gate.v2")
+                         "ronas.domestic.surplus-publication-gate.v3")
         self.assertTrue(first.json()["can_publish"])
         self.assertEqual(first.json()["revision"], 1)
 
         ledger.save(
             owner, REF, offer_ref, action_id="DEMO-BOUND-A2",
-            expected_revision=1,
+            expected_revision=1, input_revision=1,
             values={"field_alpha": "second value", "field_choice": "sample-a"},
         )
         changed = client.get(readiness_path, headers=self.bearer())
@@ -2312,6 +2317,17 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             set(changed.json()["blockers"]),
             {"OFFER_VERSION_CHANGED", "PRODUCER_APPROVAL_STALE",
              "QUALITY_SAFETY_VERIFICATION_STALE"},
+        )
+        self.ledger.append_owned_input_manifest(
+            REF, owner, action_id="DEMO-BOUND-INPUT-2",
+            expected_case_version=2, expected_input_revision=1,
+            synthetic_manifest_digest="8" * 64,
+        )
+        stale_household_input = client.get(readiness_path, headers=self.bearer())
+        self.assertEqual(stale_household_input.status_code, 200)
+        self.assertIn(
+            "HOUSEHOLD_INPUT_REVISION_CHANGED",
+            stale_household_input.json()["blockers"],
         )
 
         session = self.browser_session()

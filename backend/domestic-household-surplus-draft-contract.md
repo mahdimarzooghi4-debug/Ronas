@@ -13,6 +13,7 @@ Let an authenticated household create and revise a private Domestic surplus draf
 - The owner can read the integrity-checked revision history; database failures return a generic unavailable response without storage details. Historical revisions are immutable. A schema change requires a new revision and never silently reinterprets prior values. When a draft's stored schema differs from the active schema, API and browser projections hide the old values, identify the mismatch, and require re-entry under the active schema.
 - Reads, idempotent retries, and new writes verify each stored command, payload, revision link, and receipt digest across the full offer history; damaged chains fail closed without returning stored values.
 - The browser form captures the input revision rendered with the form and rejects submission when the household input has since changed. The owner-only list and history identify drafts whose input revision differs from the current one or was never bound. Saving a reviewed new draft revision binds it to the latest input; prior versions remain historical and unchanged.
+- The publication-readiness evaluation also requires the saved draft to be bound to the current household input revision. Unbound, changed, or unavailable household lineage adds a blocker and cannot produce a technically eligible result.
 
 ## Security and state
 

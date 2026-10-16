@@ -22,7 +22,8 @@ Blocker = Literal[
     "QUALITY_SAFETY_VERIFICATION_REQUIRED",
     "QUALITY_SAFETY_VERIFICATION_STALE", "OFFER_SCHEMA_CHANGED",
     "SELLER_ELIGIBILITY_UNVERIFIED", "HOUSEHOLD_PERMISSION_INACTIVE",
-    "MARKETPLACE_GATE_CLOSED",
+    "MARKETPLACE_GATE_CLOSED", "HOUSEHOLD_INPUT_REVISION_UNBOUND",
+    "HOUSEHOLD_INPUT_REVISION_CHANGED", "HOUSEHOLD_INPUT_REVISION_UNAVAILABLE",
 ]
 
 
@@ -120,7 +121,7 @@ class PublicationReadiness:
 
     def as_dict(self) -> dict:
         return {
-            "contract_version": "ronas.domestic.surplus-publication-gate.v2",
+            "contract_version": "ronas.domestic.surplus-publication-gate.v3",
             "offer_ref": self.offer_ref,
             "household_ref": self.household_ref,
             "revision": self.revision,
@@ -149,6 +150,9 @@ def _same_revision(
 def evaluate_surplus_publication(
     proposed: OfferRevision, authorities: PublicationAuthorities,
     *, offer_schema_current: bool = True,
+    household_input_revision_state: Literal[
+        "NOT_TRACKED", "CURRENT", "UNBOUND", "CHANGED", "UNAVAILABLE",
+    ] = "NOT_TRACKED",
 ) -> PublicationReadiness:
     """Evaluate separate publication gates for one exact current version.
 
@@ -157,7 +161,10 @@ def evaluate_surplus_publication(
     """
     if (not isinstance(proposed, OfferRevision)
             or not isinstance(authorities, PublicationAuthorities)
-            or type(offer_schema_current) is not bool):
+            or type(offer_schema_current) is not bool
+            or household_input_revision_state not in (
+                "NOT_TRACKED", "CURRENT", "UNBOUND", "CHANGED", "UNAVAILABLE",
+            )):
         raise ValueError("versioned offer, schema state, and trusted authorities required")
     blockers: list[Blocker] = []
     current = authorities.current_offer
@@ -195,6 +202,12 @@ def evaluate_surplus_publication(
 
     if not offer_schema_current:
         blockers.append("OFFER_SCHEMA_CHANGED")
+    if household_input_revision_state == "UNBOUND":
+        blockers.append("HOUSEHOLD_INPUT_REVISION_UNBOUND")
+    elif household_input_revision_state == "CHANGED":
+        blockers.append("HOUSEHOLD_INPUT_REVISION_CHANGED")
+    elif household_input_revision_state == "UNAVAILABLE":
+        blockers.append("HOUSEHOLD_INPUT_REVISION_UNAVAILABLE")
 
     can_publish = not blockers
     readiness_digest = hashlib.sha256(json.dumps(
@@ -221,6 +234,7 @@ def evaluate_surplus_publication(
             "household_permission_active": authorities.household_permission_active,
             "marketplace_gate_open": authorities.marketplace_gate_open,
             "offer_schema_current": offer_schema_current,
+            "household_input_revision_state": household_input_revision_state,
             "blockers": blockers,
         },
         sort_keys=True, separators=(",", ":"), ensure_ascii=False,

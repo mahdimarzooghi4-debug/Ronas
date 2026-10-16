@@ -268,6 +268,68 @@ class DomesticSurplusPublicationTests(unittest.TestCase):
             self.assertEqual(result["revision"], 1)
             self.assertFalse(result["published"])
 
+    def test_input_revision_lineage_blocks_unbound_and_changed_drafts(self):
+        principal = Principal("producer-01", frozenset({"household"}))
+        schema = HouseholdInputSchema(
+            "surplus-input-lineage", 1,
+            (HouseholdInputField("product_ref", "Product", required=True),),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = SqliteSyntheticSurplusDraftLedger(
+                str(Path(directory) / "drafts.sqlite3"), schema,
+                lambda identity, household_ref, schema_ref: (
+                    identity.subject == "producer-01"
+                    and household_ref == "DEMO-H-01"
+                    and schema_ref == schema.schema_ref
+                ),
+            )
+            bound = ledger.save(
+                principal, "DEMO-H-01", "DEMO-OFFER-01",
+                action_id="lineage-bound", expected_revision=0,
+                input_revision=1, values={"product_ref": "DEMO-PRODUCT-01"},
+            )
+
+            def authority(_identity, household_ref, offer_ref):
+                current = ledger.read_owned(principal, household_ref, offer_ref)
+                revision = OfferRevision(
+                    current.offer_ref, current.household_ref,
+                    current.producer_subject, current.revision,
+                    current.payload_digest,
+                )
+                producer, quality = approvals(revision)
+                return revision, PublicationAuthorities(
+                    current_offer=revision, producer_approval=producer,
+                    quality_safety_verification=quality,
+                    seller_eligibility_verified=True,
+                    household_permission_active=True, marketplace_gate_open=True,
+                )
+
+            current_input = {"current_input_revision": 1}
+            reader = lambda _ref, _identity: dict(current_input)
+            current = publication_readiness_snapshot(
+                authority, principal, "DEMO-H-01", "DEMO-OFFER-01", ledger, reader,
+            )
+            self.assertTrue(current["can_publish"])
+            current_input["current_input_revision"] = 2
+            stale = publication_readiness_snapshot(
+                authority, principal, "DEMO-H-01", "DEMO-OFFER-01", ledger, reader,
+            )
+            self.assertFalse(stale["can_publish"])
+            self.assertIn("HOUSEHOLD_INPUT_REVISION_CHANGED", stale["blockers"])
+
+            unbound = ledger.save(
+                principal, "DEMO-H-01", "DEMO-OFFER-UNBOUND",
+                action_id="lineage-unbound", expected_revision=0,
+                values={"product_ref": "DEMO-PRODUCT-01"},
+            )
+            unbound_result = publication_readiness_snapshot(
+                authority, principal, "DEMO-H-01", "DEMO-OFFER-UNBOUND",
+                ledger, reader,
+            )
+            self.assertFalse(unbound_result["can_publish"])
+            self.assertIn("HOUSEHOLD_INPUT_REVISION_UNBOUND",
+                          unbound_result["blockers"])
+
     def test_readiness_digest_changes_when_authority_evidence_changes(self):
         current = offer()
         producer, quality = approvals(current)

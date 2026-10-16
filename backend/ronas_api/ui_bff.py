@@ -3270,6 +3270,8 @@ def build_authenticated_ui_router(
                 result = publication_readiness_snapshot(
                     household_surplus_publication_authority,
                     identity, ref, offer_ref, household_surplus_draft_ledger,
+                    (household_input_ledger.read_owned_input_revisions
+                     if household_input_ledger is not None else None),
                 )
             except HTTPException as exc:
                 if exc.status_code == 404:
@@ -3296,6 +3298,12 @@ def build_authenticated_ui_router(
                 "SELLER_ELIGIBILITY_UNVERIFIED": "وضعیت صلاحیت فروشنده احراز نشده است",
                 "HOUSEHOLD_PERMISSION_INACTIVE": "مجوز خانوار فعال نیست",
                 "MARKETPLACE_GATE_CLOSED": "درگاه فنی بازارگاه باز نیست",
+                "HOUSEHOLD_INPUT_REVISION_UNBOUND":
+                    "پیش‌نویس به نسخه اطلاعات خانوار متصل نشده است",
+                "HOUSEHOLD_INPUT_REVISION_CHANGED":
+                    "نسخه اطلاعات خانوار تغییر کرده است",
+                "HOUSEHOLD_INPUT_REVISION_UNAVAILABLE":
+                    "نسخه جاری اطلاعات خانوار در دسترس نیست",
             }
             blockers = result.get("blockers")
             if (not isinstance(blockers, list)

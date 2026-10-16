@@ -51,6 +51,7 @@ class HouseholdStageObservationCommand(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     action_id: StrictStr = Field(min_length=1, max_length=96)
     expected_observation_revision: StrictInt
+    corrects_revision: StrictInt = 0
     expected_case_version: StrictInt
     expected_input_revision: StrictInt
     expected_input_snapshot_digest: StrictStr = Field(
@@ -361,6 +362,7 @@ def build_household_input_router(
                             data.expected_observation_requirements_digest,
                         observed_at=data.observed_at,
                         observation_artifact_digest=data.observation_artifact_digest,
+                        corrects_revision=data.corrects_revision or None,
                     )
                     if (stage_artifact_store is not None
                             and not stage_artifact_store.contains(

@@ -634,12 +634,14 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         self.assertNotIn("اقدام بعدی", resp.text)
 
 
-    def progress_command(self, revision=0, input_revision=0, action="DEMO-PROGRESS-A",
+    def progress_command(self, revision=0, input_revision=0, corrects_revision=0,
+                         action="DEMO-PROGRESS-A",
                          note="DEMO: observed leaves", reported_at="2026-10-12T10:30:00+03:30"):
         return {
             "action_id": action, "expected_case_version": 3,
             "expected_revision": revision,
             "expected_input_revision": input_revision,
+            "corrects_revision": corrects_revision,
             "reported_at": reported_at,
             "note": note,
         }
@@ -664,6 +666,8 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
             "reported_at": "2026-10-12T10:30:00+03:30",
             "note": "DEMO: observed leaves", "current_case_version": True,
             "current_input_context": True,
+            "corrects_revision": None, "superseded_by_revision": None,
+            "is_superseded": False,
         }])
         self.assertTrue(self.ledger.verify_integrity())
         self.ledger = self.reopen()
@@ -708,6 +712,77 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         self.assertEqual([item["current_input_context"] for item in history["notes"]],
                          [False, True])
         self.assertEqual([item["input_revision"] for item in history["notes"]], [0, 1])
+
+    def test_progress_note_correction_is_append_only_replay_safe_and_single_target(self):
+        root = "/api/v1/domestic/household-intake/my-drafts/DEMO-D-1/progress-notes"
+        first = self.client.post(root, json=self.progress_command(), headers=self.headers())
+        self.assertEqual(first.status_code, 201, first.text)
+        correction_command = self.progress_command(
+            revision=1, corrects_revision=1, action="DEMO-PROGRESS-CORRECT-1",
+            note="DEMO: corrected observation",
+        )
+        corrected = self.client.post(root, json=correction_command, headers=self.headers())
+        self.assertEqual(corrected.status_code, 201, corrected.text)
+        self.assertEqual(corrected.json()["corrects_revision"], 1)
+        replay = self.client.post(root, json=correction_command, headers=self.headers())
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertTrue(replay.json()["idempotent_replay"])
+        conflict = self.client.post(
+            root,
+            json=self.progress_command(
+                revision=2, corrects_revision=1, action="DEMO-PROGRESS-CORRECT-2",
+                note="DEMO: competing correction",
+            ),
+            headers=self.headers(),
+        )
+        self.assertEqual(conflict.status_code, 409, conflict.text)
+        history = self.client.get(root, headers=self.headers()).json()
+        self.assertEqual(history["contract_version"],
+                         "ronas.domestic.synthetic-household-progress-notes.v2")
+        self.assertEqual(history["notes"][0]["superseded_by_revision"], 2)
+        self.assertTrue(history["notes"][0]["is_superseded"])
+        self.assertFalse(history["notes"][1]["is_superseded"])
+        self.assertEqual(history["notes"][1]["corrects_revision"], 1)
+        self.assertTrue(self.ledger.verify_integrity())
+        self.ledger = self.reopen()
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_progress_note_schema_migrates_existing_unbound_local_history(self):
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER progress_note_no_update")
+            db.execute("DROP TRIGGER progress_note_no_delete")
+            db.execute("DROP TABLE household_progress_note")
+            db.executescript("""
+                CREATE TABLE household_progress_note (
+                    action_id TEXT PRIMARY KEY, ref TEXT NOT NULL,
+                    case_version INTEGER NOT NULL, revision INTEGER NOT NULL,
+                    owner_digest TEXT NOT NULL, reported_at TEXT NOT NULL,
+                    note TEXT NOT NULL, previous_receipt_digest TEXT NOT NULL,
+                    receipt_digest TEXT NOT NULL UNIQUE,
+                    audit_sequence INTEGER NOT NULL UNIQUE,
+                    UNIQUE(ref, revision),
+                    FOREIGN KEY(audit_sequence) REFERENCES audit_event(sequence)
+                );
+                CREATE TRIGGER progress_note_no_update
+                BEFORE UPDATE ON household_progress_note
+                BEGIN SELECT RAISE(ABORT, 'synthetic progress history immutable'); END;
+                CREATE TRIGGER progress_note_no_delete
+                BEFORE DELETE ON household_progress_note
+                BEGIN SELECT RAISE(ABORT, 'synthetic progress history immutable'); END;
+            """)
+        self.ledger = self.reopen()
+        with sqlite3.connect(self.path) as db:
+            columns = {row[1] for row in db.execute(
+                "PRAGMA table_info(household_progress_note)"
+            )}
+        self.assertIn("input_revision", columns)
+        self.assertIn("corrects_revision", columns)
+        self.client = self.client_for()
+        self.assertEqual(self.client.post(
+            "/api/v1/domestic/household-intake/my-drafts/DEMO-D-1/progress-notes",
+            json=self.progress_command(), headers=self.headers(),
+        ).status_code, 201)
+        self.assertTrue(self.ledger.verify_integrity())
 
     def test_progress_note_api_rejects_stale_owner_role_and_real_claims(self):
         root = "/api/v1/domestic/household-intake/my-drafts/DEMO-D-1/progress-notes"
@@ -756,6 +831,7 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
             "csrf": self.sessions.get_session(self.client.cookies.get("__Host-ronas_session")).csrf,
             "action_id": action.group(1),
             "case_version": "3", "input_revision": "0", "revision": "0",
+            "corrects_revision": "0",
             "reported_at": "2026-10-12T10:30:00+03:30",
             "note": 'DEMO: <script>alert("x")</script>',
         }
@@ -803,6 +879,7 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         old_form = {
             "csrf": csrf, "action_id": action.group(1),
             "case_version": "3", "input_revision": "0", "revision": "0",
+            "corrects_revision": "0",
             "reported_at": "2026-10-12T10:30:00+03:30",
             "note": "DEMO: initial context note",
         }
@@ -824,6 +901,49 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         stale = self.client.post(route, data=stale_form,
                                  headers={"Origin": ORIGIN}, follow_redirects=False)
         self.assertEqual(stale.status_code, 409, stale.text)
+
+    def test_progress_note_browser_correction_uses_owner_append_only_flow(self):
+        self.browser()
+        route = "/my-drafts/DEMO-D-1/progress-notes"
+        csrf = self.sessions.get_session(
+            self.client.cookies.get("__Host-ronas_session")
+        ).csrf
+        initial = self.client.post(
+            route,
+            data={
+                "csrf": csrf, "action_id": "DEMO-PROGRESS-BROWSER-ORIGINAL",
+                "case_version": "3", "input_revision": "0", "revision": "0",
+                "corrects_revision": "0",
+                "reported_at": "2026-10-12T10:30:00+03:30",
+                "note": "DEMO: original browser note",
+            },
+            headers={"Origin": ORIGIN}, follow_redirects=False,
+        )
+        self.assertEqual(initial.status_code, 303, initial.text)
+        correction_page = self.client.get(route + "?corrects_revision=1")
+        self.assertEqual(correction_page.status_code, 200, correction_page.text)
+        self.assertIn("ثبت اصلاح برای یادداشت شماره 1", correction_page.text)
+        self.assertIn('name="corrects_revision" value="1"', correction_page.text)
+        correction = self.client.post(
+            route,
+            data={
+                "csrf": csrf, "action_id": "DEMO-PROGRESS-BROWSER-CORRECTION",
+                "case_version": "3", "input_revision": "0", "revision": "1",
+                "corrects_revision": "1",
+                "reported_at": "2026-10-12T11:30:00+03:30",
+                "note": "DEMO: corrected browser note",
+            },
+            headers={"Origin": ORIGIN}, follow_redirects=False,
+        )
+        self.assertEqual(correction.status_code, 303, correction.text)
+        history = self.client.get(route)
+        self.assertIn("اصلاح شماره 2", history.text)
+        original_entry = history.text[
+            history.text.index("DEMO: original browser note"):
+        ].split("</li>", 1)[0]
+        self.assertNotIn("اصلاح این یادداشت</a>", original_entry)
+        self.assertIn("اصلاح این یادداشت</a>",
+                      history.text[history.text.index("DEMO: corrected browser note"):])
 
     def test_progress_note_form_is_disabled_for_wrong_owner_and_export(self):
         self.browser(subject="synthetic-household-other")

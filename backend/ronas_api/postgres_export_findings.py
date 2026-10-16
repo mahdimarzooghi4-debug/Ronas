@@ -125,6 +125,7 @@ class PostgresExportResearchFindingLedger:
                     raise ExportResearchFindingConflict("Export context changed")
                 rows = db.execute("SELECT * FROM ronas_export_research_finding WHERE ref=%s AND question_revision=%s ORDER BY revision",
                                   (ref, expected_question_revision)).fetchall()
+                self._verify_chain(ref, rows)
                 current = rows[-1]["revision"] if rows else 0
                 previous = rows[-1]["receipt_digest"] if rows else "0" * 64
                 replay = db.execute("SELECT * FROM ronas_export_research_finding WHERE action_id=%s",
@@ -190,22 +191,9 @@ class PostgresExportResearchFindingLedger:
             with self._connect() as db:
                 rows = db.execute("SELECT * FROM ronas_export_research_finding WHERE ref=%s ORDER BY question_revision,revision",
                                   (ref,)).fetchall()
+            self._verify_chain(ref, rows)
             result = []
-            previous_by_question = {}
             for row in rows:
-                qrev = row["question_revision"]
-                previous = previous_by_question.get(qrev, "0" * 64)
-                binding = finding_binding(action_id=row["action_id"], ref=ref,
-                    case_version=row["case_version"], question_revision=qrev,
-                    evidence_revision=row["evidence_revision"], revision=row["revision"],
-                    actor_digest=row["actor_digest"].strip(), evidence_ref=row["evidence_ref"],
-                    note_digest=row["note_digest"].strip(), previous_digest=previous)
-                binding.update(source_ref=row["source_ref"], connector_ref=row["connector_ref"],
-                               source_snapshot_digest=row["source_snapshot_digest"].strip())
-                if (row["previous_digest"].strip() != previous
-                        or finding_digest(binding) != row["receipt_digest"].strip()):
-                    raise ExportFindingStorageError("Export finding history integrity failure")
-                previous_by_question[qrev] = row["receipt_digest"].strip()
                 result.append(self._project(row, rows, workspace))
             return result
         except ExportFindingStorageError:
@@ -223,13 +211,42 @@ class PostgresExportResearchFindingLedger:
         if hashlib.sha256(note.encode("utf-8")).hexdigest() != row["note_digest"].strip():
             raise ExportFindingStorageError("Export finding note digest failure")
         current_question = (workspace.get("local_test_draft_question") or {}).get("question_revision")
-        evidence = next((e for e in workspace.get("local_test_evidence_references", [])
-                         if e.get("evidence_revision") == row["evidence_revision"]
-                         and e.get("evidence_ref") == row["evidence_ref"]), None)
+        evidence_rows = workspace.get("local_test_evidence_references", [])
+        current_evidence_revision = max(
+            (e.get("evidence_revision", 0) for e in evidence_rows), default=0,
+        )
+        evidence_is_current = (
+            row["question_revision"] == current_question
+            and any(e.get("evidence_revision") == row["evidence_revision"]
+                    and e.get("evidence_ref") == row["evidence_ref"]
+                    and e.get("evidence_revision") == current_evidence_revision
+                    for e in evidence_rows)
+        )
         return {"question_revision": row["question_revision"], "evidence_revision": row["evidence_revision"],
             "revision": row["revision"], "evidence_ref": row["evidence_ref"],
             "source_ref": row["source_ref"], "connector_ref": row["connector_ref"],
             "source_snapshot_digest": row["source_snapshot_digest"].strip(), "note": note,
             "question_binding": "CURRENT" if row["question_revision"] == current_question else "HISTORICAL",
-            "evidence_binding": "CURRENT" if evidence is not None else "HISTORICAL",
+            "evidence_binding": "CURRENT" if evidence_is_current else "HISTORICAL",
             "draft_only": True, "report_approved": False}
+
+    def _verify_chain(self, ref, rows):
+        previous_by_question = {}
+        revision_by_question = {}
+        for row in rows:
+            qrev = row["question_revision"]
+            previous = previous_by_question.get(qrev, "0" * 64)
+            expected_revision = revision_by_question.get(qrev, 0) + 1
+            binding = finding_binding(action_id=row["action_id"], ref=ref,
+                case_version=row["case_version"], question_revision=qrev,
+                evidence_revision=row["evidence_revision"], revision=row["revision"],
+                actor_digest=row["actor_digest"].strip(), evidence_ref=row["evidence_ref"],
+                note_digest=row["note_digest"].strip(), previous_digest=previous)
+            binding.update(source_ref=row["source_ref"], connector_ref=row["connector_ref"],
+                           source_snapshot_digest=row["source_snapshot_digest"].strip())
+            if (row["revision"] != expected_revision
+                    or row["previous_digest"].strip() != previous
+                    or finding_digest(binding) != row["receipt_digest"].strip()):
+                raise ExportFindingStorageError("Export finding history integrity failure")
+            previous_by_question[qrev] = row["receipt_digest"].strip()
+            revision_by_question[qrev] = row["revision"]

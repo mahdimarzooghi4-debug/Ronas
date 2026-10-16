@@ -20,9 +20,14 @@ class PostgresExportFindingLedgerTests(unittest.TestCase):
         self.ref = "DEMO-E-" + secrets.token_hex(8).upper()
         self.principal = Principal("synthetic-export-operator", frozenset({"export_ops"}))
         self.state = {"case_version": 2, "question_revision": 1,
-                      "evidence": [{"evidence_revision": 1, "evidence_ref": "DEMO-EVIDENCE-1",
-                                    "source_ref": "DEMO-SOURCE-1", "connector_ref": "DEMO-CONNECTOR-1",
-                                    "source_snapshot_digest": "a" * 64}]}
+                      "evidence": [
+                          {"evidence_revision": 1, "evidence_ref": "DEMO-EVIDENCE-1",
+                           "source_ref": "DEMO-SOURCE-1", "connector_ref": "DEMO-CONNECTOR-1",
+                           "source_snapshot_digest": "a" * 64},
+                          {"evidence_revision": 2, "evidence_ref": "DEMO-EVIDENCE-2",
+                           "source_ref": "DEMO-SOURCE-1", "connector_ref": "DEMO-CONNECTOR-1",
+                           "source_snapshot_digest": "b" * 64},
+                      ]}
         self.ledger = PostgresExportResearchFindingLedger(
             DSN, self.workspace, secrets.token_bytes(32),
         )
@@ -55,6 +60,7 @@ class PostgresExportFindingLedgerTests(unittest.TestCase):
         self.assertEqual(self.ledger.read_history(self.ref, self.principal), [first])
         self.assertTrue(first["draft_only"])
         self.assertFalse(first["report_approved"])
+        self.assertEqual(first["evidence_binding"], "HISTORICAL")
 
     def test_stale_case_question_evidence_and_wrong_grant_fail_closed(self):
         with self.assertRaises(ExportResearchFindingConflict):

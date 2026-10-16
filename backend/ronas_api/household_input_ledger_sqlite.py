@@ -26,6 +26,11 @@ PROGRESS_CONTRACT = "ronas.domestic.synthetic-household-progress-notes.v0"
 PROGRESS_CONTEXT_EVENT = "SYNTHETIC_HOUSEHOLD_PROGRESS_CONTEXT_NOTE_RECORDED"
 PROGRESS_CONTEXT_MODE = "HOUSEHOLD_PROGRESS_CONTEXT_NOTE_SHA256:"
 PROGRESS_CONTEXT_CONTRACT = "ronas.domestic.synthetic-household-progress-notes.v1"
+PROGRESS_V2_EVENT = "SYNTHETIC_HOUSEHOLD_PROGRESS_NOTE_RECORDED_V2"
+PROGRESS_V2_MODE = "HOUSEHOLD_PROGRESS_NOTE_V2_SHA256:"
+PROGRESS_CORRECTION_EVENT = "SYNTHETIC_HOUSEHOLD_PROGRESS_NOTE_CORRECTED"
+PROGRESS_CORRECTION_MODE = "HOUSEHOLD_PROGRESS_CORRECTION_SHA256:"
+PROGRESS_CORRECTION_CONTRACT = "ronas.domestic.synthetic-household-progress-notes.v2"
 
 
 class InputRevisionConflict(ValueError):
@@ -62,7 +67,7 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
                 CREATE TABLE IF NOT EXISTS household_progress_note (
                     action_id TEXT PRIMARY KEY, ref TEXT NOT NULL,
                     case_version INTEGER NOT NULL, revision INTEGER NOT NULL,
-                    input_revision INTEGER,
+                    input_revision INTEGER, corrects_revision INTEGER,
                     owner_digest TEXT NOT NULL, reported_at TEXT NOT NULL,
                     note TEXT NOT NULL, previous_receipt_digest TEXT NOT NULL,
                     receipt_digest TEXT NOT NULL UNIQUE, audit_sequence INTEGER NOT NULL UNIQUE,
@@ -86,6 +91,15 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
                 db.execute(
                     "ALTER TABLE household_progress_note ADD COLUMN input_revision INTEGER"
                 )
+            if "corrects_revision" not in columns:
+                db.execute(
+                    "ALTER TABLE household_progress_note ADD COLUMN corrects_revision INTEGER"
+                )
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS progress_note_one_correction "
+                "ON household_progress_note(ref,corrects_revision) "
+                "WHERE corrects_revision IS NOT NULL"
+            )
         self._input_ready = True
         with self._transaction() as db:
             self._verify(db)
@@ -95,7 +109,8 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
         # events. Replacing rather than extending this set caused a shared
         # Domestic + Export ledger to reject valid Export question events.
         return super()._extended_audit_kinds() | frozenset({
-            EVENT_KIND, PROGRESS_EVENT, PROGRESS_CONTEXT_EVENT,
+            EVENT_KIND, PROGRESS_EVENT, PROGRESS_CONTEXT_EVENT, PROGRESS_V2_EVENT,
+            PROGRESS_CORRECTION_EVENT,
         })
 
     @staticmethod
@@ -194,6 +209,20 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
         }))
 
     @staticmethod
+    def _progress_correction_binding(action: str, ref: str, case_version: int,
+                                      input_revision: int, revision: int,
+                                      corrects_revision: int | None,
+                                      owner_digest: str, reported_at: str,
+                                      note: str, prior: str) -> str:
+        return _hash(_json({
+            "action_id": action, "engine": "DOMESTIC", "ref": ref,
+            "case_version": case_version, "input_revision": input_revision,
+            "revision": revision, "corrects_revision": corrects_revision,
+            "owner_digest": owner_digest, "reported_at": reported_at,
+            "note_digest": _hash(note), "previous_receipt_digest": prior,
+        }))
+
+    @staticmethod
     def _valid_reported_at(value: str) -> bool:
         if not isinstance(value, str) or len(value) > 40:
             return False
@@ -210,20 +239,26 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
         ):
             event = json.loads(payload)
             mode = event.get("access_mode")
-            if (event.get("kind") in {PROGRESS_EVENT, PROGRESS_CONTEXT_EVENT}
+            if (event.get("kind") in {
+                    PROGRESS_EVENT, PROGRESS_CONTEXT_EVENT,
+                    PROGRESS_V2_EVENT, PROGRESS_CORRECTION_EVENT,
+            }
                     or isinstance(mode, str) and mode.startswith(
-                        (PROGRESS_MODE, PROGRESS_CONTEXT_MODE))):
+                        (PROGRESS_MODE, PROGRESS_CONTEXT_MODE,
+                         PROGRESS_V2_MODE,
+                         PROGRESS_CORRECTION_MODE))):
                 linked[sequence] = event
         used = set()
         previous: dict[str, str] = {}
         counts: dict[str, int] = {}
         for row in db.execute(
-            "SELECT action_id,ref,case_version,revision,input_revision,owner_digest,reported_at,"
+            "SELECT action_id,ref,case_version,revision,input_revision,corrects_revision,"
+            "owner_digest,reported_at,"
             "note,previous_receipt_digest,receipt_digest,audit_sequence "
             "FROM household_progress_note ORDER BY audit_sequence"
         ):
-            (action, ref, version, revision, input_revision, owner_hash,
-             reported_at, note, prior, receipt, seq) = row
+            (action, ref, version, revision, input_revision, corrects_revision,
+             owner_hash, reported_at, note, prior, receipt, seq) = row
             record = self._catalogue.get(("DOMESTIC", ref))
             expected_revision = counts.get(ref, 0) + 1
             expected_prior = previous.get(ref, GENESIS)
@@ -241,13 +276,45 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
                     (ref, seq),
                 ).fetchone()
                 observed_input_revision = input_row[0] if input_row else 0
-                expected_receipt = self._progress_context_binding(
-                    action, ref, version, input_revision, revision, owner_hash,
-                    reported_at, note, prior,
-                )
-                expected_kind, expected_mode = (
-                    PROGRESS_CONTEXT_EVENT, PROGRESS_CONTEXT_MODE,
-                )
+                if event is not None and event.get("kind") in {
+                        PROGRESS_V2_EVENT, PROGRESS_CORRECTION_EVENT,
+                }:
+                    if ((event.get("kind") == PROGRESS_CORRECTION_EVENT)
+                            != (corrects_revision is not None)):
+                        raise LedgerIntegrityError("progress correction event mismatch")
+                    target = db.execute(
+                        "SELECT 1 FROM household_progress_note WHERE ref=? AND revision=?",
+                        (ref, corrects_revision),
+                    ).fetchone() if corrects_revision is not None else None
+                    if (corrects_revision is not None and (
+                            type(corrects_revision) is not int
+                            or not 1 <= corrects_revision < revision
+                            or target is None
+                            or db.execute(
+                                "SELECT 1 FROM household_progress_note "
+                                "WHERE ref=? AND corrects_revision=? AND revision<?",
+                                (ref, corrects_revision, revision),
+                            ).fetchone() is not None)):
+                        raise LedgerIntegrityError("invalid progress correction target")
+                    expected_receipt = self._progress_correction_binding(
+                        action, ref, version, input_revision, revision,
+                        corrects_revision, owner_hash, reported_at, note, prior,
+                    )
+                    expected_kind, expected_mode = (
+                        (PROGRESS_CORRECTION_EVENT, PROGRESS_CORRECTION_MODE)
+                        if corrects_revision is not None else
+                        (PROGRESS_V2_EVENT, PROGRESS_V2_MODE)
+                    )
+                else:
+                    if corrects_revision is not None:
+                        raise LedgerIntegrityError("unlinked progress correction target")
+                    expected_receipt = self._progress_context_binding(
+                        action, ref, version, input_revision, revision, owner_hash,
+                        reported_at, note, prior,
+                    )
+                    expected_kind, expected_mode = (
+                        PROGRESS_CONTEXT_EVENT, PROGRESS_CONTEXT_MODE,
+                    )
             if (record is None or not _synthetic_ref(action)
                     or type(version) is not int or not 1 <= version <= record.version
                     or type(revision) is not int or revision != expected_revision
@@ -288,26 +355,33 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
             ).fetchone()
             current_input_revision = latest_input[0] if latest_input else 0
             rows = list(db.execute(
-                "SELECT case_version,revision,input_revision,reported_at,note "
+                "SELECT case_version,revision,input_revision,reported_at,note,"
+                "corrects_revision "
                 "FROM household_progress_note "
                 "WHERE ref=? ORDER BY revision", (ref,),
             ))
             self._append(db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                          actor=principal.subject, mode="HOUSEHOLD_PROGRESS_NOTE_HISTORY")
+            corrected = {row[5] for row in rows if row[5] is not None}
             return {
-                "contract_version": PROGRESS_CONTEXT_CONTRACT, "engine": "DOMESTIC",
+                "contract_version": PROGRESS_CORRECTION_CONTRACT, "engine": "DOMESTIC",
                 "ref": ref, "case_version": record.version,
                 "current_input_revision": current_input_revision,
                 "notes": [{
                     "case_version": version, "input_revision": input_revision,
                     "revision": revision, "reported_at": reported_at,
                     "note": text,
+                    "corrects_revision": corrects_revision,
+                    "superseded_by_revision": next((item[1] for item in rows
+                        if item[5] == revision), None),
+                    "is_superseded": revision in corrected,
                     "current_case_version": version == record.version,
                     "current_input_context": (
                         input_revision is not None
                         and input_revision == current_input_revision
                     ),
-                } for version, revision, input_revision, reported_at, text in rows],
+                } for version, revision, input_revision, reported_at, text,
+                     corrects_revision in rows],
                 "current_revision": rows[-1][1] if rows else 0,
                 "real_data": False, "scientific_review": False,
                 "expert_inspection": False, "plan_accepted": False,
@@ -317,12 +391,16 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
         self, ref: str, principal: Principal, *, action_id: str,
         expected_case_version: int, expected_revision: int,
         expected_input_revision: int,
+        corrects_revision: int | None = None,
         reported_at: str, note: str,
     ) -> dict | None:
         if (not _synthetic_ref(action_id) or type(expected_case_version) is not int
                 or expected_case_version < 1 or type(expected_revision) is not int
                 or expected_revision < 0 or type(expected_input_revision) is not int
                 or expected_input_revision < 0 or not self._valid_reported_at(reported_at)
+                or corrects_revision is not None and (
+                    type(corrects_revision) is not int or corrects_revision < 1
+                )
                 or not isinstance(note, str) or not note.startswith("DEMO:")
                 or not 6 <= len(note) <= 150 or note != note.strip()):
             raise ValueError("invalid synthetic progress note")
@@ -340,22 +418,35 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
             ).fetchone()
             current_input_revision = latest_input[0] if latest_input else 0
             prior_action = db.execute(
-                "SELECT ref,case_version,revision,input_revision,owner_digest,reported_at,note "
+                "SELECT ref,case_version,revision,input_revision,owner_digest,reported_at,note,"
+                "corrects_revision "
                 "FROM household_progress_note WHERE action_id=?", (action_id,),
             ).fetchone()
             expected = (ref, expected_case_version, expected_revision + 1,
-                        expected_input_revision,
-                        owner_hash, reported_at, note)
+                        expected_input_revision, owner_hash, reported_at, note,
+                        corrects_revision)
             if prior_action is not None:
                 if prior_action == expected:
-                    return {"contract_version": PROGRESS_CONTEXT_CONTRACT,
+                    return {"contract_version": PROGRESS_CORRECTION_CONTRACT,
                             "engine": "DOMESTIC",
                             "ref": ref, "case_version": expected_case_version,
                             "input_revision": expected_input_revision,
+                            "corrects_revision": corrects_revision,
                             "revision": expected_revision + 1, "idempotent_replay": True,
                             "real_data": False, "scientific_review": False,
                             "expert_inspection": False, "plan_accepted": False}
                 raise InputRevisionConflict("conflicting progress note replay")
+            if (corrects_revision is not None and (
+                    corrects_revision > expected_revision
+                    or db.execute(
+                        "SELECT 1 FROM household_progress_note "
+                        "WHERE ref=? AND revision=?", (ref, corrects_revision),
+                    ).fetchone() is None
+                    or db.execute(
+                        "SELECT 1 FROM household_progress_note "
+                        "WHERE ref=? AND corrects_revision=?", (ref, corrects_revision),
+                    ).fetchone() is not None)):
+                raise InputRevisionConflict("progress correction target unavailable")
             if expected_input_revision != current_input_revision:
                 raise InputRevisionConflict("stale household input revision")
             latest = db.execute(
@@ -367,25 +458,32 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
                 raise InputRevisionConflict("stale progress note revision")
             revision = current + 1
             prior = latest[1] if latest else GENESIS
-            receipt = self._progress_context_binding(
+            receipt = self._progress_correction_binding(
                 action_id, ref, record.version, expected_input_revision, revision,
-                owner_hash, reported_at, note, prior,
+                corrects_revision, owner_hash, reported_at, note, prior,
             )
-            audit = self._append(db, kind=PROGRESS_CONTEXT_EVENT, engine="DOMESTIC", ref=ref,
+            event_kind, event_mode = (
+                (PROGRESS_CORRECTION_EVENT, PROGRESS_CORRECTION_MODE)
+                if corrects_revision is not None else
+                (PROGRESS_V2_EVENT, PROGRESS_V2_MODE)
+            )
+            audit = self._append(db, kind=event_kind, engine="DOMESTIC", ref=ref,
                 actor=principal.subject, target=receipt, action_id=action_id,
-                mode=PROGRESS_CONTEXT_MODE + receipt)
+                mode=event_mode + receipt)
             db.execute(
                 "INSERT INTO household_progress_note "
-                "(action_id,ref,case_version,revision,input_revision,owner_digest,reported_at,note,"
+                "(action_id,ref,case_version,revision,input_revision,corrects_revision,owner_digest,reported_at,note,"
                 "previous_receipt_digest,receipt_digest,audit_sequence) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (action_id, ref, record.version, revision, expected_input_revision,
+                 corrects_revision,
                  owner_hash, reported_at,
                  note, prior, receipt, audit.sequence),
             )
-            return {"contract_version": PROGRESS_CONTEXT_CONTRACT, "engine": "DOMESTIC",
+            return {"contract_version": PROGRESS_CORRECTION_CONTRACT, "engine": "DOMESTIC",
                     "ref": ref, "case_version": record.version, "revision": revision,
                     "input_revision": expected_input_revision,
+                    "corrects_revision": corrects_revision,
                     "idempotent_replay": False, "real_data": False,
                     "scientific_review": False, "expert_inspection": False,
                     "plan_accepted": False}

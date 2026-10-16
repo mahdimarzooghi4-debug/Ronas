@@ -2353,7 +2353,6 @@ def build_authenticated_ui_router(
                                 409, detail="STAGE_OBSERVATION_C                        declared_size = _declared_upload_size(
                             request.headers.get("content-length"),
                         )
-400, detail="INVALID_CONTENT_LENGTH") from exc
                         chunks, size = [], 0
                         async for chunk in request.stream():
                             size += len(chunk)

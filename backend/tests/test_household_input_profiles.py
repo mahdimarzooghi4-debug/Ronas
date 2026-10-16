@@ -323,6 +323,8 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(current.status_code, 200, current.text)
         self.assertEqual(current.json()["state"], "CURRENT_PLAN_AVAILABLE")
         self.assertTrue(current.json()["observations"][0]["current"])
+        self.assertEqual(current.json()["observations"][0]["case_version"], 2)
+        self.assertEqual(current.json()["observations"][0]["input_revision"], 1)
         self.assertEqual(current.json()["stage_progress"], [{
             "stage_ref": "DEMO-STAGE-01", "state": "CURRENT_RECEIPT",
             "observation_revision": 1,
@@ -383,6 +385,8 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertTrue(history[0]["is_superseded"])
         self.assertEqual(history[0]["superseded_by_revision"], 2)
         self.assertEqual(history[1]["corrects_revision"], 1)
+        self.assertEqual(history[1]["case_version"], 2)
+        self.assertEqual(history[1]["input_revision"], 1)
         self.assertTrue(self.ledger.verify_integrity())
         self.ledger = self.reopen()
         self.assertTrue(self.ledger.verify_integrity())
@@ -460,7 +464,10 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         )
         self.assertEqual(correction_post.status_code, 303, correction_post.text)
         corrected_history = self.client.get(path)
-        self.assertIn("با رسید 2 اصلاح شد", corrected_history.text)
+        self.assertIn('با <a href="#observation-DEMO-STAGE-01-2">رسید 2</a> اصلاح شد',
+                      corrected_history.text)
+        self.assertIn('اصلاح <a href="#observation-DEMO-STAGE-01-1">نسخه 1</a>',
+                      corrected_history.text)
         original_entry = corrected_history.text[
             corrected_history.text.index("نسخه 1"):
         ].split("</li>", 1)[0]
@@ -710,6 +717,8 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         page = client.get(page_path)
         self.assertEqual(page.status_code, 200, page.text)
         self.assertIn('id="observation-DEMO-STAGE-01-2"', page.text)
+        self.assertIn("نسخه پرونده 2 · نسخه اطلاعات خانوار 1", page.text)
+        self.assertIn("نسخه اطلاعات خانوار 1", page.text)
         self.assertIn("DEMO-STAGE-01", page.text)
         self.assertIn("دریافت فایل مشاهده", page.text)
         self.assertIn("ثبت مشاهده رسید (بدون بررسی)", page.text)

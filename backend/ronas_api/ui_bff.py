@@ -873,8 +873,12 @@ def build_authenticated_ui_router(
             for item in data["observations"]:
                 state = "جاری با زمینه فعلی" if item["current"] else "تاریخی"
                 if item["is_superseded"]:
-                    state += " · اصلاح‌شده با رسید " + str(
-                        item["superseded_by_revision"]
+                    replacement_revision = item["superseded_by_revision"]
+                    state += (
+                        ' · اصلاح‌شده با <a href="#observation-'
+                        + quote(item["stage_ref"]) + '-'
+                        + str(replacement_revision) + '">رسید '
+                        + str(replacement_revision) + '</a>'
                     )
                 file_link = ""
                 if household_stage_artifact_store is not None:
@@ -911,9 +915,16 @@ def build_authenticated_ui_router(
                     + escape(item["stage_ref"], quote=True) + '-'
                     + str(item["revision"]) + '"><h3>'
                     + escape(item["stage_ref"]) + '</h3>'
-                    '<p>نسخه رسید: ' + str(item["revision"])
-                    + ' · ' + escape(state) + '</p>'
-                    '<p>زمان ثبت: ' + escape(item["observed_at"]) + '</p>'
+                    + '<p>نسخه رسید: ' + str(item["revision"])
+                    + ' · نسخه پرونده ' + str(item["case_version"])
+                    + ' · نسخه اطلاعات خانوار ' + str(item["input_revision"])
+                    + ' · ' + state + '</p>'
+                    + ('<p>این رسید اصلاح نسخه <a href="#observation-'
+                       + quote(item["stage_ref"]) + '-'
+                       + str(item["corrects_revision"]) + '">'
+                       + str(item["corrects_revision"]) + '</a> است.</p>'
+                       if item["corrects_revision"] is not None else '')
+                    + '<p>زمان ثبت: ' + escape(item["observed_at"]) + '</p>'
                     + file_link + inspection + '</section>'
                 )
             body = (
@@ -2572,8 +2583,18 @@ def build_authenticated_ui_router(
                         + ' · ' + ('رسید جاری' if item["current"]
                                    else 'رسید قدیمی') + ' · نسخه '
                         + str(item["revision"])
-                        + (' · با رسید ' + str(item["superseded_by_revision"])
-                           + ' اصلاح شد' if item["is_superseded"] else '')
+                        + (' · با <a href="#observation-'
+                           + quote(item["stage_ref"]) + '-'
+                           + str(item["superseded_by_revision"]) + '">رسید '
+                           + str(item["superseded_by_revision"])
+                           + '</a> اصلاح شد' if item["is_superseded"] else '')
+                        + (' · اصلاح <a href="#observation-'
+                           + quote(item["stage_ref"]) + '-'
+                           + str(item["corrects_revision"]) + '">نسخه '
+                           + str(item["corrects_revision"])
+                           + '</a>' if item["corrects_revision"] is not None else '')
+                        + ' · نسخه پرونده ' + str(item["case_version"])
+                        + ' · نسخه اطلاعات خانوار ' + str(item["input_revision"])
                         + (' · رسید مشاهده شد (بدون داوری)'
                            if item["receipt_inspected"] else '')
                         + (' · <a href="/my-drafts/' + quote(ref)

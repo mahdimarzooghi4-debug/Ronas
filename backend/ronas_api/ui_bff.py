@@ -64,6 +64,7 @@ from .domestic_stage_observation import (
 )
 from .stage_observation_artifacts import (
     MAX_ARTIFACT_BYTES, StageArtifactStore, StageArtifactStoreError,
+    _check_upload_size, _declared_upload_size,
 )
 from .domestic_preparation_preview import (
     REVIEW_STATES, domestic_preparation_preview,
@@ -2349,21 +2350,17 @@ def build_authenticated_ui_router(
                                     for item in context.requirements
                                 )):
                             raise HTTPException(
-                                409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
-                            )
-                        declared = request.headers.get("content-length")
-                        if declared:
-                            try:
-                                if int(declared) > MAX_ARTIFACT_BYTES:
-                                    raise HTTPException(413, detail="STAGE_ARTIFACT_TOO_LARGE")
-                            except ValueError as exc:
-                                raise HTTPException(400, detail="INVALID_CONTENT_LENGTH") from exc
+                                409, detail="STAGE_OBSERVATION_C                        declared_size = _declared_upload_size(
+                            request.headers.get("content-length"),
+                        )
+400, detail="INVALID_CONTENT_LENGTH") from exc
                         chunks, size = [], 0
                         async for chunk in request.stream():
                             size += len(chunk)
                             if size > MAX_ARTIFACT_BYTES:
                                 raise HTTPException(413, detail="STAGE_ARTIFACT_TOO_LARGE")
                             chunks.append(chunk)
+                        _check_upload_size(declared_size, size)
                         try:
                             artifact = household_stage_artifact_store.put(
                                 principal.subject, ref + ":" + stage_ref,

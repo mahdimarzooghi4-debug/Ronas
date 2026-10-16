@@ -4121,6 +4121,9 @@ def build_authenticated_ui_router(
                     + ' · ارجاع ' + escape(item["evidence_ref"])
                     + ' · پرسش: ' + escape(item["question_binding"])
                     + ' · شواهد: ' + escape(item["evidence_binding"])
+                    + '<p>اتصال منبع: ' + escape(item["connector_ref"])
+                    + ' · fingerprint snapshot: '
+                    + escape(item["source_snapshot_digest"]) + '</p>'
                     + '<p>' + escape(item["note"]) + '</p></li>'
                     for item in data.get("local_test_findings", [])
                 ) + '</ol>'

@@ -18,7 +18,10 @@ Export workspace.
 The UI tracks question and evidence lineage independently. A note is marked
 `HISTORICAL` for evidence when a newer evidence-reference revision is recorded
 for the same question, even if the question itself remains current. Creating a
-new question does not rewrite or carry forward old notes. Findings are notes only: the contract
+new question does not rewrite or carry forward old notes. Each note projection
+also carries the exact source reference, connector reference and source
+snapshot SHA-256 from its bound evidence revision, so later source captures do
+not replace the note's provenance. Findings are notes only: the contract
 does not establish source rights, market truth, HS classification, report
 approval, buyer verification, pricing, contract, or commercial actions. All
 such approval flags remain false.

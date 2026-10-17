@@ -493,8 +493,9 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
     def list_owned_domestic_progress(
         self, principal: Principal, *, after_ref: str | None = None,
         limit: int = 20, technical_state: str = "ALL",
+        snapshot_sequence: int | None = None,
     ) -> dict:
-        """One verified, audited snapshot of an owner's observed DEMO progress.
+        """One verified, audited page from a stable owner progress snapshot.
 
         This read-only projection uses the identical ledger transaction for
         exact immutable ownership, per-case technical history and per-row
@@ -503,10 +504,20 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
         """
         if (type(limit) is not int or not 1 <= limit <= 50
                 or after_ref is not None and not _synthetic_ref(after_ref)
-                or technical_state not in ("ALL", *STATES)):
+                or technical_state not in ("ALL", *STATES)
+                or snapshot_sequence is not None
+                   and (type(snapshot_sequence) is not int
+                        or snapshot_sequence < 0)):
             raise ValueError("invalid synthetic progress list query")
         with self._transaction() as db:
             self._verify(db)
+            latest_sequence = db.execute(
+                "SELECT COALESCE(MAX(sequence), 0) FROM audit_event",
+            ).fetchone()[0]
+            if snapshot_sequence is None:
+                snapshot_sequence = latest_sequence
+            elif snapshot_sequence > latest_sequence:
+                raise ValueError("progress snapshot is from the future")
             items: list[dict] = []
             next_cursor = None
             if (isinstance(principal, Principal)
@@ -520,7 +531,8 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
                 ]
                 matching: list[tuple[str, list[TechnicalReviewStep]]] = []
                 for ref in owned:
-                    steps = self._steps(db, "DOMESTIC", ref)
+                    steps = [step for step in self._steps(db, "DOMESTIC", ref)
+                             if step.audit_sequence <= snapshot_sequence]
                     if (technical_state == "ALL"
                             or review_state_for_steps(steps) == technical_state):
                         matching.append((ref, steps))
@@ -544,6 +556,7 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
             return {
                 "engine": "DOMESTIC",
                 "technical_state_filter": technical_state,
+                "snapshot_sequence": snapshot_sequence,
                 "items": items,
                 "next_cursor": next_cursor,
             }

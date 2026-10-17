@@ -51,3 +51,11 @@ it through to the household API and shared-user workspace. This keeps private
 progress history in its encrypted PostgreSQL journal across BFF instances;
 omitting it preserves the existing synthetic SQLite journal behavior. This
 does not enable real household data or a production deployment.
+
+Service-backed CI also exercises the full synthetic browser round trip: a
+Keycloak PKCE login on one BFF, an owner-only CSRF/Origin-protected progress
+note submission through the Persian household form on another BFF, and history
+readback through the first BFF. Each instance constructs its own journal
+adapter with the same test keys; PostgreSQL is the shared persistence boundary.
+The test verifies that the event log records append/read events and that stored
+note ciphertext does not contain the submitted text.

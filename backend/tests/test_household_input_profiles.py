@@ -1019,6 +1019,156 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertTrue(cases.verify_integrity())
 
     @unittest.skipUnless(POSTGRES_DSN, "RONAS_TEST_POSTGRES_DSN is not configured")
+    def test_keycloak_browser_writes_postgres_progress_and_second_bff_reads_it(self):
+        callback_origin = "https://127.0.0.1:8765"
+        callback = callback_origin + "/api/auth/callback"
+        ref = "DEMO-D-PGBROWSER-" + secrets.token_hex(6).upper()
+        cases = SqliteSyntheticHouseholdProfileLedger(
+            self.path.parent / ("browser-progress-" + secrets.token_hex(6) + ".db"),
+            (ScopedDraft(ref, "DOMESTIC", OWNER, 2, ()),),
+            profile_schema=self.schema,
+            trusted_revoke_authorizer=lambda *_: False,
+            trusted_human_review_authorizer=lambda *_: False,
+        )
+        encryption_key, scope_key = secrets.token_bytes(32), secrets.token_bytes(32)
+        key_file = self.path.parent / "postgres-browser-progress.key"
+        key_file.write_bytes(secrets.token_bytes(32))
+        key_file.chmod(0o600)
+        settings = PostgresLocalBFFSettings(
+            KeycloakConfig(ISS, API, WEB, self.config.jwks_json),
+            callback, POSTGRES_DSN, key_file,
+        )
+        nonce_holder = {}
+        issued = {}
+
+        def token_response(request):
+            self.assertEqual(request.method, "POST")
+            self.assertEqual(
+                str(request.url), ISS + "/protocol/openid-connect/token",
+            )
+            now = int(time.time())
+            claims = {"iss": ISS, "sub": OWNER, "iat": now - 5, "exp": now + 450}
+            access = jwt.encode(
+                {**claims, "aud": API, "azp": WEB, "typ": "Bearer",
+                 "nbf": now - 5,
+                 "resource_access": {API: {"roles": ["household"]}}},
+                self.key, algorithm="RS256", headers={"kid": "profile-test"},
+            )
+            identity = jwt.encode(
+                {**claims, "aud": WEB, "azp": WEB,
+                 "nonce": nonce_holder["nonce"]},
+                self.key, algorithm="RS256", headers={"kid": "profile-test"},
+            )
+            issued["access_token"] = access
+            return httpx.Response(200, json={
+                "token_type": "Bearer", "access_token": access,
+                "id_token": identity,
+            })
+
+        def build_app():
+            # Each BFF owns a distinct adapter object with the same scoped keys;
+            # only PostgreSQL carries the journal between processes.
+            notes = PostgresHouseholdProgressNoteLedger(
+                POSTGRES_DSN, self.schema.schema_ref, self.allowed,
+                cases.progress_note_context, encryption_key, scope_key,
+            )
+            return create_postgres_local_test_bff(
+                settings, transport=httpx.MockTransport(token_response),
+                case_ledger=cases, household_profile_schema=self.schema,
+                household_profile_access_authority=self.allowed,
+                household_progress_note_ledger=notes,
+            )
+
+        first_app, second_app = build_app(), build_app()
+        browser_a = TestClient(first_app, base_url=callback_origin,
+                               follow_redirects=False)
+        browser_b = TestClient(second_app, base_url=callback_origin,
+                               follow_redirects=False)
+        state_hash = session_hash = None
+        history_path = f"/my-drafts/{ref}/progress-notes"
+        try:
+            start = browser_a.get("/api/auth/start")
+            self.assertEqual(start.status_code, 303, start.text)
+            query = parse_qs(urlsplit(start.headers["location"]).query)
+            nonce_holder["nonce"] = query["nonce"][0]
+            state_hash = hashlib.sha256(query["state"][0].encode("ascii")).hexdigest()
+            browser_b.cookies.update(browser_a.cookies)
+            callback_response = browser_b.get(
+                "/api/auth/callback", params={
+                    "code": "progress-browser-code", "state": query["state"][0],
+                },
+            )
+            self.assertEqual(callback_response.status_code, 303,
+                             callback_response.text)
+            session = browser_b.get("/api/auth/session")
+            self.assertEqual(session.status_code, 200, session.text)
+            self.assertNotIn("access_token", session.text)
+            sid = browser_b.cookies.get("__Host-ronas_session")
+            session_hash = hashlib.sha256(sid.encode("ascii")).hexdigest()
+
+            form = {
+                "csrf": session.json()["csrf"],
+                "action_id": "DEMO-PROGRESS-" + secrets.token_hex(8).upper(),
+                "case_version": "2", "revision": "0", "input_revision": "0",
+                "corrects_revision": "0",
+                "reported_at": "2026-10-17T13:00:00+00:00",
+                "note": "DEMO: browser journal persisted across BFFs",
+            }
+            saved = browser_b.post(
+                history_path, content=urlencode(form), headers={
+                    "Origin": callback_origin,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            self.assertEqual(saved.status_code, 303, saved.text)
+
+            browser_a.cookies.update(browser_b.cookies)
+            history = browser_a.get(history_path)
+            self.assertEqual(history.status_code, 200, history.text)
+            self.assertIn("DEMO: browser journal persisted across BFFs", history.text)
+            api = f"/api/v1/domestic/household-intake/my-drafts/{ref}/progress-notes"
+            api_history = browser_a.get(api, headers={
+                "Authorization": "Bearer " + issued["access_token"],
+            })
+            self.assertEqual(api_history.status_code, 200, api_history.text)
+            self.assertEqual(api_history.json()["current_revision"], 1)
+            self.assertEqual(first_app.state.ronas_local_bff_session_backend,
+                             "postgresql")
+            self.assertEqual(second_app.state.ronas_local_bff_session_backend,
+                             "postgresql")
+            with psycopg.connect(POSTGRES_DSN) as db:
+                stored = db.execute(
+                    "SELECT note_ciphertext FROM ronas_domestic_progress_note "
+                    "WHERE household_ref=%s", (ref,),
+                ).fetchone()
+                events = db.execute(
+                    "SELECT event_kind FROM ronas_domestic_progress_access "
+                    "WHERE household_ref=%s ORDER BY event_sequence", (ref,),
+                ).fetchall()
+            self.assertIsNotNone(stored)
+            self.assertNotIn(b"browser journal persisted", bytes(stored[0]))
+            self.assertEqual({row[0] for row in events}, {"APPEND", "READ"})
+            self.assertTrue(cases.verify_integrity())
+        finally:
+            browser_a.close()
+            browser_b.close()
+            with psycopg.connect(POSTGRES_DSN) as db:
+                if state_hash is not None:
+                    db.execute(
+                        "DELETE FROM ronas_browser_pending_login WHERE state_hash=%s",
+                        (state_hash,),
+                    )
+                if session_hash is not None:
+                    db.execute(
+                        "DELETE FROM ronas_browser_session_refresh_lock "
+                        "WHERE sid_hash=%s", (session_hash,),
+                    )
+                    db.execute(
+                        "DELETE FROM ronas_browser_session WHERE sid_hash=%s",
+                        (session_hash,),
+                    )
+
+    @unittest.skipUnless(POSTGRES_DSN, "RONAS_TEST_POSTGRES_DSN is not configured")
     def test_postgres_artifact_store_completes_household_and_specialist_bff_flow(self):
         image = b"\x89PNG\r\n\x1a\n" + b"postgres-backed-browser-flow"
         store = PostgresStageArtifactStore(

@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 69078)
-Total output lines: 4918
-
 """Two authenticated, strictly role-scoped HTML shells for opt-in Keycloak BFF.
 
 The default production entrypoint never mounts these routes. The HTML is
@@ -1132,7 +1129,2728 @@ def build_authenticated_ui_router(
                 '<p>هیچ برنامه‌ای پذیرفته نشده و گزارش مرحله‌ای '
                 'یا توصیه کشت از آن فعال نمی‌شود.</p>'
                 '<p><a href="/agronomy/assigned-drafts/' + quote(ref)
-                + '">بازگشت به پرونده تخصیص‌…39078 tokens truncated…")
+                + '">بازگشت به پرونده تخصیص‌یافته</a></p></article>'
+            )
+            return page("روناس — بررسی ساختار پیشنهاد کشت (DEMO)",
+                        body, logged_in=True)
+
+    if agronomy_workspace is not None:
+        @router.get("/agronomy/assigned-drafts/{ref}/expert-review-preparation")
+        def agronomy_expert_review_preparation_page(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            try:
+                dossier = agronomy_workspace.read_assigned_expert_review_preparation(
+                    ref, Principal(session.subject, session.roles),
+                )
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            if dossier is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            if (dossier["engine"] != "DOMESTIC"
+                    or dossier["case_status"] != "DRAFT_ONLY"
+                    or dossier["combined_review_status"] != "NOT_AUTHORIZED_FOR_DECISION"
+                    or dossier["plan_accepted"] is not False
+                    or dossier["real_data"] is not False
+                    or dossier["new_advice_enabled"] is not False):
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                )
+            descriptions = {
+                "HOUSEHOLD_INPUT_ADEQUACY": (
+                    "۱. کفایت اطلاعات خانوار",
+                    "نسخه ساختاری به معنی کفایت داده یا رضایت خانوار نیست."),
+                "SCIENTIFIC_BASIS_AND_USE_RIGHTS": (
+                    "۲. منشأ علمی و حقوق استفاده",
+                    "منبع نسخه‌دار به معنی حق استفاده یا اعتبار علمی نیست."),
+                "INDIVIDUAL_CULTIVATION_PROPOSAL": (
+                    "۳. بررسی خود برنامه پیشنهادی",
+                    "ساختار پیشنهادی AI تأیید برنامه توسط متخصص نیست."),
+            }
+            items = []
+            for part in dossier["tracks"]:
+                label, note = descriptions[part["track"]]
+                items.append(
+                    '<section><h3>' + escape(label) + '</h3>'
+                    '<p>وضعیت ساختاری: ' + escape(part["observed_structure"])
+                    + '</p><p>' + escape(note) + '</p>'
+                    '<p>نتیجه بررسی مستقل: ثبت نشده.</p></section>'
+                )
+            body = (
+                '<article class="panel"><h2>آماده‌سازی سه محور بررسی متخصص '
+                '(فقط DEMO)</h2>'
+                '<p>پرونده: ' + escape(dossier["case_ref"])
+                + ' · نسخه ' + str(dossier["case_version"]) + '</p>'
+                + ''.join(items)
+                + '<p>این سه محور مستقل‌اند. هیچ تصمیم کارشناسی واقعی، '
+                'رضایت معتبر خانوار، احراز صلاحیت، مجوز علمی یا '
+                'تأیید برنامه ثبت نشده است.</p>'
+                '<p>تأیید، رد، اصلاح برنامه، ثبت گزارش کشت '
+                'و توصیه جدید در این صفحه غیرفعال‌اند.</p>'
+                + ('<p><a href="/agronomy/assigned-drafts/'
+                   + quote(ref) + '/review-questions">'
+                   'تاریخچه پرسش‌های آزمایشی سه محور</a></p>'
+                   if isinstance(agronomy_workspace.ledger,
+                                 SqliteSyntheticExpertQuestionLedger)
+                   else '')
+                + '<p><a href="/agronomy/assigned-drafts/' + quote(ref)
+                + '">بازگشت به پرونده تخصیص‌یافته</a></p></article>'
+            )
+            return page(
+                "روناس — آماده‌سازی بررسی مستقل برنامه کشت (DEMO)",
+                body, logged_in=True,
+            )
+
+    if (agronomy_workspace is not None
+            and isinstance(agronomy_workspace.ledger,
+                           SqliteSyntheticExpertQuestionLedger)):
+        @router.get("/agronomy/assigned-drafts/{ref}/review-questions")
+        def agronomy_question_history_page(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            try:
+                notes = agronomy_workspace.read_assigned_synthetic_review_questions(
+                    ref, Principal(session.subject, session.roles),
+                )
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            if notes is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            if (notes["engine"] != "DOMESTIC"
+                    or notes["qualification_verified"] is not False
+                    or notes["questions_are_review_decisions"] is not False
+                    or notes["plan_accepted"] is not False
+                    or notes["real_data"] is not False):
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                )
+            # Historical questions must remain visible after an input or
+            # scientific source changes. Failure to obtain a CURRENT pinned
+            # synthetic proposal only disables new form commands.
+            current_proposal = None
+            try:
+                current_proposal = (
+                    agronomy_workspace.read_assigned_proposal_structure(
+                        ref, Principal(session.subject, session.roles),
+                    )
+                )
+            except LedgerIntegrityError:
+                pass
+            current_stage_observations = []
+            if (household_stage_context_authority is not None
+                    and isinstance(
+                        agronomy_workspace.ledger,
+                        SqliteSyntheticHouseholdProfileLedger,
+                    )):
+                try:
+                    stage_data = agronomy_workspace.read_assigned_stage_observations(
+                        ref, Principal(session.subject, session.roles),
+                        context_authority=household_stage_context_authority,
+                    )
+                    if stage_data is not None:
+                        current_stage_observations = [
+                            item for item in stage_data["observations"]
+                            if item["current"]
+                        ]
+                except (StageObservationConflict, LedgerIntegrityError, sqlite3.Error):
+                    current_stage_observations = []
+            expert_forms = ""
+            if (current_proposal is not None
+                    and current_proposal["proposal_status"]
+                    == "STRUCTURE_ONLY_UNREVIEWED"
+                    and type(current_proposal.get("input_revision")) is int):
+                track_options = (
+                    ("HOUSEHOLD_INPUT_ADEQUACY", "پرسش درباره کفایت داده"),
+                    ("SCIENTIFIC_BASIS_AND_USE_RIGHTS", "پرسش درباره منشأ علمی"),
+                    ("INDIVIDUAL_CULTIVATION_PROPOSAL", "پرسش درباره پیشنهاد کشت"),
+                )
+                for track, label in track_options:
+                    revision = max((
+                        q["question_revision"] for q in notes["questions"]
+                        if q["track"] == track
+                    ), default=0)
+                    expert_forms += (
+                        '<form method="post" action="/agronomy/assigned-drafts/'
+                        + quote(ref) + '/review-questions/demo-question">'
+                        '<input type="hidden" name="csrf" value="'
+                        + escape(session.csrf, quote=True) + '">'
+                        '<input type="hidden" name="action_id" value="DEMO-UI-Q-'
+                        + secrets.token_hex(10).upper() + '">\n'
+
+                        '<input type="hidden" name="case_version" value="'
+                        + str(notes["case_version"]) + '">'
+                        '<input type="hidden" name="input_revision" value="'
+                        + str(current_proposal["input_revision"]) + '">'
+                        '<input type="hidden" name="question_revision" value="'
+                        + str(revision) + '">'
+                        '<input type="hidden" name="track" value="'
+                        + track + '">'
+                        '<input type="hidden" name="stage_ref" value="">'
+                        '<input type="hidden" name="stage_observation_revision" value="">'
+                        '<input type="hidden" name="stage_observation_receipt_digest" value="">'
+                        '<p><button type="submit">' + escape(label)
+                        + ' (فقط DEMO)</button></p></form>'
+                    )
+                if household_stage_context_authority is not None:
+                    revision = max((
+                        q["question_revision"] for q in notes["questions"]
+                        if q["track"] == "HOUSEHOLD_INPUT_ADEQUACY"
+                    ), default=0)
+                    for item in current_stage_observations:
+                        expert_forms += (
+                            '<form method="post" action="/agronomy/assigned-drafts/'
+                            + quote(ref) + '/review-questions/demo-question">'
+                            '<input type="hidden" name="csrf" value="'
+                            + escape(session.csrf, quote=True) + '">'
+                            '<input type="hidden" name="action_id" value="DEMO-UI-Q-'
+                            + secrets.token_hex(10).upper() + '">\n'
+
+                            '<input type="hidden" name="case_version" value="'
+                            + str(notes["case_version"]) + '">'
+                            '<input type="hidden" name="input_revision" value="'
+                            + str(current_proposal["input_revision"]) + '">'
+                            '<input type="hidden" name="question_revision" value="'
+                            + str(revision) + '">'
+                            '<input type="hidden" name="track" value="HOUSEHOLD_INPUT_ADEQUACY">'
+                            '<input type="hidden" name="stage_ref" value="'
+                            + escape(item["stage_ref"], quote=True) + '">'
+                            '<input type="hidden" name="stage_observation_revision" value="'
+                            + str(item["revision"]) + '">'
+                            '<input type="hidden" name="stage_observation_receipt_digest" value="'
+                            + escape(item["receipt_digest"], quote=True) + '">'
+                            '<p><button type="submit">پرسش درباره رسید جاری '
+                            + escape(item["stage_ref"]) + ' · نسخه '
+                            + str(item["revision"]) + ' (فقط DEMO)</button></p></form>'
+                        )
+            inspections = ""
+            if current_proposal is not None and type(
+                current_proposal.get("input_revision")
+            ) is int:
+                input_revision = current_proposal["input_revision"]
+                current_questions = [
+                    q for q in notes["questions"]
+                    if q["track"] == "HOUSEHOLD_INPUT_ADEQUACY"
+                ]
+                if current_questions:
+                    recent = max(
+                        current_questions, key=lambda q: q["question_revision"],
+                    )
+                    if (recent["bound_input_revision"] == input_revision
+                            and recent["synthetic_household_response_received"]
+                            and not recent["synthetic_receipt_inspected_not_reviewed"]):
+                        inspections = (
+                            '<form method="post" action="/agronomy/assigned-drafts/'
+                            + quote(ref) + '/review-questions/demo-inspection">'
+                            '<input type="hidden" name="csrf" value="'
+                            + escape(session.csrf, quote=True) + '">'
+                            '<input type="hidden" name="action_id" value="DEMO-UI-I-'
+                            + secrets.token_hex(10).upper() + '">\n'
+
+                            '<input type="hidden" name="case_version" value="'
+                            + str(notes["case_version"]) + '">'
+                            '<input type="hidden" name="input_revision" value="'
+                            + str(input_revision) + '">'
+                            '<input type="hidden" name="question_revision" value="'
+                            + str(recent["question_revision"]) + '">'
+                            '<button type="submit">ثبت مشاهده رسید پاسخ DEMO '
+                            '(نه بررسی علمی)</button></form>'
+                        )
+            form_section = (
+                '<section id="expert-demo-actions" aria-label="گردش آزمایشی پرسش متخصص">'
+                '<h3>ثبت پرسش ساختاری آزمایشی</h3>'
+                '<p>فقط شناسه‌های ثابت نمونه ثبت می‌شوند؛ '
+                'هیچ پرسش واقعی، سند تخصصی یا نتیجه ارزیابی دریافت نمی‌شود.</p>'
+                + (expert_forms if expert_forms else
+                   '<p>نسخه معتبرِ ساختاری برای پرسش جدید موجود نیست.</p>')
+                + inspections + '</section>'
+            )
+            descriptions = {
+                "HOUSEHOLD_INPUT_ADEQUACY": "کفایت داده خانوار",
+                "SCIENTIFIC_BASIS_AND_USE_RIGHTS": "منشأ علمی و حقوق استفاده",
+                "INDIVIDUAL_CULTIVATION_PROPOSAL": "پیشنهاد اختصاصی کشت",
+            }
+            rows = ''.join(
+                '<li>' + escape(descriptions[q["track"]])
+                + ' · پرسش آزمایشی ' + str(q["question_revision"])
+                + ' · نسخه ورودی ' + str(q["bound_input_revision"])
+                + ' · ارجاع دلیل ' + escape(q["draft_reason_ref"])
+                + ' · ارجاع شاهد ' + escape(q["draft_evidence_ref"])
+                + (' · متصل به رسید مرحله ' + escape(q["stage_ref"])
+                   + ' · نسخه ' + str(q["stage_observation_revision"])
+                   + ' · <a href="/agronomy/assigned-drafts/' + quote(ref)
+                   + '/stage-observations#observation-'
+                   + quote(q["stage_ref"], safe="") + '-'
+                   + str(q["stage_observation_revision"])
+                   + '">دیدن همان رسید مرحله‌ای</a>'
+                   if q.get("stage_ref") else '')
+                + (' · پاسخ ساختاری خانوار دریافت شده (بررسی نشده)'
+                   if q["synthetic_household_response_received"]
+                   else ' · پاسخی ثبت نشده')
+                + (' · رسید پاسخ مشاهده شد (بدون داوری تخصصی)'
+                   if q["synthetic_receipt_inspected_not_reviewed"]
+                   else '')
+                + ' — صرفاً سابقه، بدون تأیید</li>'
+                for q in notes["questions"]
+            )
+            body = (
+                '<article class="panel"><h2>تاریخچه پرسش‌های بررسی '
+                'متخصص (فقط DEMO)</h2>'
+                '<p>پرونده ' + escape(notes["case_ref"])
+                + ' · نسخه ' + str(notes["case_version"]) + '</p>'
+                + ('<ul>' + rows + '</ul>' if rows else
+                   '<p>هنوز پرسشی در نمونه آزمایشی ثبت نشده است.</p>')
+                + '<p>پرسش‌ها بازخورد یا رأی علمی نیستند؛ '
+                'تغییر نسخه ورودی یا منبع، اجازه استفاده از '
+                'نسخه قدیمی برای تصمیم جدید را نمی‌دهد.</p>'
+                '<p>فرم ثبت داده واقعی، تأیید برنامه، اصلاح تخصصی '
+                'و مجوز انتشار در این صفحه وجود ندارد.</p>'
+                + form_section
+                + '<p><a href="/agronomy/assigned-drafts/'
+                + quote(ref) + '/expert-review-preparation">'
+                'بازگشت به سه محور بررسی</a></p></article>'
+            )
+            return page("روناس — تاریخچه پرسش‌های آزمایشی کارشناس",
+                        body, logged_in=True, local_test_form=True)
+
+        @router.post("/agronomy/assigned-drafts/{ref}/review-questions/demo-question")
+        async def expert_demo_question(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            principal, form = await checked_browser_form(
+                request, sid, fields=frozenset({
+                    "csrf", "action_id", "case_version", "input_revision",
+                    "question_revision", "track",
+                }), optional_fields=frozenset({
+                    "stage_ref", "stage_observation_revision",
+                    "stage_observation_receipt_digest",
+                }),
+            )
+            track = form["track"]
+            if track not in (
+                "HOUSEHOLD_INPUT_ADEQUACY",
+                "SCIENTIFIC_BASIS_AND_USE_RIGHTS",
+                "INDIVIDUAL_CULTIVATION_PROPOSAL",
+            ):
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+            stage_fields = (
+                form["stage_ref"], form["stage_observation_revision"],
+                form["stage_observation_receipt_digest"],
+            )
+            if any(stage_fields) and not all(stage_fields):
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+            try:
+                created = agronomy_workspace.record_assigned_synthetic_review_question(
+                    ref, principal,
+                    action_id=form["action_id"],
+                    track=track,
+                    expected_case_version=form_version(
+                        form["case_version"], zero_allowed=False,
+                    ),
+                    expected_input_revision=form_version(
+                        form["input_revision"], zero_allowed=False,
+                    ),
+                    expected_question_revision=form_version(
+                        form["question_revision"],
+                    ),
+                    reason_ref="DEMO-UI-MISSING-REF",
+                    evidence_ref="DEMO-UI-PENDING-REF",
+                    stage_context_authority=household_stage_context_authority,
+                    stage_ref=form["stage_ref"] or None,
+                    expected_stage_observation_revision=(
+                        form_version(form["stage_observation_revision"], zero_allowed=False)
+                        if form["stage_observation_revision"] else None
+                    ),
+                    expected_stage_observation_receipt_digest=(
+                        form["stage_observation_receipt_digest"] or None
+                    ),
+                )
+            except ReviewQuestionConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_QUESTION_VERSION_CONFLICT",
+                ) from exc
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
+            if created is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return RedirectResponse(
+                "/agronomy/assigned-drafts/" + quote(ref) + "/review-questions",
+                status_code=303,
+            )
+
+        @router.post(
+            "/agronomy/assigned-drafts/{ref}/review-questions/demo-inspection"
+        )
+        async def expert_demo_receipt_inspection(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            principal, form = await checked_browser_form(
+                request, sid, fields=frozenset({
+                    "csrf", "action_id", "case_version", "input_revision",
+                    "question_revision",
+                }),
+            )
+            try:
+                checked = agronomy_workspace.inspect_assigned_synthetic_response_receipt(
+                    ref, principal,
+                    action_id=form["action_id"],
+                    expected_case_version=form_version(
+                        form["case_version"], zero_allowed=False,
+                    ),
+                    expected_input_revision=form_version(
+                        form["input_revision"], zero_allowed=False,
+                    ),
+                    expected_question_revision=form_version(
+                        form["question_revision"], zero_allowed=False,
+                    ),
+                )
+            except ReviewQuestionConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_RECEIPT_CONTEXT_CHANGED",
+                ) from exc
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_AGRONOMY_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
+            if checked is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return RedirectResponse(
+                "/agronomy/assigned-drafts/" + quote(ref) + "/review-questions",
+                status_code=303,
+            )
+
+    if domestic_partner_workspace is not None:
+        @router.get("/domestic-partners/my-preparation")
+        def domestic_partner_preparation_page(
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            if not ({"local_buyer", "equipment_seller"} & session.roles):
+                raise HTTPException(404, detail="PREVIEW_NOT_FOUND")
+            try:
+                overview = domestic_partner_workspace.own_preparation_overview(
+                    Principal(session.subject, session.roles),
+                )
+            except SyntheticDomesticPartnerUnavailable as exc:
+                raise HTTPException(
+                    503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE",
+                ) from exc
+            labels = {
+                "local_buyer": (
+                    "خریدار محلی", "/local-buyer/my-preview",
+                    ("هویت", "محصول درخواستی", "مقدار درخواستی",
+                     "محل تحویل", "بودجه"),
+                ),
+                "equipment_seller": (
+                    "فروشنده تجهیزات", "/equipment-seller/my-preview",
+                    ("هویت", "فهرست تجهیزات", "موجودی",
+                     "محدوده خدمات", "تناسب فنی تجهیزات"),
+                ),
+            }
+            blocks = []
+            for item in overview["items"]:
+                role = item["role"]
+                label, url, slots = labels[role]
+                if (item["business_readiness"] != "NOT_EVALUATED"
+                        or item["commercial_actions_enabled"] is not False
+                        or item["data_submission_enabled"] is not False
+                        or item["unknown_display_slots"] !=
+                           list(DOMESTIC_PARTNER_FIELDS[role])):
+                    raise HTTPException(
+                        503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE",
+                    )
+                rows = ''.join(
+                    '<li>' + escape(name) + ': هنوز داده‌ای ثبت نشده</li>'
+                    for name in slots
+                )
+                blocks.append(
+                    '<section class="section"><h3>' + escape(label) + '</h3>'
+                    '<p>نمونه اختصاصی: ' + escape(item["profile_ref"])
+                    + ' — نسخه ' + str(item["profile_version"]) + '</p>'
+                    '<p>وضعیت بررسی آمادگی تجاری: انجام نشده (DEMO)</p>'
+                    '<ul>' + rows + '</ul>'
+                    '<p><a href="' + url
+                    + '">مشاهده جزئیات همین نقش</a></p></section>'
+                )
+            content = (
+                '<article class="panel"><h2>آماده‌سازی شخصی من (فقط DEMO)</h2>'
+                '<p>فقط نمونه‌هایی نمایش داده می‌شوند که این حساب با نقش '
+                'امضاشده و مجوز جاری اختصاصی به آن‌ها دسترسی دارد.</p>'
+                '<p>این جایگاه‌ها صرفاً نمایشی و داده‌های آن‌ها نامشخص‌اند؛ '
+                'معیار اجباری ثبت‌نام یا صلاحیت نیستند.</p>'
+                + (''.join(blocks) if blocks else
+                   '<p>هیچ پیش‌نمای مجاز آزمایشی موجود نیست.</p>')
+                + '<p>ارتباط با خانوار، تطبیق خریدار و فروشنده، '
+                'پیشنهاد، سفارش، قیمت، پرداخت و فعالیت تجاری فعال نیست.</p>'
+                '<p><a href="/">بازگشت به محیط مشترک</a></p>'
+                '</article>'
+            )
+            return page("روناس — نمای آماده‌سازی شخصی (DEMO)",
+                        content, logged_in=True)
+
+        def partner_page(
+            role: str, sid: str | None,
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            try:
+                view = domestic_partner_workspace.own_preview(
+                    role, Principal(session.subject, session.roles),
+                )
+            except SyntheticDomesticPartnerUnavailable as exc:
+                raise HTTPException(
+                    503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE",
+                ) from exc
+            if view is None:
+                raise HTTPException(404, detail="PREVIEW_NOT_FOUND")
+            if (view["profile_state"] != "NOT_SUBMITTED_DEMO"
+                    or view["commercial_actions_enabled"] is not False
+                    or view["data_submission_enabled"] is not False
+                    or tuple(view["preparation_fields"]) != DOMESTIC_PARTNER_FIELDS[role]
+                    or any(value is not None
+                           for value in view["preparation_fields"].values())):
+                raise HTTPException(503, detail="DOMESTIC_PARTNER_PREVIEW_UNAVAILABLE")
+            labels = {
+                "local_buyer": (
+                    "خریدار محلی",
+                    ("هویت", "محصول درخواستی", "مقدار درخواستی",
+                     "محل تحویل", "بودجه"),
+                ),
+                "equipment_seller": (
+                    "فروشنده تجهیزات",
+                    ("هویت", "فهرست تجهیزات", "موجودی",
+                     "محدوده خدمات", "تناسب فنی تجهیزات"),
+                ),
+            }
+            label, slots = labels[role]
+            items = ''.join(
+                '<li>' + name + ': ثبت نشده</li>' for name in slots
+            )
+            body = (
+                '<article class="panel"><h2>پیش‌نمای شخصی '
+                + label + ' (فقط DEMO)</h2>'
+                '<p>شناسه نمونه: ' + escape(view["profile_ref"])
+                + ' — نسخه ' + str(view["profile_version"]) + '</p>'
+                '<p>وضعیت: NOT_SUBMITTED_DEMO؛ هیچ اطلاعاتی ارسال نشده است.</p>'
+                '<h3>جایگاه‌های آماده‌سازی</h3><ul>' + items + '</ul>'
+                '<p>این جایگاه‌ها معیار پذیرش یا اظهار واقعی نیستند. '
+                'هویت، رضایت، موجودی یا تقاضا احراز نشده‌اند.</p>'
+                '<p>خریدوفروش، پیشنهاد، سفارش، قیمت، پرداخت و '
+                'تأیید تناسب فنی فعال نیستند.</p>'
+                '<p><a href="/workspace/' + role
+                + '">بازگشت به فضای کار نقش من</a></p>'
+                '</article>'
+            )
+            return page("روناس — پیش‌نمای داخلی " + label + " (DEMO)",
+                        body, logged_in=True)
+
+        @router.get("/local-buyer/my-preview")
+        def buyer_page(
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            return partner_page("local_buyer", sid)
+
+        @router.get("/equipment-seller/my-preview")
+        def equipment_page(
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            return partner_page("equipment_seller", sid)
+
+    if export_supplier_workspace is not None:
+        @router.get("/export-supplier/my-preview")
+        def supplier_personal_preview(
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            try:
+                view = export_supplier_workspace.own_preview(
+                    Principal(session.subject, session.roles)
+                )
+            except SyntheticSupplierUnavailable as exc:
+                raise HTTPException(
+                    503, detail="SUPPLIER_PREVIEW_UNAVAILABLE",
+                ) from exc
+            if view is None:
+                raise HTTPException(404, detail="PREVIEW_NOT_FOUND")
+            fields = (
+                "هویت حرفه‌ای", "محصولات", "ظرفیت تأمین",
+                "زمان دسترسی", "تأسیسات", "مجوزهای صادراتی",
+            )
+            slots = ''.join(
+                '<li>' + escape(label) + ': ثبت نشده</li>'
+                for label in fields
+            )
+            body = (
+                '<article class="panel"><h2>پیش‌نمای شخصی تأمین‌کننده '
+                '(فقط آزمایشی)</h2>'
+                '<p>شناسه نمونه: ' + escape(view["profile_ref"])
+                + ' — نسخه ' + str(view["profile_version"]) + '</p>'
+                '<p>وضعیت: NOT_SUBMITTED_DEMO؛ اطلاعاتی ارسال نشده است.</p>'
+                '<h3>جایگاه‌های آماده‌سازی اظهار تأمین‌کننده</h3>'
+                '<ul>' + slots + '</ul>'
+                '<p>هیچ هویت حرفه‌ای، ظرفیت واقعی، مجوز، حق استفاده '
+                'از منبع یا صلاحیت تجاری تأیید نشده است.</p>'
+                '<p>خریدار، قیمت، سفارش، معامله، پرداخت و قرارداد فعال نیستند.'
+                ' این صفحه فقط نمایش است و اطلاعات دریافت نمی‌کند.</p>'
+                '<p><a href="/workspace/export_supplier">'
+                'بازگشت به فضای تأمین‌کننده</a></p>'
+                '</article>'
+            )
+            return page("روناس — پیش‌نمای تأمین‌کننده صادرات (DEMO)",
+                        body, logged_in=True)
+
+    @router.get("/")
+    def public_ui(
+        sid: str | None = Cookie(default=None, alias=cookie_name),
+        household_after_ref: str | None = None,
+        household_technical_state: str = "ALL",
+        household_snapshot_sequence: int | None = None,
+    ) -> HTMLResponse:
+        try:
+            session = flow.session(sid)
+        except InvalidToken:
+            session = None
+        grants = session.roles if session is not None else None
+        if grants is None:
+            return page("روناس — محیط کاربران و همکاران",
+                        '<p>برای مشاهده بخش مربوط به نقش خود، با Keycloak وارد شوید. '
+                        'این نسخه فقط داده ساختگی نمایش می‌دهد.</p>', logged_in=False)
+        active = [(name, label) for name, label in USER_ROLES.items() if name in grants]
+        cards = ''
+        for name, label in active:
+            if name == "household" and owned_case_ledger is not None:
+                household = household_worklist(
+                    Principal(session.subject, session.roles),
+                    household_after_ref, household_technical_state,
+                    household_snapshot_sequence,
+                )
+            else:
+                household = (
+                    '<p>پرونده ساختگی DEMO-H01؛ رضایت واقعی و تأیید متخصص وجود ندارد.</p>'
+                    if name == "household" else ''
+                )
+            cards += ('<article class="panel"><h2>' + escape(label) + '</h2>'
+                      '<p>وضعیت خدمت: نیازمند شواهد و مجوز عملیاتی.</p>'
+                      '<p><a href="/workspace/' + quote(name)
+                      + '">مشاهده فضای کار این نقش</a></p>'
+                      + household + '</article>')
+        if not cards:
+            cards = '<p>هیچ نمای کاربری بیرونی برای دسترسی‌های فعلی شما تخصیص نیافته است.</p>'
+        return page("روناس — محیط کاربران و همکاران", cards, logged_in=True)
+
+    if owned_case_ledger is not None:
+        @router.get("/my-drafts/{ref}/versions")
+        def household_versions_page(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            principal = Principal(session.subject, session.roles)
+            result = owned_case_ledger.read_owned_domestic_version_history(
+                ref, principal,
+            )
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            versions = ''.join(
+                '<li>نسخه ' + str(entry["version"]) +
+                (' — نسخه موجود (ساختگی)' if entry["is_current"]
+                 else ' — نسخه پیشین (ساختگی)')
+                + '</li>' for entry in result["versions"]
+            )
+            body = (
+                '<article class="panel"><h2>تاریخچه نسخه‌های پرونده '
+                + escape(result["ref"]) + '</h2>'
+                '<p>این فهرست فقط نسخه‌های از پیش ثبت‌شده نمونه DEMO است؛ '
+                'فرایند اصلاح واقعی، تاریخ تغییرات یا تأیید متخصص '
+                'از این داده‌ها استنتاج نمی‌شود.</p>'
+                '<p>وضعیت همه نسخه‌ها: DRAFT_ONLY؛ '
+                'رضایت، طرح کشت و تأیید متخصص واقعی وجود ندارد.</p>'
+                '<ol>' + versions + '</ol>'
+                '<p><a href="/">بازگشت به پرونده‌های من</a></p>'
+                '</article>'
+            )
+            return page("روناس — تاریخچه پرونده ساختگی من",
+                        body, logged_in=True)
+
+    if household_input_ledger is not None:
+        @router.get("/my-drafts/{ref}/progress-notes")
+        def household_progress_notes_page(
+            ref: str, corrects_revision: int = 0,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            result = household_input_ledger.read_owned_progress_notes(
+                ref, Principal(session.subject, session.roles),
+            )
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            correction_target = None
+            if corrects_revision:
+                correction_target = next((item for item in result["notes"]
+                                          if item["revision"] == corrects_revision
+                                          and not item["is_superseded"]), None)
+                if correction_target is None:
+                    raise HTTPException(404, detail="PROGRESS_NOTE_NOT_FOUND")
+            notes = ''.join(
+                '<li><time>' + escape(item["reported_at"]) + '</time> · '
+                + ('زمینه جاری پرونده و ورودی'
+                   if item["current_case_version"] and item["current_input_context"]
+                   else 'زمینه ورودی ثبت‌نشده؛ تاریخی'
+                   if item["input_revision"] is None
+                   else 'نسخه تاریخی پرونده ' + str(item["case_version"])
+                   if not item["current_case_version"]
+                   else 'نسخه تاریخی ورودی ' + str(item["input_revision"]))
+                + ' — ' + escape(item["note"])
+                + (' · اصلاح شماره ' + str(item["superseded_by_revision"])
+                   if item["is_superseded"] else '')
+                + ('' if item["is_superseded"] else
+                   ' · <a href="/my-drafts/' + quote(ref)
+                   + '/progress-notes?corrects_revision=' + str(item["revision"])
+                   + '">اصلاح این یادداشت</a>') + '</li>'
+                for item in result["notes"]
+            )
+            form = (
+                '<form method="post" action="/my-drafts/' + quote(ref)
+                + '/progress-notes">'
+                '<input type="hidden" name="csrf" value="'
+                + escape(session.csrf, quote=True) + '">'
+                '<input type="hidden" name="action_id" value="DEMO-PROGRESS-'
+                + secrets.token_hex(10).upper() + '">'
+                '<input type="hidden" name="case_version" value="'
+                + str(result["case_version"]) + '">'
+                '<input type="hidden" name="revision" value="'
+                + str(result["current_revision"]) + '">'
+                '<input type="hidden" name="input_revision" value="'
+                + str(result["current_input_revision"]) + '">'
+                '<input type="hidden" name="corrects_revision" value="'
+                + str(corrects_revision or 0) + '">'
+                + ('<p>ثبت اصلاح برای یادداشت شماره '
+                   + str(correction_target["revision"]) + '</p>'
+                   if correction_target is not None else '')
+                + '<label for="reported-at">زمان گزارش‌شده با منطقه زمانی</label>'
+                '<input id="reported-at" name="reported_at" maxlength="40" '
+                'placeholder="2026-10-12T10:30:00+03:30" required>'
+                '<label for="progress-note">یادداشت ساختگی</label>'
+                '<textarea id="progress-note" name="note" maxlength="150" '
+                'required>DEMO: </textarea>'
+                '<button type="submit">'
+                + ('ثبت اصلاح DEMO' if correction_target is not None
+                   else 'ثبت یادداشت DEMO') + '</button></form>'
+            )
+            body = (
+                '<article class="panel"><h2>یادداشت‌های پیشرفت پرونده (DEMO)</h2>'
+                '<p>فقط متن ساختگی با پیشوند DEMO: و زمان واردشده توسط شما ثبت می‌شود. '
+                'مرحله علمی از پیش تعریف‌شده یا ارزیابی محصول وجود ندارد.</p>'
+                + ('<ol>' + notes + '</ol>' if notes else
+                   '<p>یادداشتی ثبت نشده است.</p>')
+                + '<p>این یادداشت‌ها داده واقعی، نظارت متخصص، ارزیابی علمی یا '
+                'تأیید برنامه کشت محسوب نمی‌شوند و فقط برای مالک قابل مشاهده‌اند.</p>'
+                + form
+                + '<p><a href="/my-drafts/' + quote(ref)
+                + '">بازگشت به پرونده من</a></p></article>'
+            )
+            return page("روناس — یادداشت پیشرفت ساختگی",
+                        body, logged_in=True, local_test_form=True)
+
+        @router.post("/my-drafts/{ref}/progress-notes")
+        async def household_progress_note_submit(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            principal, form = await checked_browser_form(
+                request, sid, fields=frozenset({
+                    "csrf", "action_id", "case_version", "revision",
+                    "input_revision", "corrects_revision", "reported_at", "note",
+                }),
+            )
+            try:
+                saved = household_input_ledger.append_owned_progress_note(
+                    ref, principal,
+                    action_id=form["action_id"],
+                    expected_case_version=form_version(
+                        form["case_version"], zero_allowed=False,
+                    ),
+                    expected_revision=form_version(form["revision"]),
+                    expected_input_revision=form_version(form["input_revision"]),
+                    corrects_revision=(form_version(form["corrects_revision"]) or None),
+                    reported_at=form["reported_at"], note=form["note"],
+                )
+            except InputRevisionConflict as exc:
+                raise HTTPException(409, detail="SYNTHETIC_PROGRESS_VERSION_CONFLICT") from exc
+            except LedgerIntegrityError as exc:
+                raise HTTPException(503, detail="SYNTHETIC_PROGRESS_HISTORY_UNAVAILABLE") from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
+            if saved is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return RedirectResponse(
+                "/my-drafts/" + quote(ref) + "/progress-notes", status_code=303,
+            )
+
+        @router.get("/my-drafts/{ref}/input-revisions")
+        def household_input_history_page(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            result = household_input_ledger.read_owned_input_revisions(
+                ref, Principal(session.subject, session.roles),
+            )
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            demo_form = (
+                '<section id="domestic-demo-correction" aria-label="ثبت اصلاح صرفاً نمایشی">'
+                '<h3>ثبت اصلاح نسخه DEMO</h3>'
+                '<p>فقط یک سناریوی از پیش تعریف‌شده ثبت می‌شود. '
+                'هیچ اطلاعات کشت، هویت یا رضایت واقعی دریافت نمی‌شود.</p>'
+                '<form method="post" action="/my-drafts/'
+                + quote(ref) + '/input-revisions/demo-correction">'
+                '<input type="hidden" name="csrf" value="'
+                + escape(session.csrf, quote=True) + '">'
+                '<input type="hidden" name="action_id" value="DEMO-UI-D-'
+                + secrets.token_hex(10).upper() + '">'
+                '<input type="hidden" name="case_version" value="'
+                + str(result["case_version"]) + '">'
+                '<input type="hidden" name="input_revision" value="'
+                + str(result["current_input_revision"] or 0) + '">'
+                '<label for="domestic-demo-choice">سناریوی اصلاح نمونه</label>'
+                '<select id="domestic-demo-choice" name="scenario">'
+                + sample_choice_options(prefix="DEMO-MANIFEST-")
+                + '</select><button type="submit">ثبت نسخه DEMO</button>'
+                '</form></section>'
+            )
+            entries = ''.join(
+                '<li>بازنگری آزمایشی ' + str(number) + '</li>'
+                for number in result["input_revisions"]
+            )
+            body = (
+                '<article class="panel"><h2>تاریخچه نمونه اصلاح اطلاعات خانوار '
+                '(فقط DEMO)</h2>'
+                '<p>پرونده: ' + escape(result["ref"]) + ' · نسخه '
+                + str(result["case_version"]) + '</p>'
+                + ('<ol>' + entries + '</ol>' if entries else
+                   '<p>هنوز اثرانگشت نسخه‌ای در این نمونه ثبت نشده است.</p>')
+                + '<p>صرفاً شناسه نسخه و اثرانگشت ساختگی ثبت می‌شود؛ '
+                'هیچ محصول، آب، خاک، اطلاعات شخصی یا دستور کشت دریافت نمی‌شود.</p>'
+                '<p>این سابقه رضایت آگاهانه، کفایت داده، '
+                'تأیید متخصص یا برنامه کشت معتبر نیست.</p>'
+                '<p>ثبت اصلاح واقعی و ارائه فرم رضایت '
+                'در این پیش‌نمای آزمایشی فعال نیست.</p>'
+                + demo_form
+                + ('<p><a href="/my-drafts/' + quote(ref)
+                   + '/question-responses">'
+                   'پاسخ‌های آزمایشی من به پرسش کفایت اطلاعات</a></p>'
+                   if isinstance(household_input_ledger,
+                                 SqliteSyntheticExpertQuestionLedger) else '')
+                + '<p><a href="/my-drafts/' + quote(ref)
+                + '">بازگشت به پرونده من</a></p></article>'
+            )
+            return page("روناس — تاریخچه اصلاح آزمایشی اطلاعات خانوار",
+                        body, logged_in=True, local_test_form=True)
+
+
+        if (household_profile_schema is not None
+                and household_profile_access_authority is not None
+                and isinstance(household_input_ledger,
+                               SqliteSyntheticHouseholdProfileLedger)):
+            @router.get("/my-drafts/{ref}/cultivation-inputs")
+            def household_cultivation_inputs_page(
+                ref: str,
+                sid: str | None = Cookie(default=None, alias=cookie_name),
+            ) -> HTMLResponse:
+                try:
+                    session = flow.session(sid)
+                except InvalidToken:
+                    raise HTTPException(401, detail="INVALID_SESSION") from None
+                principal = Principal(session.subject, session.roles)
+                try:
+                    permitted = household_profile_access_authority(
+                        principal, ref, household_profile_schema.schema_ref,
+                    )
+                except Exception as exc:
+                    raise HTTPException(
+                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                    ) from exc
+                if permitted is not True:
+                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                try:
+                    result = household_input_ledger.read_owned_profile(ref, principal)
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE") from exc
+                if result is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                controls = []
+                for field in household_profile_schema.fields:
+                    value = result["current_values"].get(field.key, "")
+                    label = escape(field.label)
+                    key = escape(field.key, quote=True)
+                    safe_value = escape(value, quote=True)
+                    required = " required" if field.required else ""
+                    if field.kind == "choice":
+                        options = ['<option value="">انتخاب کنید</option>']
+                        options.extend(
+                            '<option value="' + escape(choice, quote=True) + '"'
+                            + (" selected" if choice == value else "") + ">"
+                            + escape(choice) + "</option>"
+                            for choice in field.choices
+                        )
+                        control = '<select id="' + key + '" name="' + key + '"' + required + '>' + ''.join(options) + '</select>'
+                    elif field.kind == "text":
+                        control = '<textarea id="' + key + '" name="' + key + '" maxlength="' + str(field.max_length) + '"' + required + '>' + escape(value) + '</textarea>'
+                    else:
+                        control = '<input id="' + key + '" name="' + key + '" type="' + field.kind + '" maxlength="' + str(field.max_length) + '" value="' + safe_value + '"' + required + '>'
+                    controls.append('<label for="' + key + '">' + label + '</label>' + control)
+                history = ''.join(
+                    '<li><a href="/my-drafts/' + quote(ref)
+                    + '/cultivation-inputs/revisions/'
+                    + str(item["revision"]) + '">مشاهده نسخه '
+                    + str(item["revision"]) + '</a></li>'
+                    for item in result["revisions"]
+                )
+                revision_options = ''.join(
+                    '<option value="' + str(item["revision"]) + '">نسخه '
+                    + str(item["revision"]) + '</option>'
+                    for item in result["revisions"]
+                )
+                fields = frozenset(
+                    {"csrf", "case_version", "profile_revision"}
+                    | {field.key for field in household_profile_schema.fields}
+                )
+                body = (
+                    '<article class="panel"><h2>اطلاعات ساختاریافته پرونده کشت</h2>'
+                    '<p>پرونده ' + escape(ref) + ' · نسخه پرونده '
+                    + str(result["case_version"]) + '</p>'
+                    '<p>این فرم فقط برای پرونده آزمایشی محلی فعال است. '
+                    'اطلاعات ساختگی وارد کنید؛ تأیید علمی یا برنامه کشت تولید نمی‌شود.</p>'
+                    + ('<p role="status">نسخه فرم تغییر کرده است؛ '
+                       'مقادیر نسخه قبلی برای این فرم نمایش داده نمی‌شوند.</p>'
+                       if result["schema_changed"] else '')
+                    + '<form method="post" action="/my-drafts/' + quote(ref)
+                    + '/cultivation-inputs"><input type="hidden" name="csrf" value="'
+                    + escape(session.csrf, quote=True) + '">'
+                    '<input type="hidden" name="action_id" value="DEMO-PROFILE-'
+                    + secrets.token_hex(10).upper() + '">'
+                    '<input type="hidden" name="case_version" value="'
+                    + str(result["case_version"]) + '">'
+                    '<input type="hidden" name="profile_revision" value="'
+                    + str(result["current_revision"]) + '">'
+                    + ''.join(controls)
+                    + '<button type="submit">ذخیره نسخه جدید</button></form>'
+                    + ('<p><a href="/my-drafts/' + quote(ref)
+                        + '/surplus-offers">فهرست و شروع پیش‌نویس مازاد</a></p>'
+                        if household_surplus_draft_ledger is not None else '')
+                    + ('<form method="get" action="/my-drafts/' + quote(ref)
+                        + '/surplus-publication-readiness">'
+                        '<label for="surplus-offer-ref">شناسه پیشنهاد مازاد (DEMO)</label>'
+                        '<input id="surplus-offer-ref" name="offer_ref" required '
+                        'pattern="DEMO-[A-Za-z0-9._:-]{1,96}" maxlength="101">'
+                        '<button type="submit">بررسی آمادگی فنی</button></form>'
+                        if household_surplus_publication_authority is not None else '')
+                     + '<h3>تاریخچه اصلاح</h3>'
+                    + ('<ol>' + history + '</ol>' if history else
+                       '<p>هنوز نسخه‌ای ثبت نشده است.</p>')
+                    + ('<form method="get" action="/my-drafts/' + quote(ref)
+                       + '/cultivation-inputs/compare">'
+                       '<label for="profile-before">نسخه مبنا</label>'
+                       '<select id="profile-before" name="before_revision">'
+                       + revision_options + '</select>'
+                       '<label for="profile-after">نسخه جدیدتر</label>'
+                       '<select id="profile-after" name="after_revision">'
+                       + revision_options + '</select>'
+                       '<button type="submit">مقایسه نسخه‌ها</button></form>'
+                       if len(result["revisions"]) > 1 else '')
+                    + '<p>مقادیر فقط برای صاحب پرونده قابل مشاهده‌اند. '
+                    'ثبت آن‌ها به معنی رضایت، تأیید متخصص یا پذیرش طرح نیست.</p>'
+                    '<p><a href="/my-drafts/' + quote(ref) + '">بازگشت به پرونده</a></p>'
+                    '</article>'
+                )
+                if household_stage_context_authority is not None:
+                    body += (
+                        '<p><a href="/my-drafts/' + quote(ref)
+                        + '/stage-observations">ثبت و مشاهده رسیدهای مرحله‌ای</a></p>'
+                    )
+                return page("روناس — اطلاعات پرونده کشت",
+                            body, logged_in=True, local_test_form=True)
+
+            @router.get(
+                "/my-drafts/{ref}/cultivation-inputs/revisions/{revision}",
+                response_class=HTMLResponse,
+            )
+            def household_cultivation_inputs_revision_page(
+                ref: str, revision: int,
+                sid: str | None = Cookie(default=None, alias=cookie_name),
+            ) -> HTMLResponse:
+                try:
+                    session = flow.session(sid)
+                except InvalidToken:
+                    raise HTTPException(401, detail="INVALID_SESSION") from None
+                principal = Principal(session.subject, session.roles)
+                try:
+                    permitted = household_profile_access_authority(
+                        principal, ref, household_profile_schema.schema_ref,
+                    )
+                except Exception as exc:
+                    raise HTTPException(
+                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                    ) from exc
+                if permitted is not True:
+                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                try:
+                    result = household_input_ledger.read_owned_profile_revision(
+                        ref, principal, revision,
+                    )
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE") from exc
+                except ValueError as exc:
+                    raise HTTPException(422, detail="INVALID_HOUSEHOLD_PROFILE_REVISION") from exc
+                if result is None:
+                    raise HTTPException(404, detail="PROFILE_REVISION_NOT_FOUND")
+                if result["schema_changed"]:
+                    values_html = (
+                        '<p role="status">ساختار فرم پس از ثبت این نسخه تغییر کرده است؛ '
+                        'برای جلوگیری از نمایش نادرست، مقادیر قدیمی پنهان شده‌اند.</p>'
+                    )
+                    restore_form = ""
+                else:
+                    rows = ''.join(
+                        '<dt>' + escape(field.label) + '</dt><dd>'
+                        + escape(result["values"].get(field.key, '')) + '</dd>'
+                        for field in household_profile_schema.fields
+                    )
+                    values_html = '<dl>' + rows + '</dl>'
+                    try:
+                        current_profile = household_input_ledger.read_owned_profile(
+                            ref, principal,
+                        )
+                    except (LedgerIntegrityError, sqlite3.Error) as exc:
+                        raise HTTPException(
+                            503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE",
+                        ) from exc
+                    if current_profile is None:
+                        raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                    restore_form = (
+                        '<form method="post" action="/my-drafts/' + quote(ref)
+                        + '/cultivation-inputs/revisions/' + str(revision)
+                        + '/restore"><input type="hidden" name="csrf" value="'
+                        + escape(session.csrf, quote=True) + '">'
+                        '<input type="hidden" name="action_id" value="DEMO-RESTORE-'
+                        + secrets.token_hex(10).upper() + '">'
+                        '<input type="hidden" name="case_version" value="'
+                        + str(result["case_version"]) + '">'
+                        '<input type="hidden" name="expected_profile_revision" value="'
+                        + str(current_profile["current_revision"]) + '">'
+                        '<button type="submit">ثبت این مقادیر به‌عنوان نسخه جدید</button>'
+                        '</form><p>نسخه قبلی حفظ می‌شود؛ بازگردانی، نسخه جاری را '
+                        'بازنویسی نمی‌کند.</p>'
+                        if not current_profile["schema_changed"] else
+                        '<p role="status">شِمای نسخه جاری با این فرم متفاوت است؛ '
+                        'ثبت نسخه از این تاریخچه غیرفعال است.</p>'
+                    )
+                body = (
+                    '<article class="panel"><h2>نسخه تاریخی اطلاعات پرونده</h2>'
+                    '<p>پرونده ' + escape(ref) + ' · نسخه '
+                    + str(result["revision"]) + '</p>'
+                    + values_html
+                    + restore_form
+                    + '<p>این سابقه فقط برای صاحب پرونده است و به معنی تأیید علمی، '
+                    'پذیرش طرح یا رضایت برای مصرف دیگری نیست.</p>'
+                    '<p><a href="/my-drafts/' + quote(ref)
+                    + '/cultivation-inputs">بازگشت به اطلاعات پرونده</a></p>'
+                    '</article>'
+                )
+                return page("روناس — نسخه تاریخی اطلاعات",
+                            body, logged_in=True, local_test_form=True)
+
+            @router.post(
+                "/my-drafts/{ref}/cultivation-inputs/revisions/{revision}/restore",
+            )
+            async def household_cultivation_inputs_restore(
+                ref: str, revision: int, request: Request,
+                sid: str | None = Cookie(default=None, alias=cookie_name),
+            ) -> RedirectResponse:
+                principal, form = await checked_browser_form(
+                    request, sid, fields=frozenset({
+                        "csrf", "action_id", "case_version",
+                        "expected_profile_revision",
+                    }), max_bytes=2048, max_fields=5, max_value_length=120,
+                )
+                try:
+                    permitted = household_profile_access_authority(
+                        principal, ref, household_profile_schema.schema_ref,
+                    )
+                except Exception as exc:
+                    raise HTTPException(
+                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                    ) from exc
+                if permitted is not True:
+                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                try:
+                    previous = household_input_ledger.read_owned_profile_revision(
+                        ref, principal, revision,
+                    )
+                    if previous is None:
+                        raise HTTPException(404, detail="PROFILE_REVISION_NOT_FOUND")
+                    if previous["schema_changed"]:
+                        raise HTTPException(
+                            409, detail="PROFILE_REVISION_SCHEMA_CHANGED",
+                        )
+                    restored = household_input_ledger.append_owned_profile(
+                        ref, principal, action_id=form["action_id"],
+                        expected_case_version=form_version(
+                            form["case_version"], zero_allowed=False,
+                        ), expected_revision=form_version(
+                            form["expected_profile_revision"],
+                        ), values=previous["values"],
+                    )
+                except InputRevisionConflict as exc:
+                    raise HTTPException(
+                        409, detail="HOUSEHOLD_PROFILE_CHANGED",
+                    ) from exc
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(
+                        503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE",
+                    ) from exc
+                except ValueError as exc:
+                    raise HTTPException(
+                        422, detail="INVALID_HOUSEHOLD_PROFILE_RESTORE",
+                    ) from exc
+                if restored is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                return RedirectResponse(
+                    "/my-drafts/" + quote(ref) + "/cultivation-inputs",
+                    status_code=303,
+                )
+
+            @router.get(
+                "/my-drafts/{ref}/cultivation-inputs/compare",
+                response_class=HTMLResponse,
+            )
+            def household_cultivation_inputs_compare_page(
+                ref: str, before_revision: int, after_revision: int,
+                sid: str | None = Cookie(default=None, alias=cookie_name),
+            ) -> HTMLResponse:
+                try:
+                    session = flow.session(sid)
+                except InvalidToken:
+                    raise HTTPException(401, detail="INVALID_SESSION") from None
+                principal = Principal(session.subject, session.roles)
+                try:
+                    permitted = household_profile_access_authority(
+                        principal, ref, household_profile_schema.schema_ref,
+                    )
+                except Exception as exc:
+                    raise HTTPException(
+                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                    ) from exc
+                if permitted is not True:
+                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                try:
+                    result = household_input_ledger.compare_owned_profile_revisions(
+                        ref, principal, before_revision, after_revision,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(
+                        422, detail="INVALID_HOUSEHOLD_PROFILE_COMPARISON",
+                    ) from exc
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE") from exc
+                if result is None:
+                    raise HTTPException(404, detail="PROFILE_COMPARISON_NOT_FOUND")
+                if result["schema_changed"]:
+                    comparison = (
+                        '<p role="status">ساختار فرم بین این نسخه‌ها تغییر کرده؛ '
+                        'برای جلوگیری از مقایسه نادرست، مقادیر نمایش داده نمی‌شوند.</p>'
+                    )
+                elif result["changes"]:
+                    rows = ''.join(
+                        '<tr><th scope="row">' + escape(field.label)
+                        + '</th><td>' + escape(change["before"])
+                        + '</td><td>' + escape(change["after"])
+                        + '</td></tr>'
+                        for change in result["changes"]
+                        for field in household_profile_schema.fields
+                        if field.key == change["key"]
+                    )
+                    comparison = (
+                        '<table><caption>تغییرات بین نسخه '
+                        + str(before_revision) + ' و ' + str(after_revision)
+                        + '</caption><thead><tr><th scope="col">فیلد</th>'
+                        '<th scope="col">مقدار قبلی</th><th scope="col">مقدار جدید</th>'
+                        '</tr></thead><tbody>' + rows + '</tbody></table>'
+                    )
+                else:
+                    comparison = '<p>تغییری بین این دو نسخه ثبت نشده است.</p>'
+                body = (
+                    '<article class="panel"><h2>مقایسه نسخه‌های اطلاعات خانوار</h2>'
+                    '<p>پرونده ' + escape(ref) + ' · نسخه ' + str(before_revision)
+                    + ' ← نسخه ' + str(after_revision) + '</p>' + comparison
+                    + '<p>این مقایسه فقط اختلاف ثبت‌شده را نشان می‌دهد؛ '
+                    'اعتبار علمی یا وضعیت کشت را ارزیابی نمی‌کند.</p>'
+                    '<p><a href="/my-drafts/' + quote(ref)
+                    + '/cultivation-inputs">بازگشت به اطلاعات پرونده</a></p>'
+                    '</article>'
+                )
+                return page("روناس — مقایسه نسخه‌های اطلاعات",
+                            body, logged_in=True, local_test_form=True)
+
+            if household_stage_context_authority is not None:
+                if household_stage_artifact_store is not None:
+                    @router.put("/my-drafts/{ref}/stage-observations/artifacts")
+                    async def household_stage_artifact_upload(
+                        ref: str, request: Request,
+                        sid: str | None = Cookie(default=None, alias=cookie_name),
+                    ) -> JSONResponse:
+                        if request.headers.get("origin") != flow.config.origin:
+                            raise HTTPException(403, detail="ORIGIN_REQUIRED")
+                        try:
+                            session = flow.session(sid)
+                        except InvalidToken:
+                            raise HTTPException(401, detail="INVALID_SESSION") from None
+                        csrf = request.headers.get("x-csrf-token", "")
+                        if not hmac.compare_digest(session.csrf, csrf):
+                            raise HTTPException(403, detail="CSRF_REQUIRED")
+                        principal = Principal(session.subject, session.roles)
+                        try:
+                            permitted = household_profile_access_authority(
+                                principal, ref, household_profile_schema.schema_ref,
+                            )
+                        except Exception as exc:
+                            raise HTTPException(
+                                503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                            ) from exc
+                        if permitted is not True:
+                            raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                        case_version = form_version(
+                            request.headers.get("x-ronas-case-version", ""),
+                            zero_allowed=False,
+                        )
+                        input_revision = form_version(
+                            request.headers.get("x-ronas-input-revision", ""),
+                            zero_allowed=False,
+                        )
+                        try:
+                            context = household_stage_context_authority(ref)
+                        except Exception as exc:
+                            raise HTTPException(503, detail="STAGE_CONTEXT_UNAVAILABLE") from exc
+                        stage_ref = request.headers.get("x-ronas-stage-ref", "")
+                        requirements = request.headers.get(
+                            "x-ronas-requirements-digest", "",
+                        )
+                        if (not isinstance(context, CurrentStageContext)
+                                or context.case_ref != ref
+                                or context.case_version != case_version
+                                or context.input_revision != input_revision
+                                or context.plan_digest != request.headers.get(
+                                    "x-ronas-plan-digest", "",
+                                )
+                                or not any(
+                                    item.stage_ref == stage_ref
+                                    and item.observation_requirements_digest == requirements
+                                    for item in context.requirements
+                                )):
+                            raise HTTPException(
+                                409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                            )
+                        declared_size = _declared_upload_size(
+                            request.headers.get("content-length"),
+                        )
+                        chunks, size = [], 0
+                        async for chunk in request.stream():
+                            size += len(chunk)
+                            if size > MAX_ARTIFACT_BYTES:
+                                raise HTTPException(413, detail="STAGE_ARTIFACT_TOO_LARGE")
+                            chunks.append(chunk)
+                        _check_upload_size(declared_size, size)
+                        try:
+                            artifact = household_stage_artifact_store.put(
+                                principal.subject, ref + ":" + stage_ref,
+                                request.headers.get("content-type", ""),
+                                b"".join(chunks),
+                            )
+                        except ValueError as exc:
+                            raise HTTPException(422, detail="INVALID_STAGE_ARTIFACT") from exc
+                        except StageArtifactStoreError as exc:
+                            raise HTTPException(
+                                503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
+                            ) from exc
+                        return JSONResponse(status_code=201, content={
+                            "digest": artifact.digest,
+                            "content_type": artifact.content_type,
+                            "byte_length": artifact.byte_length,
+                            "stored": True,
+                        })
+
+                    @router.get(
+                        "/my-drafts/{ref}/stage-observations/artifacts/"
+                        "{stage_ref}/{digest}",
+                    )
+                    def household_stage_artifact_download(
+                        ref: str, stage_ref: str, digest: str,
+                        sid: str | None = Cookie(default=None, alias=cookie_name),
+                    ) -> Response:
+                        try:
+                            session = flow.session(sid)
+                        except InvalidToken:
+                            raise HTTPException(401, detail="INVALID_SESSION") from None
+                        principal = Principal(session.subject, session.roles)
+                        try:
+                            permitted = household_profile_access_authority(
+                                principal, ref, household_profile_schema.schema_ref,
+                            )
+                        except Exception as exc:
+                            raise HTTPException(
+                                503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                            ) from exc
+                        if permitted is not True:
+                            raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
+                        try:
+                            history = household_input_ledger.read_owned_stage_observations(
+                                ref, principal,
+                                context_authority=household_stage_context_authority,
+                            )
+                        except StageObservationConflict as exc:
+                            raise HTTPException(
+                                409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                            ) from exc
+                        except (LedgerIntegrityError, sqlite3.Error) as exc:
+                            raise HTTPException(
+                                503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                            ) from exc
+                        receipt_exists = bool(history and any(
+                            item["stage_ref"] == stage_ref
+                            and item["observation_artifact_digest"] == digest
+                            for item in history["observations"]
+                        ))
+                        if not receipt_exists:
+                            raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
+                        try:
+                            stored = household_stage_artifact_store.get(
+                                session.subject, ref + ":" + stage_ref, digest,
+                            )
+                        except (ValueError, StageArtifactStoreError) as exc:
+                            raise HTTPException(
+                                503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
+                            ) from exc
+                        if stored is None:
+                            raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
+                        artifact, content = stored
+                        return Response(
+                            content=content, media_type=artifact.content_type,
+                            headers={
+                                "Content-Disposition": 'attachment; filename="stage-observation"',
+                                "Cache-Control": "private, no-store",
+                                "X-Content-Type-Options": "nosniff",
+                            },
+                        )
+
+                @router.get(
+                    "/my-drafts/{ref}/stage-observations",
+                    response_class=HTMLResponse,
+                )
+                def household_stage_observations_page(
+                    ref: str, corrects_revision: int = 0,
+                    sid: str | None = Cookie(default=None, alias=cookie_name),
+                ) -> HTMLResponse:
+                    try:
+                        session = flow.session(sid)
+                    except InvalidToken:
+                        raise HTTPException(401, detail="INVALID_SESSION") from None
+                    principal = Principal(session.subject, session.roles)
+                    try:
+                        permitted = household_profile_access_authority(
+                            principal, ref, household_profile_schema.schema_ref,
+                        )
+                    except Exception as exc:
+                        raise HTTPException(
+                            503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                        ) from exc
+                    if permitted is not True:
+                        raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                    try:
+                        result = household_input_ledger.read_owned_stage_observations(
+                            ref, principal,
+                            context_authority=household_stage_context_authority,
+                        )
+                    except StageObservationConflict as exc:
+                        raise HTTPException(
+                            409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                        ) from exc
+                    except (LedgerIntegrityError, sqlite3.Error) as exc:
+                        raise HTTPException(
+                            503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                        ) from exc
+                    if result is None:
+                        raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                    correction_target = None
+                    if corrects_revision:
+                        correction_target = next((item for item in result["observations"]
+                                                  if item["revision"] == corrects_revision
+                                                  and not item["is_superseded"]
+                                                  and item["current"]), None)
+                        if correction_target is None:
+                            raise HTTPException(404, detail="STAGE_OBSERVATION_NOT_CORRECTABLE")
+                    current = result["current_context"]
+                    progress_labels = {
+                        "NOT_REPORTED": "هنوز رسیدی ثبت نشده",
+                        "CURRENT_RECEIPT": "رسید جاری ثبت شده",
+                        "HISTORICAL_RECEIPT": "فقط رسید تاریخی موجود است",
+                    }
+                    stage_progress_html = ''.join(
+                        '<li>' + escape(item["stage_ref"]) + ' · '
+                        + progress_labels[item["state"]]
+                        + (' · نسخه ' + str(item["observation_revision"])
+                           if item["observation_revision"] is not None else '')
+                        + (' · رسید مشاهده شد (بدون داوری)'
+                           if item["receipt_inspected"] else '')
+                        + '</li>'
+                        for item in result["stage_progress"]
+                    )
+                    forms = []
+                    if current:
+                        for index, stage in enumerate(current["stages"], start=1):
+                            stage_ref = escape(stage["stage_ref"], quote=True)
+                            requirements = escape(
+                                stage["observation_requirements_digest"], quote=True,
+                            )
+                            if household_stage_artifact_store is not None:
+                                form_attrs = (
+                                    ' data-stage-upload data-upload-url="/my-drafts/'
+                                    + quote(ref) + '/stage-observations/artifacts"'
+                                )
+                                artifact_control = (
+                                    '<label for="artifact-' + str(index)
+                                    + '">فایل مشاهده (تصویر یا PDF، حداکثر ۸ مگابایت)</label>'
+                                    '<input id="artifact-' + str(index)
+                                    + '" name="observation_file" type="file" '
+                                    'accept="image/jpeg,image/png,image/webp,application/pdf" required>'
+                                    '<input name="artifact_digest" type="hidden" value="">'
+                                    '<p data-upload-status role="status" aria-live="polite"></p>'
+                                )
+                            else:
+                                form_attrs = ''
+                                artifact_control = (
+                                    '<label for="artifact-' + str(index)
+                                    + '">اثر انگشت مرجع مشاهده (SHA-256)</label>'
+                                    '<input id="artifact-' + str(index)
+                                    + '" name="artifact_digest" type="text" '
+                                    'inputmode="latin" minlength="64" maxlength="64" '
+                                    'pattern="[0-9a-f]{64}" required>'
+                                )
+                            form = (
+                                '<form method="post" action="/my-drafts/'
+                                + quote(ref) + '/stage-observations"' + form_attrs + '>'
+                                + '<input type="hidden" name="csrf" value="'
+                                + escape(session.csrf, quote=True) + '">'
+                                '<input type="hidden" name="action_id" value="DEMO-STAGE-OBS-'
+                                + secrets.token_hex(10).upper() + '">'
+                                '<input type="hidden" name="case_version" value="'
+                                + str(current["case_version"]) + '">'
+                                '<input type="hidden" name="input_revision" value="'
+                                + str(current["input_revision"]) + '">'
+                                '<input type="hidden" name="input_snapshot_digest" value="'
+                                + escape(current["input_snapshot_digest"], quote=True) + '">'
+                                '<input type="hidden" name="plan_digest" value="'
+                                + escape(current["plan_digest"], quote=True) + '">'
+                                '<input type="hidden" name="stage_ref" value="'
+                                + stage_ref + '">'
+                                '<input type="hidden" name="requirements_digest" value="'
+                                + requirements + '">'
+                                '<input type="hidden" name="observation_revision" value="'
+                                + str(result["current_revision"]) + '">'
+                                '<input type="hidden" name="corrects_revision" value="'
+                                + str(corrects_revision if correction_target is not None
+                                      and correction_target["stage_ref"] == stage["stage_ref"]
+                                      else 0) + '">'
+                                '<h3>مرحله ' + str(index) + '</h3>'
+                                '<p>شناسه مرحله: ' + stage_ref + '</p>'
+                                + ('<p>اصلاح رسید شماره '
+                                   + str(correction_target["revision"]) + '</p>'
+                                   if correction_target is not None
+                                   and correction_target["stage_ref"] == stage["stage_ref"] else '')
+                                + artifact_control
+                                + '<button type="submit">'
+                                + ('ثبت اصلاح رسید' if correction_target is not None
+                                   and correction_target["stage_ref"] == stage["stage_ref"]
+                                   else 'ثبت رسید مشاهده') + '</button>'
+                                '</form>'
+                            )
+                            forms.append(form)
+                    history = ''.join(
+                        '<li>مرحله ' + escape(item["stage_ref"])
+                        + ' · ' + ('رسید جاری' if item["current"]
+                                   else 'رسید قدیمی') + ' · نسخه '
+                        + str(item["revision"])
+                        + (' · با <a href="#observation-'
+                           + quote(item["stage_ref"]) + '-'
+                           + str(item["superseded_by_revision"]) + '">رسید '
+                           + str(item["superseded_by_revision"])
+                           + '</a> اصلاح شد' if item["is_superseded"] else '')
+                        + (' · اصلاح <a href="#observation-'
+                           + quote(item["stage_ref"]) + '-'
+                           + str(item["corrects_revision"]) + '">نسخه '
+                           + str(item["corrects_revision"])
+                           + '</a>' if item["corrects_revision"] is not None else '')
+                        + ' · نسخه پرونده ' + str(item["case_version"])
+                        + ' · نسخه اطلاعات خانوار ' + str(item["input_revision"])
+                        + (' · رسید مشاهده شد (بدون داوری)'
+                           if item["receipt_inspected"] else '')
+                        + (' · <a href="/my-drafts/' + quote(ref)
+                           + '/stage-observations/artifacts/'
+                           + quote(item["stage_ref"]) + '/'
+                           + escape(item["observation_artifact_digest"], quote=True)
+                           + '">دریافت فایل</a>'
+                           if household_stage_artifact_store is not None else
+                           ' · مرجع ' + escape(item["observation_artifact_digest"]))
+                        + ('' if item["is_superseded"] or not item["current"] else
+                           ' · <a href="/my-drafts/' + quote(ref)
+                           + '/stage-observations?corrects_revision='
+                           + str(item["revision"]) + '">اصلاح رسید</a>')
+                        + '</li>'
+                        for item in result["observations"]
+                    )
+                    body = (
+                        '<article class="panel"><h2>ثبت مشاهده مرحله‌ای</h2>'
+                        '<p>فقط مرجع رمزنگاری‌شدهٔ مشاهده ثبت می‌شود. '
+                        'ثبت رسید به معنی تکمیل مرحله، ارزیابی علمی یا تأیید متخصص نیست.</p>'
+                        + ('<p role="status">مرجع جاری طرح در دسترس نیست؛ '
+                           'ثبت مشاهده تا دریافت نسخه جاری غیرفعال است.</p>'
+                           if not current else
+                           '<p>طرح و الزامات مشاهده از مرجع جاری دریافت شده‌اند؛ '
+                           'هیچ معیار کشاورزی در این فرم ساخته نمی‌شود.</p>'
+                           + '<h3>وضعیت گزارش هر مرحله</h3><ul>'
+                           + stage_progress_html + '</ul>')
+                        + ''.join(forms)
+                        + ('<ol>' + history + '</ol>' if history else
+                           '<p>رسیدی ثبت نشده است.</p>')
+                        + '<p>با اصلاح پرونده یا تغییر طرح، رسیدهای قبلی حفظ می‌شوند '
+                        'و به‌عنوان رسید جاری نمایش داده نخواهند شد.</p>'
+                        + '<p><a href="/my-drafts/' + quote(ref)
+                        + '/cultivation-inputs">بازگشت به اطلاعات پرونده</a></p>'
+                        '</article>'
+                    )
+                    return page("روناس — مشاهده مرحله‌ای پرونده",
+                                body, logged_in=True, local_test_form=True,
+                                stage_upload_script=household_stage_artifact_store is not None)
+
+                @router.post("/my-drafts/{ref}/stage-observations")
+                async def household_stage_observation_submit(
+                    ref: str, request: Request,
+                    sid: str | None = Cookie(default=None, alias=cookie_name),
+                ) -> RedirectResponse:
+                    principal, form = await checked_browser_form(
+                        request, sid,
+                        fields=frozenset({
+                            "csrf", "action_id", "case_version", "input_revision",
+                            "input_snapshot_digest", "plan_digest", "stage_ref",
+                            "requirements_digest", "observation_revision",
+                            "artifact_digest", "corrects_revision",
+                        }),
+                        max_bytes=4096, max_fields=11, max_value_length=128,
+                    )
+                    try:
+                        permitted = household_profile_access_authority(
+                            principal, ref, household_profile_schema.schema_ref,
+                        )
+                    except Exception as exc:
+                        raise HTTPException(
+                            503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                        ) from exc
+                    if permitted is not True:
+                        raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                    try:
+                        command = StageObservationCommand(
+                            action_id=form["action_id"],
+                            expected_case_version=form_version(
+                                form["case_version"], zero_allowed=False,
+                            ),
+                            expected_input_revision=form_version(
+                                form["input_revision"], zero_allowed=False,
+                            ),
+                            expected_input_snapshot_digest=form[
+                                "input_snapshot_digest"
+                            ],
+                            expected_plan_digest=form["plan_digest"],
+                            stage_ref=form["stage_ref"],
+                            expected_observation_requirements_digest=
+                                form["requirements_digest"],
+                            observed_at=datetime.now(timezone.utc).isoformat(
+                                timespec="seconds",
+                            ),
+                            observation_artifact_digest=form["artifact_digest"],
+                            corrects_revision=(form_version(
+                                form["corrects_revision"],
+                            ) or None),
+                        )
+                        if (household_stage_artifact_store is not None
+                                and not household_stage_artifact_store.contains(
+                                    principal.subject, ref + ":" + command.stage_ref,
+                                    command.observation_artifact_digest,
+                                )):
+                            return JSONResponse(
+                                status_code=422,
+                                content={"detail": "STAGE_ARTIFACT_NOT_UPLOADED"},
+                            )
+                        saved = household_input_ledger.append_owned_stage_observation(
+                            ref, principal, command,
+                            expected_observation_revision=form_version(
+                                form["observation_revision"],
+                            ),
+                            context_authority=household_stage_context_authority,
+                        )
+                    except StageObservationConflict as exc:
+                        raise HTTPException(
+                            409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                        ) from exc
+                    except StageArtifactStoreError as exc:
+                        raise HTTPException(
+                            503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
+                        ) from exc
+                    except (LedgerIntegrityError, sqlite3.Error) as exc:
+                        raise HTTPException(
+                            503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                        ) from exc
+                    except ValueError as exc:
+                        raise HTTPException(422, detail="INVALID_STAGE_OBSERVATION") from exc
+                    if saved is None:
+                        raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                    return RedirectResponse(
+                        "/my-drafts/" + quote(ref) + "/stage-observations",
+                        status_code=303,
+                    )
+
+            @router.post("/my-drafts/{ref}/cultivation-inputs")
+            async def household_cultivation_inputs_submit(
+                ref: str, request: Request,
+                sid: str | None = Cookie(default=None, alias=cookie_name),
+            ) -> RedirectResponse:
+                profile_fields = frozenset(
+                    {"csrf", "action_id", "case_version", "profile_revision"}
+                    | {field.key for field in household_profile_schema.fields}
+                )
+                principal, form = await checked_browser_form(
+                    request, sid, fields=profile_fields,
+                    max_bytes=8192, max_fields=10,
+                    max_value_length=300,
+                )
+                try:
+                    permitted = household_profile_access_authority(
+                        principal, ref, household_profile_schema.schema_ref,
+                    )
+                except Exception as exc:
+                    raise HTTPException(
+                        503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                    ) from exc
+                if permitted is not True:
+                    raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
+                values = {
+                    field.key: form[field.key]
+                    for field in household_profile_schema.fields
+                }
+                try:
+                    saved = household_input_ledger.append_owned_profile(
+                        ref, principal,
+                        action_id=form["action_id"],
+                        expected_case_version=form_version(
+                            form["case_version"], zero_allowed=False,
+                        ),
+                        expected_revision=form_version(form["profile_revision"]),
+                        values=values,
+                    )
+                except InputRevisionConflict as exc:
+                    raise HTTPException(
+                        409, detail="HOUSEHOLD_PROFILE_VERSION_CONFLICT",
+                    ) from exc
+                except (LedgerIntegrityError, sqlite3.Error) as exc:
+                    raise HTTPException(
+                        503, detail="HOUSEHOLD_PROFILE_UNAVAILABLE",
+                    ) from exc
+                except ValueError as exc:
+                    raise HTTPException(422, detail="INVALID_HOUSEHOLD_PROFILE") from exc
+                if saved is None:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                return RedirectResponse(
+                    "/my-drafts/" + quote(ref) + "/cultivation-inputs",
+                    status_code=303,
+                )
+
+        @router.post("/my-drafts/{ref}/input-revisions/demo-correction")
+        async def household_demo_correction(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            principal, form = await checked_browser_form(
+                request, sid,
+                fields=frozenset({
+                    "csrf", "action_id", "case_version", "input_revision", "scenario",
+                }),
+            )
+            scenario = form["scenario"]
+            if scenario not in ("DEMO-MANIFEST-ALPHA", "DEMO-MANIFEST-BETA"):
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+            case_version = form_version(form["case_version"], zero_allowed=False)
+            observed = form_version(form["input_revision"])
+            # Private opaque sample digest: no physical cultivation/user data.
+            digest = hashlib.sha256(
+                ("ronas.local-test.manifest.v1:" + ref + ":"
+                 + str(observed) + ":" + scenario).encode("ascii")
+            ).hexdigest() if _synthetic_ref(ref) else ""
+            try:
+                updated = household_input_ledger.append_owned_input_manifest(
+                    ref, principal,
+                    action_id=form["action_id"],
+                    expected_case_version=case_version,
+                    expected_input_revision=observed,
+                    synthetic_manifest_digest=digest,
+                )
+            except InputRevisionConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_INPUT_VERSION_CONFLICT",
+                ) from exc
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_INPUT_HISTORY_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
+            if updated is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return RedirectResponse(
+                "/my-drafts/" + quote(ref) + "/input-revisions",
+                status_code=303,
+            )
+
+
+    if household_surplus_draft_ledger is not None:
+        def current_household_input_revision(ref: str, identity: Principal):
+            if household_input_ledger is None:
+                return None
+            try:
+                snapshot = household_input_ledger.read_owned_input_revisions(
+                    ref, identity,
+                )
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="HOUSEHOLD_INPUT_HISTORY_UNAVAILABLE",
+                ) from exc
+            except (sqlite3.Error, RuntimeError) as exc:
+                raise HTTPException(
+                    503, detail="HOUSEHOLD_INPUT_HISTORY_UNAVAILABLE",
+                ) from exc
+            if snapshot is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return snapshot["current_input_revision"]
+
+        @router.get("/my-drafts/{ref}/surplus-offers/new")
+        def household_start_surplus_draft(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            identity = Principal(session.subject, session.roles)
+            if "household" not in identity.roles or not _synthetic_ref(ref):
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            try:
+                permitted = household_profile_access_authority(
+                    identity, ref, household_surplus_draft_ledger.schema.schema_ref,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",
+                ) from exc
+            if permitted is not True:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            try:
+                existing_refs = {
+                    record.offer_ref
+                    for record in household_surplus_draft_ledger.list_owned(identity, ref)
+                }
+            except LookupError:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND") from None
+            except SurplusDraftIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
+                ) from exc
+            except SurplusDraftStorageError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                ) from exc
+            except (RuntimeError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                ) from exc
+            offer_ref = ""
+            for _ in range(8):
+                candidate = "DEMO-OFFER-" + secrets.token_hex(16).upper()
+                if candidate not in existing_refs:
+                    offer_ref = candidate
+                    break
+            if not offer_ref:
+                raise HTTPException(503, detail="SURPLUS_DRAFT_ID_UNAVAILABLE")
+            return RedirectResponse(
+                "/my-drafts/" + quote(ref) + "/surplus-offers?offer_ref="
+                + quote(offer_ref), status_code=303,
+            )
+
+        @router.get(
+            "/my-drafts/{ref}/surplus-offers/{offer_ref}/revisions"
+        )
+        def household_surplus_revision_history(
+            ref: str,
+            offer_ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            identity = Principal(session.subject, session.roles)
+            if ("household" not in identity.roles or not _synthetic_ref(ref)
+                    or not _synthetic_ref(offer_ref)):
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            try:
+                revisions = household_surplus_draft_ledger.history_owned(
+                    identity, ref, offer_ref,
+                )
+            except LookupError:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND") from None
+            except SurplusDraftIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
+                ) from exc
+            except SurplusDraftStorageError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                ) from exc
+            except (RuntimeError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                ) from exc
+            entries = []
+            active_digest = household_surplus_draft_ledger.schema.digest
+            current_input_revision = current_household_input_revision(ref, identity)
+            for index, record in enumerate(revisions):
+                schema_matches = record.schema_digest == active_digest
+                previous = revisions[index - 1] if index else None
+                diff_matches = (
+                    schema_matches
+                    and (previous is None or previous.schema_digest == active_digest)
+                )
+                if schema_matches:
+                    values = "<dl>" + "".join(
+                        "<dt>" + escape(key) + "</dt><dd>"
+                        + escape(value) + "</dd>"
+                        for key, value in sorted(record.values.items())
+                    ) + "</dl>"
+                    state = "نسخهٔ طرح‌وارهٔ جاری"
+                    if diff_matches:
+                        before = {} if previous is None else previous.values
+                        changes = [
+                            (key, before.get(key), record.values.get(key))
+                            for key in sorted(set(before) | set(record.values))
+                            if before.get(key) != record.values.get(key)
+                        ]
+                        if changes:
+                            diff = "<ul>" + "".join(
+                                "<li><strong>" + escape(key) + "</strong>: "
+                                + ("بدون مقدار" if old is None else escape(old))
+                                + " ← "
+                                + ("حذف‌شده" if new is None else escape(new))
+                                + "</li>"
+                                for key, old, new in changes
+                            ) + "</ul>"
+                        else:
+                            diff = "<p>در این نسخه تغییری نسبت به نسخهٔ قبل ثبت نشده است.</p>"
+                        diff_block = (
+                            '<section aria-label="تفاوت با نسخهٔ قبل"><h4>'
+                            'تفاوت با نسخهٔ قبل</h4>' + diff + '</section>'
+                        )
+                    else:
+                        diff_block = (
+                            '<p>طرح‌وارهٔ نسخهٔ قبل متفاوت است؛ تفاوت مقادیر '
+                            'نمایش داده نمی‌شود.</p>'
+                        )
+                else:
+                    values = "<p>طرح‌واره تغییر کرده؛ مقادیر این نسخه نمایش داده نمی‌شود.</p>"
+                    state = "نیازمند بازبینی در طرح‌وارهٔ جاری"
+                    diff_block = (
+                        '<p>طرح‌واره تغییر کرده؛ تفاوت مقادیر قابل مقایسه نیست.</p>'
+                    )
+                entries.append(
+                    '<section><h3>نسخه ' + str(record.revision)
+                    + ' · طرح‌واره ' + str(record.schema_version) + '</h3>'
+                    + '<p>' + state + '</p>'
+                    + ('<p>' + ('به نسخه اطلاعات خانوار جاری متصل است'
+                       if record.input_revision is not None
+                       and record.input_revision == current_input_revision else
+                       'نسخه اطلاعات خانوار قدیمی یا ثبت‌نشده؛ این پیش‌نویس جاری نیست')
+                       + (" · نسخه ورودی " + str(record.input_revision)
+                          if record.input_revision is not None else '')
+                       + '</p>' if household_input_ledger is not None else '')
+                    + values + diff_block + '</section>'
+                )
+            body = (
+                '<article class="panel"><h2>تاریخچهٔ پیش‌نویس مازاد</h2>'
+                '<p>نسخه‌ها فقط‌خواندنی‌اند و تغییر یا حذف نمی‌شوند.</p>'
+                + ''.join(entries)
+                + '<p><a href="/my-drafts/' + quote(ref)
+                + '/surplus-offers?offer_ref=' + quote(offer_ref)
+                + '">بازگشت به ویرایش</a></p>'
+                + '<p><a href="/my-drafts/' + quote(ref)
+                + '/surplus-offers">بازگشت به فهرست</a></p></article>'
+            )
+            return page("روناس — تاریخچهٔ پیش‌نویس مازاد", body,
+                        logged_in=True)
+
+        @router.get("/my-drafts/{ref}/surplus-offers")
+        def household_surplus_draft_page(
+            ref: str,
+            offer_ref: str | None = None,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            identity = Principal(session.subject, session.roles)
+            if ("household" not in identity.roles
+                    or not _synthetic_ref(ref)
+                    or (offer_ref is not None and not _synthetic_ref(offer_ref))):
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            try:
+                permitted = household_profile_access_authority(
+                    identity, ref, household_surplus_draft_ledger.schema.schema_ref,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",
+                ) from exc
+            if permitted is not True:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            current_input_revision = current_household_input_revision(ref, identity)
+            if offer_ref is None:
+                try:
+                    records = household_surplus_draft_ledger.list_owned(identity, ref)
+                except LookupError:
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND") from None
+                except SurplusDraftIntegrityError as exc:
+                    raise HTTPException(
+                        503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
+                    ) from exc
+                except SurplusDraftStorageError as exc:
+                    raise HTTPException(
+                        503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                    ) from exc
+                except (RuntimeError, sqlite3.Error) as exc:
+                    raise HTTPException(503, detail="SURPLUS_DRAFT_UNAVAILABLE") from exc
+                items = []
+                for record in records:
+                    input_matches = (
+                        record.input_revision is not None
+                        and record.input_revision == current_input_revision
+                    )
+                    state = (
+                        "طرح‌واره تغییر کرده؛ بازبینی لازم است"
+                        if record.schema_digest != household_surplus_draft_ledger.schema.digest
+                        else "نسخه " + str(record.revision)
+                        + " · متصل به نسخه اطلاعات خانوار جاری"
+                        if household_input_ledger is not None and input_matches
+                        else "نسخه " + str(record.revision)
+                        + " · اطلاعات خانوار تغییر کرده یا نسخه ثبت نشده؛ بازبینی لازم است"
+                        if household_input_ledger is not None
+                        else "نسخه " + str(record.revision) + " · خصوصی و منتشرنشده"
+                    )
+                    href = ("/my-drafts/" + quote(ref)
+                            + "/surplus-offers?offer_ref=" + quote(record.offer_ref))
+                    history_href = (
+                        "/my-drafts/" + quote(ref) + "/surplus-offers/"
+                        + quote(record.offer_ref) + "/revisions"
+                    )
+                    items.append(
+                        '<li><a href="' + escape(href, quote=True) + '">'
+                        + escape(record.offer_ref) + '</a><span>'
+                        + escape(state) + '</span><a href="'
+                        + escape(history_href, quote=True)
+                        + '">تاریخچه نسخه‌ها</a></li>'
+                    )
+                body = (
+                    '<article class="panel"><h2>پیش‌نویس‌های مازاد من</h2>'
+                    '<p>فهرست فقط شناسه و وضعیت نسخه را نشان می‌دهد و مقدار فرم‌ها را افشا نمی‌کند.</p>'
+                    + ('<ul>' + ''.join(items) + '</ul>' if items else
+                       '<p>هنوز پیش‌نویسی ثبت نشده است.</p>')
+                    + '<p><a class="button" href="/my-drafts/' + quote(ref)
+                    + '/surplus-offers/new">شروع پیش‌نویس مازاد جدید</a></p>'
+                    '<p><a href="/my-drafts/' + quote(ref)
+                    + '/cultivation-inputs">بازگشت به پرونده</a></p></article>'
+                )
+                return page("روناس — پیش‌نویس‌های مازاد", body,
+                            logged_in=True, local_test_form=True)
+            if not _synthetic_ref(offer_ref):
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            current = None
+            try:
+                current = household_surplus_draft_ledger.read_owned(
+                    identity, ref, offer_ref,
+                )
+            except LookupError:
+                pass
+            except SurplusDraftIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
+                ) from exc
+            except SurplusDraftStorageError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                ) from exc
+            except RuntimeError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",
+                ) from exc
+            except sqlite3.Error as exc:
+                raise HTTPException(503, detail="SURPLUS_DRAFT_UNAVAILABLE") from exc
+            schema_matches = (
+                current is not None
+                and current.schema_digest == household_surplus_draft_ledger.schema.digest
+            )
+            input_matches = (
+                current is not None and current.input_revision is not None
+                and current.input_revision == current_input_revision
+            )
+            values = current.values if schema_matches else {}
+            controls = []
+            for field in household_surplus_draft_ledger.schema.fields:
+                key = escape(field.key, quote=True)
+                label = escape(field.label)
+                value = values.get(field.key, "")
+                safe_value = escape(value, quote=True)
+                required = " required" if field.required else ""
+                if field.kind == "choice":
+                    options = ['<option value="">انتخاب کنید</option>']
+                    options.extend(
+                        '<option value="' + escape(choice, quote=True) + '"'
+                        + (" selected" if choice == value else "") + ">"
+                        + escape(choice) + "</option>"
+                        for choice in field.choices
+                    )
+                    control = '<select id="' + key + '" name="' + key + '"' + required + '>' + ''.join(options) + '</select>'
+                elif field.kind == "text":
+                    control = '<textarea id="' + key + '" name="' + key + '" maxlength="' + str(field.max_length) + '"' + required + '>' + escape(value) + '</textarea>'
+                else:
+                    control = '<input id="' + key + '" name="' + key + '" type="' + field.kind + '" maxlength="' + str(field.max_length) + '" value="' + safe_value + '"' + required + '>'
+                controls.append('<label for="' + key + '">' + label + '</label>' + control)
+            expected_revision = 0 if current is None else current.revision
+            state = (
+                "پیش‌نویس جدید و خصوصی" if current is None else
+                "نسخه " + str(current.revision) + " · خصوصی و منتشرنشده"
+                if schema_matches else
+                "نسخه " + str(current.revision)
+                + " · طرح‌واره تغییر کرده؛ مقادیر نسخه قبلی نمایش داده نمی‌شود"
+            )
+            if current is not None and household_input_ledger is not None:
+                state += (
+                    " · متصل به نسخه اطلاعات خانوار جاری"
+                    if input_matches else
+                    " · نسخه اطلاعات خانوار قدیمی یا ثبت نشده؛ پس از بازبینی، "
+                    "ذخیره نسخه تازه آن را به ورودی جاری متصل می‌کند"
+                )
+            body = (
+                '<article class="panel"><h2>پیش‌نویس مازاد خانوار</h2>'
+                '<p>' + state + '</p>'
+                '<p>فقط فیلدهای تعریف‌شده در طرح‌وارهٔ جاری دریافت می‌شوند؛ '
+                'این پیش‌نویس برای خریداران قابل مشاهده نیست.</p>'
+                '<form method="post" action="/my-drafts/' + quote(ref)
+                + '/surplus-offers"><input type="hidden" name="csrf" value="'
+                + escape(session.csrf, quote=True) + '">'
+                '<input type="hidden" name="offer_ref" value="'
+                + escape(offer_ref, quote=True) + '">'
+                '<input type="hidden" name="action_id" value="DEMO-OFFER-UI-'
+                + secrets.token_hex(10).upper() + '">'
+                '<input type="hidden" name="expected_revision" value="'
+                + str(expected_revision) + '">'
+                '<input type="hidden" name="input_revision" value="'
+                + ('' if current_input_revision is None else str(current_input_revision))
+                + '">'
+                + ''.join(controls)
+                + '<button type="submit">ذخیره نسخه خصوصی</button></form>'
+                '<p>ثبت پیش‌نویس به‌معنی تأیید کیفیت، عرضه، قیمت یا معامله نیست.</p>'
+                '<p><a href="/my-drafts/' + quote(ref)
+                + '/cultivation-inputs">بازگشت به پرونده</a></p>'
+                + ('<p><a href="/my-drafts/' + quote(ref)
+                   + '/surplus-offers/' + quote(offer_ref)
+                   + '/revisions">مشاهده تاریخچه نسخه‌ها</a></p>'
+                   if current is not None else
+                   '<p><a href="/my-drafts/' + quote(ref)
+                   + '/surplus-offers">انصراف و دور انداختن فرم ذخیره‌نشده</a></p>')
+                + '</article>'
+            )
+            return page("روناس — پیش‌نویس مازاد خانوار", body,
+                        logged_in=True, local_test_form=True)
+
+        @router.post("/my-drafts/{ref}/surplus-offers")
+        async def household_surplus_draft_submit(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            fields = frozenset(
+                {"csrf", "offer_ref", "action_id", "expected_revision"}
+                | {field.key for field in household_surplus_draft_ledger.schema.fields}
+            )
+            principal, form = await checked_browser_form(
+                request, sid, fields=fields,
+                optional_fields=frozenset({"input_revision"}),
+                max_bytes=8192, max_fields=11,
+                max_value_length=300, value_encoding="utf-8",
+            )
+            if not _synthetic_ref(ref) or not _synthetic_ref(form["offer_ref"]):
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            current_input_revision = current_household_input_revision(ref, principal)
+            submitted_input_revision = (
+                form_version(form.get("input_revision", ""), zero_allowed=False)
+                if form.get("input_revision", "") else None
+            )
+            if submitted_input_revision != current_input_revision:
+                raise HTTPException(
+                    409, detail="HOUSEHOLD_INPUT_REVISION_CHANGED",
+                )
+            try:
+                household_surplus_draft_ledger.save(
+                    principal, ref, form["offer_ref"],
+                    action_id=form["action_id"],
+                    expected_revision=form_version(form["expected_revision"]),
+                    input_revision=current_input_revision,
+                    values={
+                        field.key: form[field.key]
+                        for field in household_surplus_draft_ledger.schema.fields
+                    },
+                )
+            except SurplusDraftConflict as exc:
+                raise HTTPException(
+                    409, detail="SURPLUS_DRAFT_VERSION_CONFLICT",
+                ) from exc
+            except LookupError as exc:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND") from exc
+            except SurplusDraftIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_INTEGRITY_FAILURE",
+                ) from exc
+            except SurplusDraftStorageError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_UNAVAILABLE",
+                ) from exc
+            except RuntimeError as exc:
+                raise HTTPException(
+                    503, detail="SURPLUS_DRAFT_AUTHORITY_UNAVAILABLE",
+                ) from exc
+            except sqlite3.Error as exc:
+                raise HTTPException(503, detail="SURPLUS_DRAFT_UNAVAILABLE") from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_SURPLUS_DRAFT") from exc
+            return RedirectResponse(
+                "/my-drafts/" + quote(ref) + "/surplus-offers",
+                status_code=303,
+            )
+
+    if household_surplus_publication_authority is not None:
+        @router.get("/my-drafts/{ref}/surplus-publication-readiness")
+        def household_surplus_readiness_page(
+            ref: str,
+            offer_ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            identity = Principal(session.subject, session.roles)
+            try:
+                result = publication_readiness_snapshot(
+                    household_surplus_publication_authority,
+                    identity, ref, offer_ref, household_surplus_draft_ledger,
+                    (household_input_ledger.read_owned_input_revisions
+                     if household_input_ledger is not None else None),
+                    household_surplus_producer_consent_ledger,
+                )
+            except HTTPException as exc:
+                if exc.status_code == 404:
+                    return page(
+                        "روناس — آمادگی پیشنهاد مازاد",
+                        '<p>پیشنهاد در دسترس نیست.</p>'
+                        '<p><a href="/my-drafts/' + quote(ref) + '/surplus-offers">بازگشت به فهرست پیشنهادها</a></p>',
+                        logged_in=True, code=404,
+                    )
+                return page(
+                    "روناس — آمادگی پیشنهاد مازاد",
+                    '<p role="status">وضعیت آمادگی اکنون قابل دریافت نیست؛ بعداً دوباره تلاش کنید.</p>'
+                    '<p><a href="/my-drafts/' + quote(ref) + '/surplus-offers">بازگشت به فهرست پیشنهادها</a></p>',
+                    logged_in=True, code=503,
+                )
+            blocker_labels = {
+                "CURRENT_OFFER_UNAVAILABLE": "نسخه جاری پیشنهاد در دسترس نیست",
+                "OFFER_SCHEMA_CHANGED": "ساختار پیشنهاد تغییر کرده و بازبینی لازم است",
+                "OFFER_VERSION_CHANGED": "نسخه پیشنهاد تغییر کرده است",
+                "PRODUCER_APPROVAL_REQUIRED": "تأیید تولیدکننده ثبت نشده است",
+                "PRODUCER_APPROVAL_STALE": "تأیید تولیدکننده با نسخه جاری هم‌خوان نیست",
+                "QUALITY_SAFETY_VERIFICATION_REQUIRED": "بررسی مستقل کیفیت و ایمنی ثبت نشده است",
+                "QUALITY_SAFETY_VERIFICATION_STALE": "بررسی کیفیت و ایمنی با نسخه جاری هم‌خوان نیست",
+                "SELLER_ELIGIBILITY_UNVERIFIED": "وضعیت صلاحیت فروشنده احراز نشده است",
+                "HOUSEHOLD_PERMISSION_INACTIVE": "مجوز خانوار فعال نیست",
+                "MARKETPLACE_GATE_CLOSED": "درگاه فنی بازارگاه باز نیست",
+                "HOUSEHOLD_INPUT_REVISION_UNBOUND":
+                    "پیش‌نویس به نسخه اطلاعات خانوار متصل نشده است",
+                "HOUSEHOLD_INPUT_REVISION_CHANGED":
+                    "نسخه اطلاعات خانوار تغییر کرده است",
+                "HOUSEHOLD_INPUT_REVISION_UNAVAILABLE":
+                    "نسخه جاری اطلاعات خانوار در دسترس نیست",
+            }
+            blockers = result.get("blockers")
+            if (not isinstance(blockers, list)
+                    or any(code not in blocker_labels for code in blockers)
+                    or result.get("published") is not False
+                    or result.get("real_data") is not False):
+                return page(
+                    "روناس — آمادگی پیشنهاد مازاد",
+                    '<p role="status">وضعیت آمادگی قابل نمایش نیست.</p>',
+                    logged_in=True, code=503,
+                )
+            state = (
+                "الزامات فنیِ تعریف‌شده برای این نسخه برقرار است"
+                if result.get("can_publish") is True
+                and result.get("state") == "PUBLICATION_AUTHORIZED"
+                else "پیشنهاد هنوز در وضعیت پیش‌نویس غیرعمومی است"
+            )
+            items = ''.join(
+                '<li>' + blocker_labels[code] + '</li>' for code in blockers
+            ) or '<li>مانعی در کنترل‌های فنی ثبت نشده است</li>'
+            consent_state = result.get("producer_consent_state", "NOT_RECORDED")
+            consent_form = ""
+            if household_surplus_producer_consent_ledger is not None:
+                if consent_state not in ("NOT_RECORDED", "APPROVED", "WITHDRAWN"):
+                    return page(
+                        "روناس — آمادگی پیشنهاد مازاد",
+                        '<p role="status">وضعیت موافقت قابل نمایش نیست.</p>',
+                        logged_in=True, code=503,
+                    )
+                next_approval = consent_state != "APPROVED"
+                button = (
+                    "موافقت با انتشار همین نسخه" if next_approval
+                    else "پس‌گرفتن موافقت انتشار همین نسخه"
+                )
+                consent_form = (
+                    '<h3>موافقت تولیدکننده</h3><p>وضعیت نسخه جاری: '
+                    + escape(consent_state) + '</p>'
+                    '<p>این اقدام فقط موافقت یا پس‌گرفتن موافقت برای همین نسخه است؛ '
+                    'به‌تنهایی باعث انتشار نمی‌شود.</p>'
+                    '<form method="post" action="/my-drafts/'
+                    + quote(ref) + '/surplus-offers/' + quote(offer_ref)
+                    + '/publication-consent">'
+                    '<input type="hidden" name="csrf" value="'
+                    + escape(session.csrf, quote=True) + '">'
+                    '<input type="hidden" name="action_id" value="DEMO-CONSENT-'
+                    + secrets.token_hex(10).upper() + '">'
+                    '<input type="hidden" name="offer_revision" value="'
+                    + str(result["revision"]) + '">'
+                    '<input type="hidden" name="payload_digest" value="'
+                    + escape(result["payload_digest"], quote=True) + '">'
+                    '<input type="hidden" name="approved" value="'
+                    + ("true" if next_approval else "false") + '">'
+                    '<button type="submit">' + button + '</button></form>'
+                )
+            body = (
+                '<article class="panel"><h2>آمادگی فنی پیشنهاد مازاد</h2>'
+                '<p>' + state + '</p>'
+                '<p>این نتیجه فقط بررسی فنیِ نسخه جاری است؛ به‌معنای انتشار، '
+                'نمایش به خریدار، مجوز فروش، تأیید علمی کیفیت یا اقدام مالی نیست.</p>'
+                '<p>وضعیت انتشار: منتشر نشده</p>'
+                '<h3>موارد نیازمند توجه</h3><ul>' + items + '</ul>'
+                + consent_form
+                + '<p><a href="/my-drafts/' + quote(ref)
+                + '/surplus-offers">بازگشت به فهرست پیشنهادها</a></p></article>'
+            )
+            return page("روناس — آمادگی پیشنهاد مازاد", body, logged_in=True)
+
+        if household_surplus_producer_consent_ledger is not None:
+            @router.post(
+                "/my-drafts/{ref}/surplus-offers/{offer_ref}/publication-consent",
+            )
+            async def household_surplus_publication_consent_submit(
+                ref: str, offer_ref: str, request: Request,
+                sid: str | None = Cookie(default=None, alias=cookie_name),
+            ) -> RedirectResponse:
+                principal, form = await checked_browser_form(
+                    request, sid,
+                    fields=frozenset({"csrf", "action_id", "offer_revision",
+                                      "payload_digest", "approved"}),
+                    max_bytes=4096, max_fields=5, max_value_length=128,
+                )
+                if form["approved"] not in ("true", "false"):
+                    raise HTTPException(422, detail="INVALID_PRODUCER_CONSENT")
+                try:
+                    household_surplus_producer_consent_ledger.record(
+                        principal, ref, offer_ref,
+                        expected_offer_revision=form_version(
+                            form["offer_revision"], zero_allowed=False,
+                        ),
+                        expected_payload_digest=form["payload_digest"],
+                        action_id=form["action_id"],
+                        approved=form["approved"] == "true",
+                    )
+                except ProducerConsentConflict as exc:
+                    raise HTTPException(409, detail="PRODUCER_CONSENT_STALE") from exc
+                except LookupError as exc:
+                    raise HTTPException(404, detail="OFFER_NOT_FOUND") from exc
+                except ProducerConsentIntegrityError as exc:
+                    raise HTTPException(503, detail="PRODUCER_CONSENT_INTEGRITY_FAILURE") from exc
+                except (sqlite3.Error, RuntimeError) as exc:
+                    raise HTTPException(503, detail="PRODUCER_CONSENT_UNAVAILABLE") from exc
+                except ValueError as exc:
+                    raise HTTPException(422, detail="INVALID_PRODUCER_CONSENT") from exc
+                return RedirectResponse(
+                    "/my-drafts/" + quote(ref)
+                    + "/surplus-publication-readiness?offer_ref=" + quote(offer_ref),
+                    status_code=303,
+                )
+
+    if isinstance(household_input_ledger, SqliteSyntheticExpertQuestionLedger):
+        @router.get("/my-drafts/{ref}/question-responses")
+        def household_question_response_history(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            try:
+                notes = household_input_ledger.read_owned_question_responses(
+                    ref, Principal(session.subject, session.roles),
+                )
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_QUESTION_RESPONSE_UNAVAILABLE",
+                ) from exc
+            if notes is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            if (notes["engine"] != "DOMESTIC"
+                    or notes["purpose_consent_verified"] is not False
+                    or notes["expert_review_recorded"] is not False
+                    or notes["plan_accepted"] is not False
+                    or notes["real_data"] is not False):
+                raise HTTPException(
+                    503, detail="SYNTHETIC_QUESTION_RESPONSE_UNAVAILABLE",
+                )
+            # Only the latest question on the CURRENT owner's input
+            # revision may be answered. Historical lines remain visible.
+            current_items = [
+                q for q in notes["questions"]
+                if q["is_current_input_version"]
+            ]
+            active_question = (
+                max(current_items, key=lambda item: item["question_revision"])
+                if current_items else None
+            )
+            reply_form = ""
+            if (active_question is not None
+                    and active_question["response_state"] == "MISSING_RESPONSE"
+                    and active_question["bound_input_revision"] > 0):
+                reply_form = (
+                    '<section id="owner-demo-reply" aria-label="پاسخ ساختاری آزمایشی خانوار">'
+                    '<h3>ثبت مرجع پاسخ DEMO</h3>'
+                    '<p>پاسخ واقعی یا اطلاعات شخصی دریافت نمی‌شود. '
+                    'این عمل تأیید متخصص نیست.</p>'
+                    '<form method="post" action="/my-drafts/'
+                    + quote(ref) + '/question-responses/demo-reply">'
+                    '<input type="hidden" name="csrf" value="'
+                    + escape(session.csrf, quote=True) + '">'
+                    '<input type="hidden" name="action_id" value="DEMO-UI-R-'
+                    + secrets.token_hex(10).upper() + '">'
+                    '<input type="hidden" name="case_version" value="'
+                    + str(notes["case_version"]) + '">'
+                    '<input type="hidden" name="input_revision" value="'
+                    + str(active_question["bound_input_revision"]) + '">'
+                    '<input type="hidden" name="question_revision" value="'
+                    + str(active_question["question_revision"]) + '">'
+                    '<label for="owner-demo-answer">پاسخ مرجعی نمونه</label>'
+                    '<select id="owner-demo-answer" name="scenario">'
+                    + sample_choice_options(prefix="DEMO-REPLY-")
+                    + '</select><button type="submit">ثبت پاسخ DEMO</button>'
+                    '</form></section>'
+                )
+            rows = ''.join(
+                '<li>پرسش آزمایشی ' + str(q["question_revision"])
+                + ' · نسخه ورودی ' + str(q["bound_input_revision"])
+                + ' · وضعیت ' + escape(q["response_state"])
+                + (' · ارجاع پاسخ ' + escape(q["response_ref"])
+                   if q["response_ref"] else '')
+                + (' · ارجاع شاهد ' + escape(q["evidence_ref"])
+                   if q["evidence_ref"] else '')
+                + (' · متصل به رسید مرحله ' + escape(q["stage_ref"])
+                   + ' · نسخه رسید ' + str(q["stage_observation_revision"])
+                   if q.get("stage_ref") else '')
+                + (' · نسخه فعلی' if q["is_current_input_version"]
+                   else ' · نسخه تاریخی')
+                + '</li>'
+                for q in notes["questions"]
+            )
+            body = (
+                '<article class="panel"><h2>تاریخچه پاسخ‌های ساختاری خانوار '
+                '(فقط DEMO)</h2>'
+                '<p>پرونده ' + escape(notes["case_ref"])
+                + ' · نسخه ' + str(notes["case_version"]) + '</p>'
+                + ('<ul>' + rows + '</ul>' if rows else
+                   '<p>هنوز پرسشی درباره ورودی خانوار ثبت نشده است.</p>')
+                + '<p>این پاسخ‌ها صرفاً ارجاع مصنوعی هستند؛ '
+                'رضایت خانوار، بررسی کفایت داده، تصمیم متخصص یا '
+                'برنامه پذیرفته‌شده محسوب نمی‌شوند.</p>'
+                '<p>در این صفحه فرم دریافت اطلاعات واقعی یا '
+                'فرمان تأیید/رد وجود ندارد.</p>'
+                + reply_form
+                + '<p><a href="/my-drafts/' + quote(ref)
+                + '/input-revisions">بازگشت به تاریخچه نسخه‌ها</a></p>'
+                '</article>'
+            )
+            return page(
+                "روناس — پاسخ‌های آزمایشی خانوار",
+                body, logged_in=True, local_test_form=True,
+            )
+
+        @router.post("/my-drafts/{ref}/question-responses/demo-reply")
+        async def household_demo_reply(
+            ref: str, request: Request,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> RedirectResponse:
+            principal, form = await checked_browser_form(
+                request, sid, fields=frozenset({
+                    "csrf", "action_id", "case_version", "input_revision",
+                    "question_revision", "scenario",
+                }),
+            )
+            if form["scenario"] not in ("DEMO-REPLY-ALPHA", "DEMO-REPLY-BETA"):
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM")
+            try:
+                saved = household_input_ledger.append_owned_question_response(
+                    ref, principal,
+                    action_id=form["action_id"],
+                    track="HOUSEHOLD_INPUT_ADEQUACY",
+                    expected_case_version=form_version(
+                        form["case_version"], zero_allowed=False,
+                    ),
+                    expected_input_revision=form_version(
+                        form["input_revision"], zero_allowed=False,
+                    ),
+                    expected_question_revision=form_version(
+                        form["question_revision"], zero_allowed=False,
+                    ),
+                    answer_ref=form["scenario"],
+                    evidence_ref="DEMO-OWNER-PENDING-REF",
+                )
+            except ReviewQuestionConflict as exc:
+                raise HTTPException(
+                    409, detail="SYNTHETIC_RESPONSE_VERSION_CONFLICT",
+                ) from exc
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_QUESTION_RESPONSE_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_LOCAL_TEST_FORM") from exc
+            if saved is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            return RedirectResponse(
+                "/my-drafts/" + quote(ref) + "/question-responses",
+                status_code=303,
+            )
+
+    if (technical_review_ledger is not None
+            and owned_case_ledger is technical_review_ledger):
+        @router.get("/my-drafts/{ref}")
+        def household_detail(
+            ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            principal = Principal(session.subject, session.roles)
+            # The owner-specific facade checks exact immutable ownership,
+            # review integrity and records the read atomically.
+            result = technical_review_ledger.read_owned_domestic_status(
+                ref, principal,
+            )
+            if result is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            states = {
+                "UNREQUESTED": "درخواستی برای بررسی فنی ثبت نشده است.",
+                "EVIDENCE_REVIEW_REQUESTED": "درخواست بررسی شواهد ثبت شده است.",
+                "HUMAN_RESPONSE_RECORDED":
+                    "مرجع پاسخ انسانی ثبت شده؛ این وضعیت تأیید پرونده نیست.",
+            }
+            state = states[result["technical_review_state"]]
+            journey_html = ""
+            if isinstance(household_input_ledger,
+                          SqliteSyntheticHouseholdInputLedger):
+                input_info = household_input_ledger.read_owned_input_revisions(
+                    ref, principal,
+                )
+                question_info = (
+                    household_input_ledger.read_owned_question_responses(
+                        ref, principal,
+                    )
+                    if isinstance(household_input_ledger,
+                                  SqliteSyntheticExpertQuestionLedger)
+                    else None
+                )
+                if (input_info is None or
+                        (isinstance(household_input_ledger,
+                                    SqliteSyntheticExpertQuestionLedger)
+                         and question_info is None)):
+                    raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+                try:
+                    next_step = owner_next_action(input_info, question_info)
+                except JourneyEvidenceMismatch as exc:
+                    raise HTTPException(
+                        503, detail="SYNTHETIC_JOURNEY_UNAVAILABLE",
+                    ) from exc
+                next_page = (
+                    "/my-drafts/" + quote(ref) +
+                    ("/question-responses#owner-demo-reply"
+                     if next_step == "RESPOND_TO_EXPERT_QUESTION_DEMO" else
+                     "/question-responses"
+                     if next_step == "RESPONSE_RECORDED_WAIT_FOR_EXPERT_DEMO" else
+                     "/input-revisions#domestic-demo-correction")
+                )
+                guidance = {
+                    "RESPOND_TO_EXPERT_QUESTION_DEMO":
+                        "پرسش ساختاری جاری منتظر پاسخ مرجعی نمونه است",
+                    "RESPONSE_RECORDED_WAIT_FOR_EXPERT_DEMO":
+                        "پاسخ ثبت شده؛ بررسی و تأیید تخصصی هنوز انجام نشده است",
+                    "PREPARE_OR_REVISE_INPUT_DEMO":
+                        "نسخه اطلاعات آزمایشی را بررسی یا اصلاح کنید",
+                }[next_step]
+                journey_html = (
+                    '<nav class="journey" aria-label="اقدام بعدی پرونده خانوار">'
+                    '<h3>اقدام بعدی در پرونده</h3><p>'
+                    + escape(guidance) + '</p><p><a href="'
+                    + escape(next_page, quote=True) +
+                    '">رفتن به مرحله مرتبط</a></p>'
+                    '<p>این راهنما پیشنهاد ناوبری است؛ '
+                    'رضایت، طرح کشت یا تأیید علمی نیست.</p></nav>'
+                )
+            body = (
+                '<article class="panel"><h2>پرونده ساختگی '
+                + escape(result["ref"]) + '</h2>'
+                '<p>نسخه پرونده: ' + str(result["version"]) + '</p>'
+                '<p>وضعیت پرونده: DRAFT_ONLY</p>'
+                '<p>پیگیری فنی: ' + escape(state) + '</p>'
+                + journey_html
+                + readonly_domestic_preparation_html(
+                    result["cultivation_preparation"]
+                )
+                + '<p>هیچ تصمیم تجاری یا عملیاتی ثبت نشده است.</p>'
+                '<p><a href="/my-drafts/' +
+                escape(result["ref"], quote=True) +
+                '/versions">مشاهده تاریخچه نسخه‌ها</a></p>'
+                + ('<p><a href="/my-drafts/'
+                   + quote(ref) + '/input-revisions">'
+                   'تاریخچه آزمایشی اصلاح اطلاعات خانوار</a></p>'
+                   if household_input_ledger is not None else '')
+                + ('<p><a href="/my-drafts/' + quote(ref)
+                   + '/cultivation-inputs">اطلاعات ساختاریافته پرونده کشت</a></p>'
+                   if (household_profile_schema is not None
+                       and household_profile_access_authority is not None) else '')
+                + ('<p><a href="/my-drafts/' + quote(ref)
+                   + '/progress-notes">یادداشت پیشرفت ساختگی (DEMO)</a></p>'
+                   if household_input_ledger is not None else '')
+                + ('<form method="get" action="/my-drafts/' + quote(ref)
+                   + '/surplus-publication-readiness">'
+                   '<label for="surplus-offer-ref">شناسه پیشنهاد مازاد (DEMO)</label>'
+                   '<input id="surplus-offer-ref" name="offer_ref" required '
+                   'pattern="DEMO-[A-Za-z0-9._:-]{1,96}" maxlength="101">'
+                   '<button type="submit">بررسی آمادگی فنی</button></form>'
+                   if household_surplus_publication_authority is not None else '')
+                + ('<p><a href="/my-drafts/' + quote(ref)
+                   + '/question-responses">'
+                   'پرسش و پاسخ مرجعی خانوار (فقط DEMO)</a></p>'
+                   if isinstance(household_input_ledger,
+                                 SqliteSyntheticExpertQuestionLedger) else '')
+                + '<p><a href="/">بازگشت به پرونده‌های من</a></p>'
+                '</article>'
+            )
+            return page("روناس — وضعیت پرونده من (آزمایشی)",
+                        body, logged_in=True)
+
+
+    def technical_worklist(engine: str, principal: Principal,
+                           after_ref: str | None) -> str:
+        if technical_review_ledger is None:
+            return ""
+        try:
+            result = technical_review_ledger.list_technical_review_worklist(
+                engine, principal, after_ref=after_ref, limit=20
+            )
+        except LedgerIntegrityError:
+            # The application owns the fail-closed 503 for corrupted audit.
+            raise
+        except ValueError as exc:
+            raise HTTPException(422, detail="INVALID_WORKLIST_QUERY") from exc
+        links = []
+        for item in result["items"]:
+            ref = escape(item["ref"])
+            url = "/admin/technical-review/" + engine.lower() + "/"
+            links.append(
+                '<li><a href="' + url + ref + '">'
+                + ref + '</a> — ' + escape(item["technical_review_state"])
+                + ' · DRAFT_ONLY'
+                + (' · <a href="/admin/export/research/drafts/'
+                   + quote(item["ref"]) + '">فضای پژوهش صادرات</a>'
+                   if engine == "EXPORT" else '')
+                + '</li>'
+            )
+        body = ('<ul>' + ''.join(links) + '</ul>' if links
+                else '<p>پرونده ساختگی تخصیص‌یافته‌ای برای این بخش وجود ندارد.</p>')
+        if result["next_cursor"]:
+            parameter = ("domestic_after_ref" if engine == "DOMESTIC"
+                         else "export_after_ref")
+            body += ('<a href="/admin?' + parameter + '='
+                     + quote(result["next_cursor"]) + '">پرونده‌های بعدی</a>')
+        return ('<section class="section"><h3>فهرست فنی بررسی شواهد'
+                ' (فقط نمونه آزمایشی)</h3>' + body + '</section>')
+
+    if technical_review_ledger is not None:
+        @router.get("/admin/technical-review/{engine}/{ref}")
+        def technical_review_detail(
+            engine: str, ref: str,
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            engine_key = engine.upper()
+            if engine_key not in ("DOMESTIC", "EXPORT"):
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            principal = Principal(session.subject, session.roles)
+            try:
+                review = technical_review_ledger.read_review_for_operator(
+                    engine_key, ref, principal,
+                )
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="TECHNICAL_REVIEW_UNAVAILABLE",
+                ) from exc
+            if review is None:
+                raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+            history = ''.join(
+                '<li>گام ' + str(item["revision"]) + ': '
+                + escape(item["stage"]) + ' · مرجع درخواست '
+                + escape(item["request_ref"]) + ' · مرجع شاهد '
+                + escape(item["evidence_ref"])
+                + (' · مرجع پاسخ ' + escape(item["decision_ref"])
+                   if item["decision_ref"] else '') + '</li>'
+                for item in review["history"]
+            ) or '<li>هنوز گام فنی ثبت نشده است.</li>'
+            action_id = 'DEMO-UI-REVIEW-' + secrets.token_hex(10).upper()
+            form = ''
+            if (review["technical_review_state"]
+                    in ("UNREQUESTED", "HUMAN_RESPONSE_RECORDED")):
+                review_revision = review["review_revision"]
+                form = (
+                    '<form method="post" action="/admin/technical-review/'
+                    + engine.lower() + '/' + quote(ref) + '/request">'
+                    '<input type="hidden" name="csrf" value="'
+                    + escape(session.csrf, quote=True) + '">'
+                    '<input type="hidden" name="action_id" value="'
+                    + action_id + '">'
+                    '<input type="hidden" name="case_version" value="'
+                    + str(review["case_version"]) + '">'
+                    '<input type="hidden" name="review_revision" value="'
+                    + str(review_revision) + '">'
+                    '<label>مرجع درخواست DEMO <input name="request_ref" '
+                    'required pattern="DEMO-[A-Za-z0-9._:-]{1,96}" '
+                    'maxlength="101"></label>'
+                    '<label>مرجع شاهد DEMO <input name="evidence_ref" '
+                    'required pattern="DEMO-[A-Za-z0-9._:-]{1,96}" '
+                    'maxlength="101"></label>'
+                    '<button type="submit">ثبت درخواست بررسی شواهد</button></form>'
+                )
+            elif review["technical_review_state"] == "EVIDENCE_REVIEW_REQUESTED":
+                review_revision = review["review_revision"]
+                request_ref = review["history"][-1]["request_ref"]
+                form = (
+                    '<form method="post" action="/admin/technical-review/'
+                    + engine.lower() + '/' + quote(ref) + '/human-response">'
+                    '<input type="hidden" name="csrf" value="'
+                    + escape(session.csrf, quote=True) + '">'
+                    '<input type="hidden" name="action_id" value="'
+                    + action_id + '">'
+                    '<input type="hidden" name="case_version" value="'
+                    + str(review["case_version"]) + '">'
+                    '<input type="hidden" name="review_revision" value="'
+                    + str(review_revision) + '">'
+                    '<input type="hidden" name="request_ref" value="'
+                    + escape(request_ref, quote=True) + '">'
+                    '<label>مرجع شاهد پاسخ DEMO <input name="evidence_ref" '
+                    'required pattern="DEMO-[A-Za-z0-9._:-]{1,96}" '
+                    'maxlength="101"></label>'
+                    '<label>مرجع یادداشت انسانی DEMO <input name="decision_ref" '
+                    'required pattern="DEMO-[A-Za-z0-9._:-]{1,96}" '
+                    'maxlength="101"></label>'
+                    '<button type="submit">ثبت مرجع پاسخ انسانی</button></form>'
+                )
+            body = (
+                '<section class="section"><h2>' + escape(ref) + '</h2>'
+                '<p>موتור: ' + escape(engine_key) + ' · پرونده DRAFT_ONLY</p>'
+                '<p>وضعیت فنی: ' + escape(review["technical_review_state"])
+                + ' · نسخه پرونده ' + str(review["case_version"]) + '</p>'
+                '<ol>' + history + '</ol>' + form
+                + '<p>مرجع پاسخ انسانی محتوای یادداشت یا تأیید علمی، طرح کشت، '
+                'مجوز منبع یا تصمیم تجاری را ایجاد نمی‌کند.</p>'
+                '<p><a href="/admin">بازگشت به مدیریت</a></p></section>'
+            )
+            return page("روناس — پیگیری فنی بررسی شواهد", body,
+                        logged_in=True, local_test_form=True)
+
+        @router.post("/admin/technical-review/{engine}/{ref}/{operation}")
         async def technical_review_submit(
             engine: str, ref: str, operation: str, request: Request,
             sid: str | None = Cookie(default=None, alias=cookie_name),
@@ -2186,15 +4904,3 @@ def build_authenticated_ui_router(
                         for key in domains
                     )
             if role == "finance" and gate_source_usable:
-                gate_links += (
-                    '<p><a href="/admin/finance/source-arithmetic">'
-                    'ممیزی عددی نسخه‌بسته FIN-002 (بدون تصویب بودجه)'
-                    '</a></p>'
-                )
-            cards.append('<article class="panel"><h2>' + escape(label) + '</h2><p>'
-                         + escape(note) + '</p>' + worklist + gate_links
-                         + '</article>')
-        return page("مدیریت روناس — پنل واحد با دسترسی مجزا",
-                    '<div class="columns">' + ''.join(cards) + '</div>', logged_in=True)
-
-    return router

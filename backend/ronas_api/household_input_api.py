@@ -6,6 +6,7 @@ Keycloak Bearer access (not ambient session cookies) is required to mutate.
 """
 from collections.abc import Callable
 import sqlite3
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
@@ -25,6 +26,9 @@ from .household_input_profiles import (
     HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
 )
 from .stage_observation_artifacts import StageArtifactStore, StageArtifactStoreError
+
+HouseholdProfileKey = Annotated[StrictStr, Field(max_length=32)]
+HouseholdProfileValue = Annotated[StrictStr, Field(max_length=300)]
 
 
 class SyntheticManifestCorrection(BaseModel):
@@ -75,7 +79,8 @@ class HouseholdProfileCorrection(BaseModel):
     action_id: StrictStr
     expected_case_version: StrictInt
     expected_revision: StrictInt
-    values: dict[StrictStr, StrictStr]
+    # Bound key count and size at parsing time; schema validation comes later.
+    values: dict[HouseholdProfileKey, HouseholdProfileValue] = Field(max_length=6)
 
 
 class SyntheticHouseholdQuestionReply(BaseModel):

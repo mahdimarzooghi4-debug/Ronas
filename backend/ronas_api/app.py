@@ -48,6 +48,7 @@ from .domestic_surplus_drafts_api import build_domestic_surplus_drafts_router
 from .domestic_surplus_producer_consent import (
     ProducerConsentLedger, is_producer_consent_ledger,
 )
+from .request_body_limits import HouseholdProfileBodyLimitMiddleware
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -143,6 +144,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         title="Ronas bounded read-only API foundation",
         docs_url=None, redoc_url=None, openapi_url=None,
     )
+    app.add_middleware(HouseholdProfileBodyLimitMiddleware)
     @app.exception_handler(LedgerIntegrityError)
     @app.exception_handler(sqlite3.DatabaseError)
     async def synthetic_ledger_unavailable(_request, _exc) -> JSONResponse:

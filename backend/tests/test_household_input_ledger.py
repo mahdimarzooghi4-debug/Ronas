@@ -901,6 +901,13 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         stale = self.client.post(route, data=stale_form,
                                  headers={"Origin": ORIGIN}, follow_redirects=False)
         self.assertEqual(stale.status_code, 409, stale.text)
+        self.assertIn('role="alert"', stale.text)
+        self.assertIn("هیچ تغییری ثبت نشد", stale.text)
+        self.assertIn('href="/my-drafts/DEMO-D-1/progress-notes"', stale.text)
+        self.assertNotIn("stale browser context", stale.text)
+        self.assertEqual(self.ledger.read_owned_progress_notes(
+            "DEMO-D-1", Principal(OWNER, frozenset({"household"})),
+        )["current_revision"], 1)
 
     def test_progress_note_browser_correction_uses_owner_append_only_flow(self):
         self.browser()

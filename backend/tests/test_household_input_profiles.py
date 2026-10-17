@@ -491,6 +491,10 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             follow_redirects=False,
         )
         self.assertEqual(conflict.status_code, 409)
+        self.assertIn("هیچ تغییری ثبت نشد", conflict.text)
+        self.assertIn('href="/my-drafts/' + REF
+                      + '/stage-observations"', conflict.text)
+        self.assertNotIn("d" * 64, conflict.text)
         api_history = self.client.get(
             ROOT.replace("/cultivation-inputs", "/stage-observations"),
             headers=self.bearer(),
@@ -536,6 +540,17 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertIn("رسید قدیمی", history.text)
         self.assertIn("فقط رسید تاریخی موجود است", history.text)
         self.assertNotIn("· رسید جاری ·", history.text)
+        stale_form = dict(form, action_id="DEMO-STAGE-OBS-OLD-CONTEXT")
+        stale = self.client.post(
+            path, content=urlencode(stale_form),
+            headers={"Origin": ORIGIN,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        self.assertEqual(stale.status_code, 409, stale.text)
+        self.assertIn("این فرمان با نسخه جاری پرونده", stale.text)
+        self.assertNotIn("DEMO-STAGE-OBS-OLD-CONTEXT", stale.text)
+        self.assertTrue(self.ledger.verify_integrity())
 
     def test_assigned_specialist_reads_receipt_and_private_artifact(self):
         image = b"\x89PNG\r\n\x1a\n" + b"synthetic-stage-image"

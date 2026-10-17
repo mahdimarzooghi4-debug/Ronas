@@ -264,6 +264,28 @@ def page(title: str, body: str, *, logged_in: bool, code: int = 200,
     return response
 
 
+def stale_household_command_page(ref: str, section: str) -> HTMLResponse:
+    """Render a safe recovery path without echoing or replaying a stale form."""
+    labels = {
+        "progress-notes": "یادداشت‌های پیشرفت",
+        "stage-observations": "مشاهده‌های مرحله‌ای",
+    }
+    if not _synthetic_ref(ref) or section not in labels:
+        raise ValueError("supported synthetic household recovery target required")
+    target = "/my-drafts/" + quote(ref) + "/" + section
+    body = (
+        '<article class="panel"><h2>نسخه پرونده تغییر کرده</h2>'
+        '<p role="alert">این فرمان با نسخه جاری پرونده یا سابقه ثبت‌شده سازگار نبود؛ '
+        'هیچ تغییری ثبت نشد.</p>'
+        '<p>صفحه جاری را دوباره باز کنید و بر پایه اطلاعات تازه، فرمان جدید بسازید. '
+        'فرمان قبلی خودکار تکرار نمی‌شود.</p>'
+        '<p><a class="btn" href="' + escape(target, quote=True)
+        + '">بازخوانی ' + labels[section] + '</a></p>'
+        '<p><a href="/my-drafts/' + quote(ref) + '">بازگشت به پرونده</a></p>'
+        '</article>'
+    )
+    return page("روناس — نسخه پرونده تغییر کرده", body, logged_in=True, code=409)
+
 
 def readonly_domestic_preparation_html(preparation: dict) -> str:
     """One safe DEMO field display, shared by owner and assigned expert."""
@@ -1906,7 +1928,7 @@ def build_authenticated_ui_router(
         async def household_progress_note_submit(
             ref: str, request: Request,
             sid: str | None = Cookie(default=None, alias=cookie_name),
-        ) -> RedirectResponse:
+        ) -> Response:
             principal, form = await checked_browser_form(
                 request, sid, fields=frozenset({
                     "csrf", "action_id", "case_version", "revision",
@@ -1925,8 +1947,8 @@ def build_authenticated_ui_router(
                     corrects_revision=(form_version(form["corrects_revision"]) or None),
                     reported_at=form["reported_at"], note=form["note"],
                 )
-            except InputRevisionConflict as exc:
-                raise HTTPException(409, detail="SYNTHETIC_PROGRESS_VERSION_CONFLICT") from exc
+            except InputRevisionConflict:
+                return stale_household_command_page(ref, "progress-notes")
             except LedgerIntegrityError as exc:
                 raise HTTPException(503, detail="SYNTHETIC_PROGRESS_HISTORY_UNAVAILABLE") from exc
             except ValueError as exc:
@@ -2524,10 +2546,8 @@ def build_authenticated_ui_router(
                             ref, principal,
                             context_authority=household_stage_context_authority,
                         )
-                    except StageObservationConflict as exc:
-                        raise HTTPException(
-                            409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
-                        ) from exc
+                    except StageObservationConflict:
+                        return stale_household_command_page(ref, "stage-observations")
                     except (LedgerIntegrityError, sqlite3.Error) as exc:
                         raise HTTPException(
                             503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
@@ -2689,7 +2709,7 @@ def build_authenticated_ui_router(
                 async def household_stage_observation_submit(
                     ref: str, request: Request,
                     sid: str | None = Cookie(default=None, alias=cookie_name),
-                ) -> RedirectResponse:
+                ) -> Response:
                     principal, form = await checked_browser_form(
                         request, sid,
                         fields=frozenset({
@@ -2750,10 +2770,8 @@ def build_authenticated_ui_router(
                             ),
                             context_authority=household_stage_context_authority,
                         )
-                    except StageObservationConflict as exc:
-                        raise HTTPException(
-                            409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
-                        ) from exc
+                    except StageObservationConflict:
+                        return stale_household_command_page(ref, "stage-observations")
                     except StageArtifactStoreError as exc:
                         raise HTTPException(
                             503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",

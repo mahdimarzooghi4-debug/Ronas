@@ -1753,6 +1753,31 @@ class ExportResearchQueueTests(unittest.TestCase):
             self.assertEqual(history.status_code, 200, history.text)
             self.assertEqual(history.json()["items"][0]["note"], note)
             self.assertFalse(history.json()["report_approved"])
+            # Exercise the complete Keycloak BFF packet path across instances:
+            # the Persian download and versioned API must project the same
+            # encrypted finding without promoting a draft to an approved report.
+            packet_download = browser_a.get(detail + "/packet.json")
+            self.assertEqual(packet_download.status_code, 200,
+                             packet_download.text)
+            self.assertEqual(packet_download.headers["cache-control"], "no-store")
+            self.assertEqual(
+                packet_download.headers["content-disposition"],
+                'attachment; filename="ronas-export-demo-packet.json"',
+            )
+            packet = packet_download.json()
+            self.assertEqual(packet["case_ref"], ref)
+            self.assertEqual(packet["findings"][0]["note"], note)
+            self.assertTrue(packet["draft_only"])
+            self.assertFalse(packet["report_approved"])
+            self.assertFalse(packet["limitations"]["source_rights_verified"])
+            self.assertFalse(packet["limitations"]["commercial_actions_enabled"])
+            api_packet = browser_a.get(
+                f"/api/v1/admin/export/research/drafts/{ref}/research-packet",
+            )
+            self.assertEqual(api_packet.status_code, 200, api_packet.text)
+            self.assertEqual(api_packet.json()["packet_digest"],
+                             packet["packet_digest"])
+            self.assertEqual(api_packet.json()["findings"][0]["note"], note)
             self.assertEqual(
                 first_app.state.ronas_local_bff_session_backend, "postgresql",
             )

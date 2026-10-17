@@ -496,6 +496,20 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
                 and "household" in principal.roles
                 and principal.subject == record.owner_subject)
 
+    def progress_note_context(self, ref: str, principal: Principal) -> dict | None:
+        """Read current synthetic case/input lineage for the separate note store."""
+        with self._transaction() as db:
+            self._verify(db)
+            if not self._owner(ref, principal):
+                return None
+            record = self._catalogue[("DOMESTIC", ref)]
+            latest = db.execute(
+                "SELECT revision FROM household_input_revision WHERE ref=? "
+                "ORDER BY revision DESC LIMIT 1", (ref,),
+            ).fetchone()
+            return {"case_version": record.version,
+                    "current_input_revision": latest[0] if latest else 0}
+
     @staticmethod
     def _rows(db: sqlite3.Connection, ref: str) -> list[tuple]:
         return list(db.execute(

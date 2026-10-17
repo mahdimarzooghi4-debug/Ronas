@@ -1648,7 +1648,10 @@ class ExportResearchQueueTests(unittest.TestCase):
         settings = PostgresLocalBFFSettings(
             self.config, callback, POSTGRES_DSN, session_key_file,
         )
-        finding_key = secrets.token_bytes(32)
+        # This CI database is shared across PostgreSQL integration tests; use
+        # their stable synthetic key so global rotation tests can decrypt every
+        # row in the shared append-only table.
+        finding_key = bytes(range(32))
         nonce_holder = {}
         issued = {}
 

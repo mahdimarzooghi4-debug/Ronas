@@ -26,9 +26,11 @@ from ronas_api.household_input_profiles import (
 )
 from ronas_api.stage_observation_artifacts import PrivateFilesystemStageArtifactStore
 from ronas_api.postgres_stage_artifacts import PostgresStageArtifactStore
+from ronas_api.postgres_household_progress_notes import PostgresHouseholdProgressNoteLedger
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.local_keycloak_bff import (
-    PostgresLocalBFFSettings, create_postgres_local_test_bff,
+    LocalBFFSettings, PostgresLocalBFFSettings, create_local_test_bff,
+    create_postgres_local_test_bff,
 )
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
@@ -179,6 +181,36 @@ class HouseholdProfileFlowTests(unittest.TestCase):
     def allowed(self, principal, ref, schema_ref):
         return (schema_ref == self.schema.schema_ref
                 and "household" in principal.roles)
+
+    def test_local_bff_forwards_shared_progress_journal_to_household_api(self):
+        calls = []
+        journal = object.__new__(PostgresHouseholdProgressNoteLedger)
+        journal._schema_ref = self.schema.schema_ref
+        journal._authority = self.allowed
+        journal._context_reader = self.ledger.progress_note_context
+        journal.read_owned_progress_notes = lambda ref, principal: (
+            calls.append((ref, principal.subject))
+            or {"notes": [], "current_revision": 0, "real_data": False}
+        )
+        key_file = self.path.parent / "local-bff-composition.key"
+        key_file.write_bytes(secrets.token_bytes(32))
+        key_file.chmod(0o600)
+        loopback = "https://127.0.0.1:8765"
+        app = create_local_test_bff(
+            LocalBFFSettings(
+                self.config, loopback + "/api/auth/callback",
+                self.path.parent / "local-bff-session.db", key_file,
+            ),
+            case_ledger=self.ledger, household_profile_schema=self.schema,
+            household_profile_access_authority=self.allowed,
+            household_progress_note_ledger=journal,
+        )
+        response = TestClient(app, base_url=loopback).get(
+            f"/api/v1/domestic/household-intake/my-drafts/{REF}/progress-notes",
+            headers=self.bearer(),
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(calls, [(REF, OWNER)])
 
     def stage_context(self, ref):
         if not self.stage_plan_available:
@@ -943,6 +975,48 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.browser_session(subject="synthetic-other")
         self.assertEqual(self.client.get(download_path).status_code, 404)
         self.assertTrue(self.ledger.verify_integrity())
+
+    @unittest.skipUnless(POSTGRES_DSN, "RONAS_TEST_POSTGRES_DSN is not configured")
+    def test_postgres_bff_composes_owner_progress_journal_with_shared_case_authority(self):
+        ref = "DEMO-D-PGNOTE-" + secrets.token_hex(6).upper()
+        records = (ScopedDraft(ref, "DOMESTIC", OWNER, 2, ()),)
+        cases = SqliteSyntheticHouseholdProfileLedger(
+            self.path.parent / ("progress-" + secrets.token_hex(6) + ".db"),
+            records, profile_schema=self.schema,
+            trusted_revoke_authorizer=lambda *_: False,
+            trusted_human_review_authorizer=lambda *_: False,
+        )
+        notes = PostgresHouseholdProgressNoteLedger(
+            POSTGRES_DSN, self.schema.schema_ref, self.allowed,
+            cases.progress_note_context, secrets.token_bytes(32),
+            secrets.token_bytes(32),
+        )
+        callback = "https://127.0.0.1:8765/api/auth/callback"
+        key_file = self.path.parent / "postgres-progress-session.key"
+        key_file.write_bytes(secrets.token_bytes(32))
+        key_file.chmod(0o600)
+        app = create_postgres_local_test_bff(
+            PostgresLocalBFFSettings(self.config, callback, POSTGRES_DSN, key_file),
+            case_ledger=cases, household_profile_schema=self.schema,
+            household_profile_access_authority=self.allowed,
+            household_progress_note_ledger=notes,
+        )
+        client = TestClient(app, base_url="https://127.0.0.1:8765")
+        api = f"/api/v1/domestic/household-intake/my-drafts/{ref}/progress-notes"
+        saved = client.post(api, headers=self.bearer(), json={
+            "action_id": "DEMO-PGNOTE-" + secrets.token_hex(8).upper(),
+            "expected_case_version": 2, "expected_revision": 0,
+            "expected_input_revision": 0, "reported_at": "2026-10-17T12:00:00+00:00",
+            "note": "DEMO: BFF-composed journal entry",
+        })
+        self.assertEqual(saved.status_code, 201, saved.text)
+        read = client.get(api, headers=self.bearer())
+        self.assertEqual(read.status_code, 200, read.text)
+        self.assertEqual(read.json()["notes"][0]["note"],
+                         "DEMO: BFF-composed journal entry")
+        forbidden = client.get(api, headers=self.bearer(subject="synthetic-other"))
+        self.assertEqual(forbidden.status_code, 404, forbidden.text)
+        self.assertTrue(cases.verify_integrity())
 
     @unittest.skipUnless(POSTGRES_DSN, "RONAS_TEST_POSTGRES_DSN is not configured")
     def test_postgres_artifact_store_completes_household_and_specialist_bff_flow(self):

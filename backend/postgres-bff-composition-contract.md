@@ -42,3 +42,12 @@ Production acceptance.
 The browser session store also provides a shared per-session refresh lease. The
 lease serializes Keycloak refresh grants across API instances and is cleared in
 the same database transaction that replaces the encrypted session payload.
+
+The LOCAL/TEST factory can also receive an already configured
+`PostgresHouseholdProgressNoteLedger` as `household_progress_note_ledger`. The
+factory accepts it only when it is bound to the exact shared synthetic
+household case ledger, schema reference, and owner-access authority, then passes
+it through to the household API and shared-user workspace. This keeps private
+progress history in its encrypted PostgreSQL journal across BFF instances;
+omitting it preserves the existing synthetic SQLite journal behavior. This
+does not enable real household data or a production deployment.

@@ -64,7 +64,7 @@ class PostgresHouseholdProgressNoteLedger:
                     corrects_revision INTEGER CHECK (corrects_revision IS NULL OR corrects_revision > 0),
                     owner_hash CHAR(64) NOT NULL,
                     reported_at TEXT NOT NULL,
-                    note_ciphertext BYTEA NOT NULL CHECK (octet_length(note_ciphertext) BETWEEN 34 AND 512),
+                    note_ciphertext BYTEA NOT NULL CHECK (octet_length(note_ciphertext) BETWEEN 34 AND 1024),
                     note_digest CHAR(64) NOT NULL,
                     previous_receipt_digest CHAR(64) NOT NULL,
                     receipt_digest CHAR(64) NOT NULL UNIQUE,

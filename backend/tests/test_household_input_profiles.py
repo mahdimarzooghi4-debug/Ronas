@@ -284,9 +284,17 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         )
 
     def test_profile_write_rejects_oversized_field_map_before_ledger_mutation(self):
-        command = self.command(values={f"field_{index}": "x" for index in range(7)})
-        response = self.client.post(ROOT, json=command, headers=self.bearer())
-        self.assertEqual(response.status_code, 422, response.text)
+        invalid_values = (
+            {f"field_{index}": "x" for index in range(7)},
+            {"f" * 33: "x"},
+            {"field_alpha": "x" * 301},
+        )
+        for values in invalid_values:
+            with self.subTest(size=len(values), value_length=max(map(len, values.values()))):
+                response = self.client.post(
+                    ROOT, json=self.command(values=values), headers=self.bearer(),
+                )
+                self.assertEqual(response.status_code, 422, response.text)
         self.assertEqual(
             self.ledger.read_owned_profile(
                 REF, Principal(OWNER, frozenset({"household"})),

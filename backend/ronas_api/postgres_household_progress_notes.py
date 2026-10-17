@@ -254,7 +254,7 @@ class PostgresHouseholdProgressNoteLedger:
             with self._connect() as db:
                 db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (ref,))
                 rows = self._verify(self._rows(db, ref), owner_hash)
-                self._record_access(db, ref, owner_hash, "READ", len(rows), "", 
+                self._record_access(db, ref, owner_hash, "READ", len(rows), "",
                                     rows[-1][0]["receipt_digest"].strip() if rows else "0" * 64)
         except psycopg.Error as exc:
             raise LedgerIntegrityError("progress note storage unavailable") from exc

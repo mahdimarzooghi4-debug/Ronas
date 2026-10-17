@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ronas_api.auth import Principal
+from ronas_api.grant_ledger_sqlite import LedgerIntegrityError
 from ronas_api.household_input_api import build_household_input_router
 from ronas_api.household_input_profiles import (
     HouseholdInputField, HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
@@ -125,7 +126,8 @@ class PostgresHouseholdProgressNoteTests(unittest.TestCase):
             db.execute("UPDATE ronas_domestic_progress_access SET event_digest=%s "
                        "WHERE household_ref=%s", ("f" * 64, self.ref))
             db.execute("ALTER TABLE ronas_domestic_progress_access ENABLE TRIGGER USER")
-        with self.assertRaisesRegex(Exception, "progress access receipt chain failure"):
+        with self.assertRaisesRegex(LedgerIntegrityError,
+                                    "progress access receipt chain failure"):
             self.ledger.read_owned_progress_notes(self.ref, self.principal)
 
     def test_full_length_unicode_note_fits_encrypted_storage_bound(self):

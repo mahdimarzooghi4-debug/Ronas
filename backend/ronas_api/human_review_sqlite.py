@@ -493,8 +493,9 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
     def list_owned_domestic_progress(
         self, principal: Principal, *, after_ref: str | None = None,
         limit: int = 20, technical_state: str = "ALL",
+        snapshot_sequence: int | None = None,
     ) -> dict:
-        """One verified, audited snapshot of an owner's observed DEMO progress.
+        """One verified, audited page from a stable owner progress snapshot.
 
         This read-only projection uses the identical ledger transaction for
         exact immutable ownership, per-case technical history and per-row
@@ -503,47 +504,74 @@ class SqliteSyntheticHumanReviewLedger(SqliteSyntheticGrantLedger):
         """
         if (type(limit) is not int or not 1 <= limit <= 50
                 or after_ref is not None and not _synthetic_ref(after_ref)
-                or technical_state not in ("ALL", *STATES)):
+                or technical_state not in ("ALL", *STATES)
+                or snapshot_sequence is not None
+                   and (type(snapshot_sequence) is not int
+                        or snapshot_sequence < 0)):
             raise ValueError("invalid synthetic progress list query")
         with self._transaction() as db:
             self._verify(db)
             items: list[dict] = []
             next_cursor = None
-            if (isinstance(principal, Principal)
-                    and _synthetic_subject(principal.subject)
-                    and "household" in principal.roles):
-                owned = [
+            owned_refs = (
+                [
                     ref for (engine, ref), record in sorted(self._catalogue.items())
                     if engine == "DOMESTIC"
                     and record.owner_subject == principal.subject
-                    and (after_ref is None or ref > after_ref)
                 ]
-                matching: list[tuple[str, list[TechnicalReviewStep]]] = []
-                for ref in owned:
-                    steps = self._steps(db, "DOMESTIC", ref)
-                    if (technical_state == "ALL"
-                            or review_state_for_steps(steps) == technical_state):
-                        matching.append((ref, steps))
-                for ref, steps in matching[:limit]:
-                    record = self._catalogue[("DOMESTIC", ref)]
-                    item = record.public_view()
-                    item.update({
-                        "review_revision": len(steps),
-                        "technical_review_state": review_state_for_steps(steps),
-                    })
-                    items.append(item)
-                    # Disclosure and event insertion are in one transaction:
-                    # if any audit append fails, the entire page fails.
-                    self._append(
-                        db, kind="READ_ALLOWED", engine="DOMESTIC",
-                        ref=ref, actor=principal.subject,
-                        mode="HOUSEHOLD_PROGRESS_WORKLIST",
-                    )
-                if len(matching) > limit:
-                    next_cursor = items[-1]["ref"]
+                if (isinstance(principal, Principal)
+                    and _synthetic_subject(principal.subject)
+                    and "household" in principal.roles) else []
+            )
+            # Assign an ordinal only across this owner's Domestic review events.
+            # The API must not expose the global audit sequence, which could
+            # reveal activity in another household or engine.
+            owner_events = sorted(
+                (step.audit_sequence, ref, step)
+                for ref in owned_refs
+                for step in self._steps(db, "DOMESTIC", ref)
+            )
+            latest_sequence = len(owner_events)
+            if snapshot_sequence is None:
+                snapshot_sequence = latest_sequence
+            elif snapshot_sequence > latest_sequence:
+                raise ValueError("progress snapshot is from the future")
+            steps_at_snapshot: dict[str, list[TechnicalReviewStep]] = {
+                ref: [] for ref in owned_refs
+            }
+            for ordinal, (_audit_sequence, ref, step) in enumerate(owner_events, 1):
+                if ordinal <= snapshot_sequence:
+                    steps_at_snapshot[ref].append(step)
+
+            matching: list[tuple[str, list[TechnicalReviewStep]]] = []
+            for ref in owned_refs:
+                if after_ref is not None and ref <= after_ref:
+                    continue
+                steps = steps_at_snapshot[ref]
+                if (technical_state == "ALL"
+                        or review_state_for_steps(steps) == technical_state):
+                    matching.append((ref, steps))
+            for ref, steps in matching[:limit]:
+                record = self._catalogue[("DOMESTIC", ref)]
+                item = record.public_view()
+                item.update({
+                    "review_revision": len(steps),
+                    "technical_review_state": review_state_for_steps(steps),
+                })
+                items.append(item)
+                # Disclosure and event insertion are in one transaction:
+                # if any audit append fails, the entire page fails.
+                self._append(
+                    db, kind="READ_ALLOWED", engine="DOMESTIC",
+                    ref=ref, actor=principal.subject,
+                    mode="HOUSEHOLD_PROGRESS_WORKLIST",
+                )
+            if len(matching) > limit:
+                next_cursor = items[-1]["ref"]
             return {
                 "engine": "DOMESTIC",
                 "technical_state_filter": technical_state,
+                "snapshot_sequence": snapshot_sequence,
                 "items": items,
                 "next_cursor": next_cursor,
             }

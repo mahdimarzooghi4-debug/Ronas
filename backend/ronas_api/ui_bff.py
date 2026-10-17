@@ -541,6 +541,7 @@ def build_authenticated_ui_router(
 
     def household_worklist(
         principal: Principal, after_ref: str | None, technical_state: str,
+        snapshot_sequence: int | None = None,
     ) -> str:
         if owned_case_ledger is None:
             return ""
@@ -555,6 +556,7 @@ def build_authenticated_ui_router(
                 result = technical_review_ledger.list_owned_domestic_progress(
                     principal, after_ref=after_ref, limit=20,
                     technical_state=technical_state,
+                    snapshot_sequence=snapshot_sequence,
                 )
             else:
                 if technical_state != "ALL":
@@ -604,13 +606,20 @@ def build_authenticated_ui_router(
             body = (
                 '<p>فیلتر صرفاً مرحله فنی ثبت‌شده را نشان می‌دهد؛ '
                 'پاسخ انسانی به معنی تأیید طرح کشت نیست.</p>'
-                '<nav aria-label="فیلتر پیگیری پرونده‌های خانوار">'
+                + ('<p>وضعیت فنی این صفحات هنگام شروع پیمایش ثابت می‌ماند؛ '
+                   'مالکیت در هر درخواست دوباره بررسی می‌شود.</p>'
+                   if progress_enabled else '')
+                + '<nav aria-label="فیلتر پیگیری پرونده‌های خانوار">'
                 + navigation + '</nav>' + body
             )
         if result["next_cursor"]:
             body += ('<a href="/?household_technical_state='
                      + quote(technical_state) + '&household_after_ref='
-                     + quote(result["next_cursor"]) + '">پرونده‌های بعدی</a>')
+                     + quote(result["next_cursor"])
+                     + ('&household_snapshot_sequence='
+                        + str(result["snapshot_sequence"])
+                        if progress_enabled else '')
+                     + '">پرونده‌های بعدی</a>')
         return ('<section class="section"><h3>پرونده‌های من'
                 ' (فقط نمونه آزمایشی)</h3>' + body + '</section>')
 
@@ -1723,6 +1732,7 @@ def build_authenticated_ui_router(
         sid: str | None = Cookie(default=None, alias=cookie_name),
         household_after_ref: str | None = None,
         household_technical_state: str = "ALL",
+        household_snapshot_sequence: int | None = None,
     ) -> HTMLResponse:
         try:
             session = flow.session(sid)
@@ -1740,6 +1750,7 @@ def build_authenticated_ui_router(
                 household = household_worklist(
                     Principal(session.subject, session.roles),
                     household_after_ref, household_technical_state,
+                    household_snapshot_sequence,
                 )
             else:
                 household = (

@@ -85,7 +85,8 @@ class HouseholdProgressTests(unittest.TestCase):
         return {"Authorization": "Bearer " + signed}
 
     def browser(self, *, subject="synthetic-household-one", roles=("household",),
-                review_enabled=True):
+                review_enabled=True, ledger=None):
+        ledger = ledger or self.ledger
         class Store:
             def __init__(self):
                 self.items = {}
@@ -107,10 +108,10 @@ class HouseholdProgressTests(unittest.TestCase):
             int(time.time()) + 200,
         )
         kwargs = {
-            "scoped_registry": self.ledger,
+            "scoped_registry": ledger,
         }
         if review_enabled:
-            kwargs["technical_review_ledger"] = self.ledger
+            kwargs["technical_review_ledger"] = ledger
         client = TestClient(create_app(
             self.config, flow, **kwargs,
         ), base_url=ORIGIN)
@@ -450,6 +451,87 @@ class HouseholdProgressTests(unittest.TestCase):
         self.assertEqual([item["ref"] for item in after.json()["items"]],
                          ["DEMO-D-003"])
         self.assertIsNone(after.json()["next_cursor"])
+
+    def test_progress_pages_keep_first_page_review_state_watermark(self):
+        first = self.client.get(
+            PROGRESS, params={"technical_state": "UNREQUESTED", "limit": 1},
+            headers=self.headers(),
+        )
+        self.assertEqual(first.status_code, 200, first.text)
+        snapshot = first.json()["snapshot_sequence"]
+        self.assertIsInstance(snapshot, int)
+        self.assertEqual(first.json()["next_cursor"], "DEMO-D-001")
+
+        self.ledger.request_evidence_review(
+            engine="DOMESTIC", ref="DEMO-D-003",
+            actor=Principal("synthetic-domestic-requester",
+                            frozenset({"domestic_ops"})),
+            expected_case_version=1, expected_review_revision=0,
+            action_id="DEMO-D003-REQUEST-AFTER-SNAPSHOT",
+            request_ref="DEMO-PRIVATE-D003-REQUEST",
+            evidence_ref="DEMO-PRIVATE-D003-EVIDENCE",
+        )
+        stable_page = self.client.get(
+            PROGRESS, params={
+                "technical_state": "UNREQUESTED", "after_ref": "DEMO-D-001",
+                "limit": 1, "snapshot_sequence": snapshot,
+            }, headers=self.headers(),
+        )
+        self.assertEqual(stable_page.status_code, 200, stable_page.text)
+        self.assertEqual([item["ref"] for item in stable_page.json()["items"]],
+                         ["DEMO-D-003"])
+        self.assertEqual(stable_page.json()["snapshot_sequence"], snapshot)
+        fresh_page = self.client.get(
+            PROGRESS, params={
+                "technical_state": "UNREQUESTED", "after_ref": "DEMO-D-001",
+                "limit": 1,
+            }, headers=self.headers(),
+        )
+        self.assertEqual(fresh_page.status_code, 200, fresh_page.text)
+        self.assertEqual(fresh_page.json()["items"], [])
+        self.assertTrue(self.reopen().verify_integrity())
+
+    def test_future_snapshot_is_rejected_without_partial_page_audit(self):
+        self.ledger.request_evidence_review(
+            engine="EXPORT", ref="DEMO-E-001",
+            actor=Principal("synthetic-export-requester",
+                            frozenset({"export_ops"})),
+            expected_case_version=1, expected_review_revision=0,
+            action_id="DEMO-EXPORT-REQUEST-UNRELATED-WATERMARK",
+            request_ref="DEMO-EXPORT-REQUEST",
+            evidence_ref="DEMO-EXPORT-EVIDENCE",
+        )
+        before = len(self.ledger.audit_snapshot())
+        events = self.ledger.audit_snapshot()
+        latest = events[-1].sequence if events else 0
+        response = self.client.get(
+            PROGRESS, params={"snapshot_sequence": latest},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(len(self.ledger.audit_snapshot()), before)
+
+    def test_household_browser_next_page_link_carries_snapshot_watermark(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        more = tuple(
+            ScopedDraft(f"DEMO-D-{number:03}", "DOMESTIC",
+                        "synthetic-household-one", 1, ())
+            for number in range(4, 26)
+        )
+        ledger = SqliteSyntheticHumanReviewLedger(
+            Path(temp.name) / "many.db", (*records(), *more),
+            trusted_revoke_authorizer=lambda *_: False,
+            trusted_human_review_authorizer=lambda *_: False,
+        )
+        client, _, _ = self.browser(ledger=ledger)
+        home = client.get("/")
+        self.assertEqual(home.status_code, 200, home.text)
+        self.assertRegex(
+            home.text,
+            r'href="/\?household_technical_state=ALL&household_after_ref='
+            r'DEMO-D-021&household_snapshot_sequence=[0-9]+">پرونده‌های بعدی</a>',
+        )
 
     def test_invalid_owner_filter_and_cursor_do_not_read_audit(self):
         original = len(self.ledger.audit_snapshot())

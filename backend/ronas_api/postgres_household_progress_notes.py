@@ -174,17 +174,25 @@ class PostgresHouseholdProgressNoteLedger:
     def _verify_access(self, db, ref: str, owner_hash: str):
         rows = list(db.execute("SELECT * FROM ronas_domestic_progress_access "
                                "WHERE household_ref=%s ORDER BY event_sequence", (ref,)))
+        note_receipts = {row["revision"]: row["receipt_digest"].strip()
+                         for row in db.execute("SELECT revision,receipt_digest "
+                                               "FROM ronas_domestic_progress_note "
+                                               "WHERE household_ref=%s", (ref,))}
         previous = "0" * 64
         for sequence, row in enumerate(rows, 1):
+            revision = row["revision"]
+            linked_receipt = note_receipts.get(revision) if revision else "0" * 64
             payload = {
                 "ref": ref, "sequence": sequence, "owner_hash": owner_hash,
-                "kind": row["event_kind"], "revision": row["revision"],
+                "kind": row["event_kind"], "revision": revision,
                 "action_id": row["action_id"], "receipt_digest": row["receipt_digest"].strip(),
                 "occurred_at": row["occurred_at"], "previous": previous,
             }
             if (row["event_sequence"] != sequence or row["owner_hash"].strip() != owner_hash
                     or row["previous_event_digest"].strip() != previous
                     or row["event_kind"] not in {"READ", "APPEND", "REPLAY"}
+                    or linked_receipt != row["receipt_digest"].strip()
+                    or row["event_kind"] in {"APPEND", "REPLAY"} and revision < 1
                     or row["event_digest"].strip() != self._hash(payload)):
                 raise LedgerIntegrityError("progress access receipt chain failure")
             previous = row["event_digest"].strip()

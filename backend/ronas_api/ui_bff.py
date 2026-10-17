@@ -4904,3 +4904,15 @@ def build_authenticated_ui_router(
                         for key in domains
                     )
             if role == "finance" and gate_source_usable:
+                gate_links += (
+                    '<p><a href="/admin/finance/source-arithmetic">'
+                    'ممیزی عددی نسخه‌بسته FIN-002 (بدون تصویب بودجه)'
+                    '</a></p>'
+                )
+            cards.append('<article class="panel"><h2>' + escape(label) + '</h2><p>'
+                         + escape(note) + '</p>' + worklist + gate_links
+                         + '</article>')
+        return page("مدیریت روناس — پنل واحد با دسترسی مجزا",
+                    '<div class="columns">' + ''.join(cards) + '</div>', logged_in=True)
+
+    return router

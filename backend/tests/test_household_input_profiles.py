@@ -283,6 +283,17 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             )["current_revision"], 2,
         )
 
+    def test_profile_write_rejects_oversized_field_map_before_ledger_mutation(self):
+        command = self.command(values={f"field_{index}": "x" for index in range(7)})
+        response = self.client.post(ROOT, json=command, headers=self.bearer())
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(
+            self.ledger.read_owned_profile(
+                REF, Principal(OWNER, frozenset({"household"})),
+            )["current_revision"], 0,
+        )
+        self.assertTrue(self.ledger.verify_integrity())
+
     def test_owner_can_read_exact_profile_history_revision_through_api(self):
         first = self.client.post(ROOT, json=self.command(), headers=self.bearer())
         self.assertEqual(first.status_code, 201)

@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import secrets
+from datetime import datetime, timezone
 
 import psycopg
 from cryptography.exceptions import InvalidTag
@@ -72,6 +73,33 @@ class PostgresHouseholdProgressNoteLedger:
                 )""")
                 db.execute("""CREATE INDEX IF NOT EXISTS ronas_domestic_progress_lookup
                     ON ronas_domestic_progress_note(household_ref, revision)""")
+                db.execute("""CREATE TABLE IF NOT EXISTS ronas_domestic_progress_access (
+                    household_ref TEXT NOT NULL,
+                    event_sequence BIGINT NOT NULL CHECK (event_sequence > 0),
+                    owner_hash CHAR(64) NOT NULL,
+                    event_kind TEXT NOT NULL CHECK (event_kind IN ('READ','APPEND','REPLAY')),
+                    revision INTEGER NOT NULL CHECK (revision >= 0),
+                    action_id TEXT NOT NULL,
+                    receipt_digest CHAR(64) NOT NULL,
+                    occurred_at TEXT NOT NULL,
+                    previous_event_digest CHAR(64) NOT NULL,
+                    event_digest CHAR(64) NOT NULL,
+                    PRIMARY KEY (household_ref, event_sequence)
+                )""")
+                db.execute("""CREATE OR REPLACE FUNCTION ronas_reject_progress_access_mutation()
+                    RETURNS trigger LANGUAGE plpgsql AS $$
+                    BEGIN RAISE EXCEPTION 'progress access history is immutable'; END;
+                    $$""")
+                db.execute("""DO $$ BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_trigger
+                        WHERE tgname='ronas_domestic_progress_access_immutable'
+                        AND tgrelid='ronas_domestic_progress_access'::regclass
+                        AND NOT tgisinternal) THEN
+                      CREATE TRIGGER ronas_domestic_progress_access_immutable
+                      BEFORE UPDATE OR DELETE ON ronas_domestic_progress_access
+                      FOR EACH ROW EXECUTE FUNCTION ronas_reject_progress_access_mutation();
+                    END IF;
+                    END $$""")
                 db.execute("""CREATE OR REPLACE FUNCTION ronas_reject_progress_note_mutation()
                     RETURNS trigger LANGUAGE plpgsql AS $$
                     BEGIN RAISE EXCEPTION 'progress note history is immutable'; END;
@@ -143,6 +171,43 @@ class PostgresHouseholdProgressNoteLedger:
         return list(db.execute("SELECT * FROM ronas_domestic_progress_note "
                                "WHERE household_ref=%s ORDER BY revision", (ref,)))
 
+    def _verify_access(self, db, ref: str, owner_hash: str):
+        rows = list(db.execute("SELECT * FROM ronas_domestic_progress_access "
+                               "WHERE household_ref=%s ORDER BY event_sequence", (ref,)))
+        previous = "0" * 64
+        for sequence, row in enumerate(rows, 1):
+            payload = {
+                "ref": ref, "sequence": sequence, "owner_hash": owner_hash,
+                "kind": row["event_kind"], "revision": row["revision"],
+                "action_id": row["action_id"], "receipt_digest": row["receipt_digest"].strip(),
+                "occurred_at": row["occurred_at"], "previous": previous,
+            }
+            if (row["event_sequence"] != sequence or row["owner_hash"].strip() != owner_hash
+                    or row["previous_event_digest"].strip() != previous
+                    or row["event_kind"] not in {"READ", "APPEND", "REPLAY"}
+                    or row["event_digest"].strip() != self._hash(payload)):
+                raise LedgerIntegrityError("progress access receipt chain failure")
+            previous = row["event_digest"].strip()
+        return rows
+
+    def _record_access(self, db, ref: str, owner_hash: str, kind: str,
+                       revision: int, action_id: str, receipt_digest: str):
+        events = self._verify_access(db, ref, owner_hash)
+        sequence = len(events) + 1
+        previous = events[-1]["event_digest"].strip() if events else "0" * 64
+        occurred_at = datetime.now(timezone.utc).isoformat()
+        payload = {"ref": ref, "sequence": sequence, "owner_hash": owner_hash,
+                   "kind": kind, "revision": revision, "action_id": action_id,
+                   "receipt_digest": receipt_digest, "occurred_at": occurred_at,
+                   "previous": previous}
+        digest = self._hash(payload)
+        db.execute("""INSERT INTO ronas_domestic_progress_access
+            (household_ref,event_sequence,owner_hash,event_kind,revision,action_id,
+             receipt_digest,occurred_at,previous_event_digest,event_digest)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (ref, sequence, owner_hash, kind, revision, action_id, receipt_digest,
+             occurred_at, previous, digest))
+
     def _verify(self, rows, owner_hash: str):
         previous = "0" * 64
         corrected = set()
@@ -179,7 +244,10 @@ class PostgresHouseholdProgressNoteLedger:
         owner_hash = self._owner_hash(principal.subject)
         try:
             with self._connect() as db:
+                db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (ref,))
                 rows = self._verify(self._rows(db, ref), owner_hash)
+                self._record_access(db, ref, owner_hash, "READ", len(rows), "", 
+                                    rows[-1][0]["receipt_digest"].strip() if rows else "0" * 64)
         except psycopg.Error as exc:
             raise LedgerIntegrityError("progress note storage unavailable") from exc
         corrected = {row["corrects_revision"] for row, _ in rows
@@ -227,6 +295,7 @@ class PostgresHouseholdProgressNoteLedger:
                 db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (ref,))
                 rows = self._rows(db, ref)
                 verified = self._verify(rows, owner_hash)
+                self._verify_access(db, ref, owner_hash)
                 replay = next((row for row in rows if row["action_id"] == action_id), None)
                 if replay is not None:
                     same = (replay["household_ref"] == ref
@@ -238,6 +307,8 @@ class PostgresHouseholdProgressNoteLedger:
                             and self._decrypt(replay) == note)
                     if not same:
                         raise InputRevisionConflict("conflicting progress note replay")
+                    self._record_access(db, ref, owner_hash, "REPLAY", replay["revision"],
+                                        action_id, replay["receipt_digest"].strip())
                     return {"contract_version": PROGRESS_CORRECTION_CONTRACT,
                             "engine": "DOMESTIC", "ref": ref,
                             "case_version": expected_case_version,
@@ -274,6 +345,7 @@ class PostgresHouseholdProgressNoteLedger:
                     (action_id, ref, expected_case_version, revision, expected_input_revision,
                      corrects_revision, owner_hash, reported_at,
                      self._encrypt(ref, revision, owner_hash, note), note_digest, previous, receipt))
+                self._record_access(db, ref, owner_hash, "APPEND", revision, action_id, receipt)
         except psycopg.Error as exc:
             raise LedgerIntegrityError("progress note storage unavailable") from exc
         return {"contract_version": PROGRESS_CORRECTION_CONTRACT, "engine": "DOMESTIC",

@@ -101,6 +101,33 @@ class PostgresHouseholdProgressNoteTests(unittest.TestCase):
                 db.execute("UPDATE ronas_domestic_progress_note SET revision=99 "
                            "WHERE household_ref=%s", (self.ref,))
 
+    def test_access_history_records_reads_writes_and_replays(self):
+        self.append()
+        self.append()
+        self.ledger.read_owned_progress_notes(self.ref, self.principal)
+        with psycopg.connect(DSN) as db:
+            rows = db.execute("""SELECT event_kind, revision, action_id, receipt_digest
+                FROM ronas_domestic_progress_access WHERE household_ref=%s
+                ORDER BY event_sequence""", (self.ref,)).fetchall()
+        self.assertEqual([row[0] for row in rows], ["APPEND", "REPLAY", "READ"])
+        self.assertEqual([row[1] for row in rows], [1, 1, 1])
+        self.assertEqual(rows[0][3], rows[1][3])
+        self.assertTrue(rows[2][2] == "")
+        with self.assertRaises(psycopg.errors.RaiseException):
+            with psycopg.connect(DSN) as db:
+                db.execute("DELETE FROM ronas_domestic_progress_access WHERE household_ref=%s",
+                           (self.ref,))
+
+    def test_corrupt_access_chain_fails_closed(self):
+        self.append()
+        with psycopg.connect(DSN) as db:
+            db.execute("ALTER TABLE ronas_domestic_progress_access DISABLE TRIGGER USER")
+            db.execute("UPDATE ronas_domestic_progress_access SET event_digest=%s "
+                       "WHERE household_ref=%s", ("f" * 64, self.ref))
+            db.execute("ALTER TABLE ronas_domestic_progress_access ENABLE TRIGGER USER")
+        with self.assertRaisesRegex(Exception, "progress access receipt chain failure"):
+            self.ledger.read_owned_progress_notes(self.ref, self.principal)
+
     def test_full_length_unicode_note_fits_encrypted_storage_bound(self):
         note = "DEMO: " + "😀" * 144
         self.assertEqual(len(note), 150)

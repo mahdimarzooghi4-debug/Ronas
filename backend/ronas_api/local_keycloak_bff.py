@@ -134,7 +134,8 @@ def _validate_synthetic_composition(
     export_research_finding_ledger=None,
 ) -> None:
     if case_ledger is not None and not isinstance(
-        case_ledger, SqliteSyntheticExpertQuestionLedger,
+        case_ledger,
+        (SqliteSyntheticExpertQuestionLedger, SqliteSyntheticHumanReviewLedger),
     ):
         raise LocalBFFConfigurationError("only existing synthetic case ledger allowed")
     if household_stage_artifact_store is not None and (

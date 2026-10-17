@@ -302,6 +302,24 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         )
         self.assertTrue(self.ledger.verify_integrity())
 
+ 
+    def test_profile_write_rejects_oversized_json_body_before_model_parsing(self):
+        payload = json.dumps(self.command(values={"field_alpha": "x" * 5000}))
+        response = self.client.post(
+            ROOT, content=payload,
+            headers={**self.bearer(), "Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 413, response.text)
+        self.assertEqual(
+            response.json()["detail"], "HOUSEHOLD_PROFILE_REQUEST_TOO_LARGE",
+        )
+        self.assertEqual(
+            self.ledger.read_owned_profile(
+                REF, Principal(OWNER, frozenset({"household"})),
+            )["current_revision"], 0,
+        )
+        self.assertTrue(self.ledger.verify_integrity())
+
     def test_owner_can_read_exact_profile_history_revision_through_api(self):
         first = self.client.post(ROOT, json=self.command(), headers=self.bearer())
         self.assertEqual(first.status_code, 201)

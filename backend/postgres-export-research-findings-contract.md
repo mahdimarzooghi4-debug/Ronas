@@ -9,7 +9,15 @@ lock serializes append-only revisions. Notes are AES-GCM encrypted at rest,
 and receipt links, note digests, stale revisions, action replay, and database
 row mutation are checked.
 
-The browser form and Bearer API keep their existing paths and command contract.
+Both LOCAL/TEST BFF factories accept an explicitly injected
+`export_research_finding_ledger` and pass it to the existing Keycloak API and
+management UI. Composition is rejected unless the PostgreSQL adapter's
+workspace reader is bound to the exact same
+`SqliteSyntheticHumanReviewLedger` used for current Export case grants. The
+PostgreSQL-session BFF integration test signs in through mocked Keycloak,
+records an encrypted finding from the existing Persian Export form on one BFF,
+and reads its history from a second BFF instance. The browser form and Bearer
+API keep their existing paths and command contract.
 History preserves question/evidence binding and source-reference provenance;
 stale question or evidence context is rejected. The UI continues to label all
 entries `DRAFT_ONLY` and `report_approved=false`. This adapter does not ingest

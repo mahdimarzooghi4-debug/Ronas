@@ -24,6 +24,7 @@ DSN = os.environ.get("RONAS_TEST_POSTGRES_DSN")
 class PostgresHouseholdProgressNoteTests(unittest.TestCase):
     def setUp(self):
         self.ref = "DEMO-PROGRESS-" + secrets.token_hex(6).upper()
+        self.action_id = "DEMO-PROGRESS-" + secrets.token_hex(8).upper()
         self.owner = "synthetic-progress-" + secrets.token_hex(6)
         self.principal = Principal(self.owner, frozenset({"household"}))
         self.schema = HouseholdInputSchema("RONAS-PROGRESS-TEST", 1, (
@@ -51,8 +52,9 @@ class PostgresHouseholdProgressNoteTests(unittest.TestCase):
             secrets.token_bytes(32), secrets.token_bytes(32),
         )
 
-    def append(self, *, action="DEMO-PROGRESS-1", expected=0,
+    def append(self, *, action=None, expected=0,
                note="DEMO: grew a test leaf", correction=None):
+        action = action or self.action_id
         return self.ledger.append_owned_progress_note(
             self.ref, self.principal, action_id=action,
             expected_case_version=1, expected_revision=expected,

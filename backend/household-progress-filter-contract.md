@@ -37,13 +37,14 @@ Invalid filter/cursor is 422; ledger corruption, SQLite failure or missing
 read-audit is 503 without any partial page. Invalid/expired JWT is 401.
 Operator case grants cannot replace household ownership, and a grant
 revocation cannot cancel genuine immutable owner reads.
-The first page captures the audit sequence before appending page-read events.
-Later pages can use that sequence to include only review steps recorded at or
-before the watermark. A concurrent/new request or response therefore cannot
-move a matching case between pages within the traversal. Current ownership and
+The first page captures an ordinal over only this household's Domestic review
+events. Later pages use it to reconstruct observed states from those events; a
+concurrent request or response therefore cannot move a matching case between
+pages during the traversal. The cursor does not expose the global audit
+sequence or activity from another household or engine. Current ownership and
 full-chain integrity are still checked independently on every page. The
-snapshot sequence is a consistency cursor, not an authorization token; values
-outside the verified ledger range fail with 422.
+snapshot ordinal is a consistency cursor, not an authorization token; values
+outside this owner's current review-event range fail with 422.
 Current filter semantics never imply a future review step or scientific
 approval. A recorded human response is only a technical reference.
 

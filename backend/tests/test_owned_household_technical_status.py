@@ -492,11 +492,20 @@ class HouseholdProgressTests(unittest.TestCase):
         self.assertTrue(self.reopen().verify_integrity())
 
     def test_future_snapshot_is_rejected_without_partial_page_audit(self):
+        self.ledger.request_evidence_review(
+            engine="EXPORT", ref="DEMO-E-001",
+            actor=Principal("synthetic-export-requester",
+                            frozenset({"export_ops"})),
+            expected_case_version=1, expected_review_revision=0,
+            action_id="DEMO-EXPORT-REQUEST-UNRELATED-WATERMARK",
+            request_ref="DEMO-EXPORT-REQUEST",
+            evidence_ref="DEMO-EXPORT-EVIDENCE",
+        )
         before = len(self.ledger.audit_snapshot())
         events = self.ledger.audit_snapshot()
         latest = events[-1].sequence if events else 0
         response = self.client.get(
-            PROGRESS, params={"snapshot_sequence": latest + 1},
+            PROGRESS, params={"snapshot_sequence": latest},
             headers=self.headers(),
         )
         self.assertEqual(response.status_code, 422, response.text)

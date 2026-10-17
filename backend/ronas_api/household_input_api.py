@@ -75,7 +75,8 @@ class HouseholdProfileCorrection(BaseModel):
     action_id: StrictStr
     expected_case_version: StrictInt
     expected_revision: StrictInt
-    values: dict[StrictStr, StrictStr]
+    # Match the schema's six-field maximum at the HTTP parsing boundary.
+    values: dict[StrictStr, StrictStr] = Field(max_length=6)
 
 
 class SyntheticHouseholdQuestionReply(BaseModel):

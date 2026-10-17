@@ -4,6 +4,7 @@ Only signed export role and a *current exact-case* grant may reveal an
 immutable case. Filters are observed technical stages, never study findings.
 """
 from concurrent.futures import ThreadPoolExecutor
+import os
 import hashlib
 import json
 import re
@@ -16,8 +17,11 @@ import unittest
 from threading import Barrier
 
 import jwt
+import httpx
+import psycopg
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from ronas_api.app import create_app
 from ronas_api.auth import Principal
@@ -29,6 +33,9 @@ from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
 from ronas_api.postgres_export_findings import PostgresExportResearchFindingLedger
+from ronas_api.local_keycloak_bff import (
+    PostgresLocalBFFSettings, create_postgres_local_test_bff,
+)
 from ronas_api.export_research_packet import (
     ExportResearchPacketConflict, ExportResearchPacketIntegrityError,
     build_export_research_packet,
@@ -38,6 +45,7 @@ ISS = "https://id.example.test/realms/ronas"
 API, WEB, ORIGIN = "ronas-api", "ronas-web", "https://ronas.example.test"
 API_ROUTE = "/api/v1/admin/export/research/cases"
 UI_ROUTE = "/admin/export/research"
+POSTGRES_DSN = os.environ.get("RONAS_TEST_POSTGRES_DSN")
 
 
 class Store:
@@ -1595,6 +1603,184 @@ class ExportResearchQueueTests(unittest.TestCase):
         r = self.client.get("/admin/export/research/drafts/DEMO-E-001")
         self.assertEqual(r.status_code, 404)
         self.assertNotIn("اقدام بعدی پرونده پژوهش", r.text)
+
+    @unittest.skipUnless(POSTGRES_DSN, "RONAS_TEST_POSTGRES_DSN is not configured")
+    def test_keycloak_bff_persists_export_findings_across_instances(self):
+        """Connect the assigned Export UI to encrypted PG finding history."""
+        callback_origin = "https://127.0.0.1:8765"
+        callback = callback_origin + "/api/auth/callback"
+        ref = "DEMO-E-BFF-" + secrets.token_hex(6).upper()
+        subject = "synthetic-export-001"
+        case = ScopedDraft(
+            ref, "EXPORT", subject, 3,
+            (ScopedGrant(subject, "export_ops"),),
+            source_ref="DEMO-SOURCE-BFF-" + secrets.token_hex(4).upper(),
+        )
+        cases = SqliteSyntheticHumanReviewLedger(
+            self.path.parent / "export-bff-review.db", (case,),
+            trusted_revoke_authorizer=lambda *_: False,
+            trusted_human_review_authorizer=lambda *_: False,
+        )
+        evidence_ref = "DEMO-EVIDENCE-BFF-" + secrets.token_hex(4).upper()
+        connector_ref = "DEMO-CONNECTOR-BFF-" + secrets.token_hex(4).upper()
+        seed = self.client_for(cases)
+        question = self.post_question(
+            ref=ref,
+            payload=self.question_payload(
+                action="DEMO-Q-BFF-" + secrets.token_hex(5).upper(),
+                case_version=3,
+            ), client=seed,
+        )
+        self.assertEqual(question.status_code, 201, question.text)
+        evidence = self.post_evidence(
+            ref=ref,
+            payload=self.evidence_payload(
+                action="DEMO-EVIDENCE-BFF-ACT-" + secrets.token_hex(4).upper(),
+                evidence=evidence_ref, connector=connector_ref,
+                case_version=3, digest="c" * 64,
+            ), client=seed,
+        )
+        self.assertEqual(evidence.status_code, 201, evidence.text)
+
+        session_key_file = self.path.parent / "export-bff-session.key"
+        session_key_file.write_bytes(secrets.token_bytes(32))
+        session_key_file.chmod(0o600)
+        settings = PostgresLocalBFFSettings(
+            self.config, callback, POSTGRES_DSN, session_key_file,
+        )
+        finding_key = secrets.token_bytes(32)
+        nonce_holder = {}
+        issued = {}
+
+        def token_response(request):
+            self.assertEqual(request.method, "POST")
+            self.assertEqual(
+                str(request.url), ISS + "/protocol/openid-connect/token",
+            )
+            self.assertIn(b"code_verifier=", request.content)
+            now = int(time.time())
+            common = {
+                "iss": ISS, "sub": subject, "iat": now - 5, "exp": now + 450,
+            }
+            access = jwt.encode(
+                {**common, "aud": API, "azp": WEB, "typ": "Bearer",
+                 "nbf": now - 5,
+                 "resource_access": {API: {"roles": ["export_ops"]}}},
+                self.key, algorithm="RS256", headers={"kid": "export-queue-key"},
+            )
+            identity = jwt.encode(
+                {**common, "aud": WEB, "azp": WEB,
+                 "nonce": nonce_holder["nonce"]},
+                self.key, algorithm="RS256", headers={"kid": "export-queue-key"},
+            )
+            issued["access_token"] = access
+            return httpx.Response(200, json={
+                "token_type": "Bearer", "access_token": access,
+                "id_token": identity,
+            })
+
+        def build_app():
+            # Each BFF owns a separate adapter instance; PostgreSQL carries
+            # the encrypted finding history between instances.
+            findings = PostgresExportResearchFindingLedger(
+                POSTGRES_DSN, cases.read_export_research_workspace, finding_key,
+            )
+            return create_postgres_local_test_bff(
+                settings, transport=httpx.MockTransport(token_response),
+                case_ledger=cases, export_research_finding_ledger=findings,
+            )
+
+        first_app, second_app = build_app(), build_app()
+        browser_a = TestClient(first_app, base_url=callback_origin,
+                               follow_redirects=False)
+        browser_b = TestClient(second_app, base_url=callback_origin,
+                               follow_redirects=False)
+        state_hash = session_hash = None
+        note = "DEMO: export UI note persisted across BFF instances"
+        try:
+            start = browser_a.get("/api/auth/start")
+            self.assertEqual(start.status_code, 303, start.text)
+            query = parse_qs(urlsplit(start.headers["location"]).query)
+            self.assertEqual(query["code_challenge_method"], ["S256"])
+            nonce_holder["nonce"] = query["nonce"][0]
+            state_hash = hashlib.sha256(
+                query["state"][0].encode("ascii"),
+            ).hexdigest()
+            browser_b.cookies.update(browser_a.cookies)
+            callback_response = browser_b.get(
+                "/api/auth/callback", params={
+                    "code": "export-bff-code", "state": query["state"][0],
+                },
+            )
+            self.assertEqual(callback_response.status_code, 303,
+                             callback_response.text)
+            session = browser_b.get("/api/auth/session")
+            self.assertEqual(session.status_code, 200, session.text)
+            self.assertNotIn("access_token", session.text)
+            session_id = browser_b.cookies.get("__Host-ronas_session")
+            session_hash = hashlib.sha256(session_id.encode("ascii")).hexdigest()
+
+            detail = f"/admin/export/research/drafts/{ref}"
+            before = browser_b.get(detail)
+            self.assertEqual(before.status_code, 200, before.text)
+            self.assertIn(evidence_ref, before.text)
+            form = {
+                "csrf": session.json()["csrf"],
+                "action_id": "DEMO-EXPORT-BFF-" + secrets.token_hex(6).upper(),
+                "case_version": "3", "question_revision": "1",
+                "finding_revision": "0",
+                "evidence_binding": "1:" + evidence_ref, "note": note,
+            }
+            saved = browser_b.post(
+                detail + "/findings", content=urlencode(form), headers={
+                    "Origin": callback_origin,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            self.assertEqual(saved.status_code, 303, saved.text)
+
+            # Resolve B's PostgreSQL session and finding journal from app A.
+            browser_a.cookies.update(browser_b.cookies)
+            after = browser_a.get(detail)
+            self.assertEqual(after.status_code, 200, after.text)
+            self.assertIn(note, after.text)
+            history = browser_a.get(
+                f"/api/v1/admin/export/research/drafts/{ref}/findings",
+            )
+            self.assertEqual(history.status_code, 200, history.text)
+            self.assertEqual(history.json()["items"][0]["note"], note)
+            self.assertFalse(history.json()["report_approved"])
+            self.assertEqual(
+                first_app.state.ronas_local_bff_session_backend, "postgresql",
+            )
+            self.assertEqual(
+                second_app.state.ronas_local_bff_session_backend, "postgresql",
+            )
+            with psycopg.connect(POSTGRES_DSN) as db:
+                ciphertext = db.execute(
+                    "SELECT note_ciphertext FROM ronas_export_research_finding "
+                    "WHERE ref=%s", (ref,),
+                ).fetchone()[0]
+            self.assertNotIn(note.encode("utf-8"), bytes(ciphertext))
+            self.assertTrue(cases.verify_integrity())
+        finally:
+            browser_a.close()
+            browser_b.close()
+            with psycopg.connect(POSTGRES_DSN) as db:
+                if state_hash is not None:
+                    db.execute(
+                        "DELETE FROM ronas_browser_pending_login WHERE state_hash=%s",
+                        (state_hash,),
+                    )
+                if session_hash is not None:
+                    db.execute(
+                        "DELETE FROM ronas_browser_session_refresh_lock "
+                        "WHERE sid_hash=%s", (session_hash,),
+                    )
+                    db.execute(
+                        "DELETE FROM ronas_browser_session WHERE sid_hash=%s",
+                        (session_hash,),
+                    )
 
 if __name__ == "__main__":
     unittest.main()

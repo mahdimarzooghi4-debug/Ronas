@@ -34,6 +34,8 @@ from .domestic_surplus_producer_consent import (
     ProducerConsentLedger, is_producer_consent_ledger,
 )
 from .postgres_household_progress_notes import PostgresHouseholdProgressNoteLedger
+from .postgres_export_findings import PostgresExportResearchFindingLedger
+from .human_review_sqlite import SqliteSyntheticHumanReviewLedger
 
 
 class LocalBFFConfigurationError(ValueError):
@@ -129,6 +131,7 @@ def _validate_synthetic_composition(
     household_surplus_draft_ledger,
     household_surplus_producer_consent_ledger,
     household_progress_note_ledger=None,
+    export_research_finding_ledger=None,
 ) -> None:
     if case_ledger is not None and not isinstance(
         case_ledger, SqliteSyntheticExpertQuestionLedger,
@@ -195,6 +198,16 @@ def _validate_synthetic_composition(
         raise LocalBFFConfigurationError(
             "progress notes must share the exact case, schema and owner authority"
         )
+    if export_research_finding_ledger is not None and (
+            not isinstance(export_research_finding_ledger,
+                           PostgresExportResearchFindingLedger)
+            or not isinstance(case_ledger, SqliteSyntheticHumanReviewLedger)
+            or getattr(getattr(export_research_finding_ledger,
+                               "_workspace_reader", None), "__self__", None)
+                is not case_ledger):
+        raise LocalBFFConfigurationError(
+            "Export findings must share the exact synthetic case and grant ledger"
+        )
 
 def _compose_local_test_bff(
     keycloak: KeycloakConfig,
@@ -212,6 +225,7 @@ def _compose_local_test_bff(
     household_surplus_draft_ledger: SurplusDraftLedger | None = None,
     household_surplus_producer_consent_ledger: ProducerConsentLedger | None = None,
     household_progress_note_ledger: PostgresHouseholdProgressNoteLedger | None = None,
+    export_research_finding_ledger: PostgresExportResearchFindingLedger | None = None,
 ) -> FastAPI:
     _validate_synthetic_composition(
         case_ledger, agronomy_workspace, household_profile_schema,
@@ -220,6 +234,7 @@ def _compose_local_test_bff(
         household_surplus_draft_ledger,
         household_surplus_producer_consent_ledger,
         household_progress_note_ledger,
+        export_research_finding_ledger,
     )
     cfg = BrowserOIDCConfig(keycloak, callback_url)
 
@@ -249,6 +264,7 @@ def _compose_local_test_bff(
         household_surplus_draft_ledger=household_surplus_draft_ledger,
         household_surplus_producer_consent_ledger=household_surplus_producer_consent_ledger,
         household_progress_note_ledger=household_progress_note_ledger,
+        export_research_finding_ledger=export_research_finding_ledger,
     )
     app.state.ronas_local_test_only = True
     return app
@@ -268,6 +284,7 @@ def create_local_test_bff(
     household_surplus_draft_ledger: SurplusDraftLedger | None = None,
     household_surplus_producer_consent_ledger: ProducerConsentLedger | None = None,
     household_progress_note_ledger: PostgresHouseholdProgressNoteLedger | None = None,
+    export_research_finding_ledger: PostgresExportResearchFindingLedger | None = None,
 ) -> FastAPI:
     """Explicit local SQLite BFF composition; default app remains disabled."""
     if not isinstance(settings, LocalBFFSettings):
@@ -279,6 +296,7 @@ def create_local_test_bff(
         household_surplus_draft_ledger,
         household_surplus_producer_consent_ledger,
         household_progress_note_ledger,
+        export_research_finding_ledger,
     )
     try:
         directory = settings.session_database.parent.lstat()
@@ -301,6 +319,7 @@ def create_local_test_bff(
         household_surplus_draft_ledger=household_surplus_draft_ledger,
         household_surplus_producer_consent_ledger=household_surplus_producer_consent_ledger,
         household_progress_note_ledger=household_progress_note_ledger,
+        export_research_finding_ledger=export_research_finding_ledger,
     )
     app.state.ronas_local_bff_session_backend = "sqlite"
     return app
@@ -370,6 +389,7 @@ def create_postgres_local_test_bff(
     household_surplus_draft_ledger: SurplusDraftLedger | None = None,
     household_surplus_producer_consent_ledger: ProducerConsentLedger | None = None,
     household_progress_note_ledger: PostgresHouseholdProgressNoteLedger | None = None,
+    export_research_finding_ledger: PostgresExportResearchFindingLedger | None = None,
 ) -> FastAPI:
     """Opt-in LOCAL/TEST composition using the shared PostgreSQL session adapter."""
     if not isinstance(settings, PostgresLocalBFFSettings):
@@ -381,6 +401,7 @@ def create_postgres_local_test_bff(
         household_surplus_draft_ledger,
         household_surplus_producer_consent_ledger,
         household_progress_note_ledger,
+        export_research_finding_ledger,
     )
     from .postgres_session import PostgresBrowserSessionStore
     try:
@@ -400,6 +421,7 @@ def create_postgres_local_test_bff(
         household_surplus_draft_ledger=household_surplus_draft_ledger,
         household_surplus_producer_consent_ledger=household_surplus_producer_consent_ledger,
         household_progress_note_ledger=household_progress_note_ledger,
+        export_research_finding_ledger=export_research_finding_ledger,
     )
     app.state.ronas_local_bff_session_backend = "postgresql"
     return app

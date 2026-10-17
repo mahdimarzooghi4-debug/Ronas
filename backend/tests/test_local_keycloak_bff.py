@@ -23,6 +23,8 @@ from ronas_api.app import create_app
 from ronas_api.auth import Principal
 from ronas_api.scoped_drafts import ScopedDraft, ScopedGrant
 from ronas_api.expert_review_questions_sqlite import SqliteSyntheticExpertQuestionLedger
+from ronas_api.human_review_sqlite import SqliteSyntheticHumanReviewLedger
+from ronas_api.postgres_export_findings import PostgresExportResearchFindingLedger
 from ronas_api.agronomy_workspace import (
     SyntheticAgronomyWorkspace, SyntheticAgronomyAssignment,
 )
@@ -665,6 +667,31 @@ class LocalKeycloakBFFCompositionTests(unittest.TestCase):
             create_local_test_bff(
                 self.settings, case_ledger=other,
                 agronomy_workspace=workspace,
+            )
+        self.assertTrue(ledger.verify_integrity())
+
+    def test_export_finding_composition_requires_exact_review_case_ledger(self):
+        grants = (ScopedGrant("synthetic-export-operator", "export_ops"),)
+        record = ScopedDraft(
+            "DEMO-E-1", "EXPORT", "synthetic-export-operator", 2, grants,
+            source_ref="DEMO-SOURCE-1",
+        )
+        ledger = SqliteSyntheticHumanReviewLedger(
+            self.root / "export-review.db", (record,),
+            trusted_revoke_authorizer=lambda *_: False,
+            trusted_human_review_authorizer=lambda *_: False,
+        )
+        other = SqliteSyntheticHumanReviewLedger(
+            self.root / "other-export-review.db", (record,),
+            trusted_revoke_authorizer=lambda *_: False,
+            trusted_human_review_authorizer=lambda *_: False,
+        )
+        finding_ledger = object.__new__(PostgresExportResearchFindingLedger)
+        finding_ledger._workspace_reader = other.read_export_research_workspace
+        with self.assertRaises(LocalBFFConfigurationError):
+            create_local_test_bff(
+                self.settings, case_ledger=ledger,
+                export_research_finding_ledger=finding_ledger,
             )
         self.assertTrue(ledger.verify_integrity())
 

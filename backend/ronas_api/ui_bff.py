@@ -44,6 +44,7 @@ from .export_research_question import (
     ExportResearchQuestionConflict, valid_question_refs,
 )
 from .oidc_browser import BrowserOIDC
+from .postgres_household_progress_notes import PostgresHouseholdProgressNoteLedger
 from .financial_source_arithmetic import source_arithmetic
 from .operational_readiness import readiness, verify_decision_sources
 from .case_journey_guidance import (
@@ -349,6 +350,7 @@ def build_authenticated_ui_router(
     household_surplus_draft_ledger: SurplusDraftLedger | None = None,
     household_surplus_producer_consent_ledger: ProducerConsentLedger | None = None,
     export_research_finding_ledger=None,
+    household_progress_note_ledger: PostgresHouseholdProgressNoteLedger | None = None,
 ) -> APIRouter:
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
@@ -401,6 +403,20 @@ def build_authenticated_ui_router(
                  or household_input_ledger is not owned_case_ledger
                  or household_input_ledger is not technical_review_ledger)):
         raise ValueError("household input must use same explicit review ledger")
+    if household_progress_note_ledger is not None and (
+            not isinstance(household_progress_note_ledger,
+                            PostgresHouseholdProgressNoteLedger)
+            or household_input_ledger is None
+            or not callable(household_profile_access_authority)
+            or household_progress_note_ledger._authority
+                != household_profile_access_authority
+            or household_profile_schema is None
+            or household_progress_note_ledger._schema_ref
+                != household_profile_schema.schema_ref
+            or getattr(household_progress_note_ledger._context_reader,
+                       "__self__", None) is not household_input_ledger):
+        raise ValueError("PostgreSQL progress notes require shared live household authority")
+    progress_note_store = household_progress_note_ledger or household_input_ledger
     if household_profile_schema is not None:
         if (not isinstance(household_input_ledger, SqliteSyntheticHouseholdProfileLedger)
                 or household_input_ledger.profile_schema != household_profile_schema
@@ -1813,7 +1829,7 @@ def build_authenticated_ui_router(
                 session = flow.session(sid)
             except InvalidToken:
                 raise HTTPException(401, detail="INVALID_SESSION") from None
-            result = household_input_ledger.read_owned_progress_notes(
+            result = progress_note_store.read_owned_progress_notes(
                 ref, Principal(session.subject, session.roles),
             )
             if result is None:
@@ -1898,7 +1914,7 @@ def build_authenticated_ui_router(
                 }),
             )
             try:
-                saved = household_input_ledger.append_owned_progress_note(
+                saved = progress_note_store.append_owned_progress_note(
                     ref, principal,
                     action_id=form["action_id"],
                     expected_case_version=form_version(

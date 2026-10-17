@@ -49,6 +49,7 @@ from .domestic_surplus_producer_consent import (
     ProducerConsentLedger, is_producer_consent_ledger,
 )
 from .request_body_limits import HouseholdProfileBodyLimitMiddleware
+from .postgres_household_progress_notes import PostgresHouseholdProgressNoteLedger
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -78,6 +79,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                household_surplus_publication_authority=None,
                household_surplus_draft_ledger: SurplusDraftLedger | None = None,
                household_surplus_producer_consent_ledger: ProducerConsentLedger | None = None,
+               household_progress_note_ledger: PostgresHouseholdProgressNoteLedger | None = None,
                export_source_connectors: ExportSourceConnectorRegistry | None = None,
                export_research_finding_ledger: PostgresExportResearchFindingLedger | None = None) -> FastAPI:
     if export_source_connectors is not None and (
@@ -140,6 +142,22 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         raise ValueError(
             "producer consent requires the same household draft ledger and readiness authority"
         )
+    if household_progress_note_ledger is not None and (
+            not isinstance(household_progress_note_ledger,
+                           PostgresHouseholdProgressNoteLedger)
+            or not isinstance(config, KeycloakConfig)
+            or browser_flow is None
+            or not isinstance(scoped_registry, SqliteSyntheticHouseholdInputLedger)
+            or technical_review_ledger is not scoped_registry
+            or household_profile_schema is None
+            or household_progress_note_ledger._schema_ref
+                != household_profile_schema.schema_ref
+            or not callable(household_profile_access_authority)
+            or household_progress_note_ledger._authority
+                != household_profile_access_authority
+            or getattr(household_progress_note_ledger._context_reader,
+                       "__self__", None) is not scoped_registry):
+        raise ValueError("PostgreSQL progress notes require the shared Keycloak household ledger")
     app = FastAPI(
         title="Ronas bounded read-only API foundation",
         docs_url=None, redoc_url=None, openapi_url=None,
@@ -197,6 +215,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             browser_flow, technical_review_ledger=worklist_ledger,
             owned_case_ledger=owner_ledger,
             household_input_ledger=input_ledger,
+            household_progress_note_ledger=household_progress_note_ledger,
             household_profile_schema=household_profile_schema,
             household_profile_access_authority=household_profile_access_authority,
             household_stage_context_authority=household_stage_context_authority,
@@ -367,6 +386,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             profile_access_authority=household_profile_access_authority,
             stage_context_authority=household_stage_context_authority,
             stage_artifact_store=household_stage_artifact_store,
+            progress_note_ledger=household_progress_note_ledger,
         ))
         if household_surplus_publication_authority is not None:
             app.include_router(build_domestic_surplus_publication_router(

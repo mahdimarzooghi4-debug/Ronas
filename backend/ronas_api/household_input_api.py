@@ -26,6 +26,7 @@ from .household_input_profiles import (
     HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
 )
 from .stage_observation_artifacts import StageArtifactStore, StageArtifactStoreError
+from .postgres_household_progress_notes import PostgresHouseholdProgressNoteLedger
 
 HouseholdProfileKey = Annotated[StrictStr, Field(max_length=32)]
 HouseholdProfileValue = Annotated[StrictStr, Field(max_length=300)]
@@ -101,6 +102,7 @@ def build_household_input_router(
     profile_access_authority: Callable[[Principal, str, str], bool] | None = None,
     stage_context_authority: Callable[[str], CurrentStageContext | None] | None = None,
     stage_artifact_store: StageArtifactStore | None = None,
+    progress_note_ledger: PostgresHouseholdProgressNoteLedger | None = None,
 ) -> APIRouter:
     if not isinstance(ledger, SqliteSyntheticHouseholdInputLedger):
         raise ValueError("explicit local synthetic input ledger required")
@@ -118,6 +120,10 @@ def build_household_input_router(
     if stage_artifact_store is not None and (
             stage_context_authority is None or profile_schema is None):
         raise ValueError("stage artifact store requires the current stage context")
+    if progress_note_ledger is not None and not isinstance(
+            progress_note_ledger, PostgresHouseholdProgressNoteLedger):
+        raise ValueError("progress note store must be the explicit PostgreSQL adapter")
+    notes = progress_note_ledger or ledger
     router = APIRouter()
 
     @router.get("/api/v1/domestic/household-intake/my-drafts/{ref}/input-revisions")
@@ -167,7 +173,7 @@ def build_household_input_router(
     @router.get("/api/v1/domestic/household-intake/my-drafts/{ref}/progress-notes")
     def own_progress_notes(ref: str, p: Principal = Depends(verified_principal)) -> dict:
         try:
-            result = ledger.read_owned_progress_notes(ref, p)
+            result = notes.read_owned_progress_notes(ref, p)
         except (LedgerIntegrityError, sqlite3.Error) as exc:
             raise HTTPException(503, detail="SYNTHETIC_PROGRESS_HISTORY_UNAVAILABLE") from exc
         if result is None:
@@ -184,7 +190,7 @@ def build_household_input_router(
         if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
             raise HTTPException(401, detail="BEARER_REQUIRED_FOR_MUTATION")
         try:
-            result = ledger.append_owned_progress_note(
+            result = notes.append_owned_progress_note(
                 ref, p, action_id=data.action_id,
                 expected_case_version=data.expected_case_version,
                 expected_revision=data.expected_revision,

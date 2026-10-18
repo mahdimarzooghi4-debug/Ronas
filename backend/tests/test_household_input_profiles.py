@@ -518,6 +518,77 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(wrong_owner.status_code, 404)
         self.assertTrue(self.ledger.verify_integrity())
 
+    def test_specialist_artifact_reads_audit_exact_file_and_fail_closed_races(self):
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(), headers=self.bearer(),
+        ).status_code, 201)
+        image = b"\x89PNG\r\n\x1a\n" + b"specialist-audit-scope"
+        stored = self.artifact_store.put(
+            OWNER, REF + ":DEMO-STAGE-01", "image/png", image,
+        )
+        stage_root = ROOT.replace("/cultivation-inputs", "/stage-observations")
+        command = self.stage_command(action="DEMO-SPECIALIST-ARTIFACT-AUDIT")
+        command["observation_artifact_digest"] = stored.digest
+        saved = self.client.post(
+            stage_root, json=command, headers=self.bearer(),
+        )
+        self.assertEqual(saved.status_code, 201, saved.text)
+
+        specialist = "synthetic-agronomy-artifact-reader"
+        active = {"value": True}
+        workspace = SyntheticAgronomyWorkspace(
+            self.ledger,
+            (SyntheticAgronomyAssignment(REF, specialist, 2),),
+            trusted_assignment_active=lambda actor, ref, version: (
+                active["value"] and actor == specialist
+                and ref == REF and version == 2
+            ),
+        )
+        principal = Principal(specialist, frozenset({"agronomy_expert"}))
+        before = len(self.ledger.audit_snapshot())
+        result = workspace.read_assigned_stage_artifact(
+            REF, "DEMO-STAGE-01", stored.digest, principal,
+            store=self.artifact_store,
+        )
+        self.assertEqual(result[1], image)
+
+        class RevokeDuringRead:
+            def get(inner_self, owner, case_ref, digest):
+                result = self.artifact_store.get(owner, case_ref, digest)
+                active["value"] = False
+                return result
+
+        denied_race = workspace.read_assigned_stage_artifact(
+            REF, "DEMO-STAGE-01", stored.digest, principal,
+            store=RevokeDuringRead(),
+        )
+        self.assertIsNone(denied_race)
+
+        active["value"] = True
+
+        class MissingArtifact:
+            def get(inner_self, owner, case_ref, digest):
+                return None
+
+        missing = workspace.read_assigned_stage_artifact(
+            REF, "DEMO-STAGE-01", stored.digest, principal,
+            store=MissingArtifact(),
+        )
+        self.assertIsNone(missing)
+        events = [event for event in self.ledger.audit_snapshot()[before:]
+                  if event.access_mode == "AGRONOMY_ASSIGNED_STAGE_ARTIFACT"]
+        self.assertEqual([event.kind for event in events], [
+            "READ_ALLOWED", "READ_DENIED", "READ_DENIED",
+        ])
+        self.assertTrue(all(event.reason_ref == "DEMO-STAGE-01"
+                            for event in events))
+        self.assertTrue(all(
+            event.target_digest == hashlib.sha256(
+                stored.digest.encode("utf-8")
+            ).hexdigest() for event in events
+        ))
+        self.assertTrue(self.ledger.verify_integrity())
+
     def test_composed_app_has_one_receipt_authorized_household_artifact_route(self):
         app = self.make_app(artifact_store=self.artifact_store)
         path = (

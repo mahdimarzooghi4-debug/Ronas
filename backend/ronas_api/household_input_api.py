@@ -282,6 +282,22 @@ def build_household_input_router(
                     503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
                 ) from exc
 
+        def record_stage_artifact_access(
+            ref: str, p: Principal, stage_ref: str, digest: str, *,
+            permitted: bool,
+        ) -> bool:
+            try:
+                return profile_ledger.record_owned_stage_artifact_access(
+                    ref, p, stage_ref=stage_ref, artifact_digest=digest,
+                    permitted=permitted,
+                ) is True
+            except ValueError:
+                return False
+            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                raise HTTPException(
+                    503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                ) from exc
+
         @router.get(
             "/api/v1/domestic/household-intake/my-drafts/{ref}/cultivation-inputs",
         )
@@ -487,6 +503,9 @@ def build_household_input_router(
                         for item in history["observations"]
                     ))
                     if not receipt_exists:
+                        record_stage_artifact_access(
+                            ref, p, stage_ref, digest, permitted=False,
+                        )
                         raise HTTPException(
                             404, detail="STAGE_ARTIFACT_NOT_FOUND",
                         )
@@ -499,10 +518,21 @@ def build_household_input_router(
                             503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
                         ) from exc
                     if stored is None:
+                        record_stage_artifact_access(
+                            ref, p, stage_ref, digest, permitted=False,
+                        )
                         raise HTTPException(
                             404, detail="STAGE_ARTIFACT_NOT_FOUND",
                         )
                     if not profile_allowed(p, ref):
+                        record_stage_artifact_access(
+                            ref, p, stage_ref, digest, permitted=False,
+                        )
+                        raise HTTPException(
+                            404, detail="STAGE_ARTIFACT_NOT_FOUND",
+                        )
+                    if not record_stage_artifact_access(
+                            ref, p, stage_ref, digest, permitted=True):
                         raise HTTPException(
                             404, detail="STAGE_ARTIFACT_NOT_FOUND",
                         )

@@ -2478,6 +2478,19 @@ def build_authenticated_ui_router(
                         except InvalidToken:
                             raise HTTPException(401, detail="INVALID_SESSION") from None
                         principal = Principal(session.subject, session.roles)
+                        def audit_artifact_access(*, permitted: bool) -> bool:
+                            try:
+                                return household_input_ledger.record_owned_stage_artifact_access(
+                                    ref, principal, stage_ref=stage_ref,
+                                    artifact_digest=digest, permitted=permitted,
+                                ) is True
+                            except ValueError:
+                                return False
+                            except (LedgerIntegrityError, sqlite3.Error) as exc:
+                                raise HTTPException(
+                                    503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                                ) from exc
+
                         try:
                             permitted = household_profile_access_authority(
                                 principal, ref, household_profile_schema.schema_ref,
@@ -2487,6 +2500,7 @@ def build_authenticated_ui_router(
                                 503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
                             ) from exc
                         if permitted is not True:
+                            audit_artifact_access(permitted=False)
                             raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
                         try:
                             history = household_input_ledger.read_owned_stage_observations(
@@ -2507,6 +2521,7 @@ def build_authenticated_ui_router(
                             for item in history["observations"]
                         ))
                         if not receipt_exists:
+                            audit_artifact_access(permitted=False)
                             raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
                         try:
                             stored = household_stage_artifact_store.get(
@@ -2517,6 +2532,7 @@ def build_authenticated_ui_router(
                                 503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
                             ) from exc
                         if stored is None:
+                            audit_artifact_access(permitted=False)
                             raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
                         try:
                             permitted = household_profile_access_authority(
@@ -2529,9 +2545,12 @@ def build_authenticated_ui_router(
                                 detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
                             ) from exc
                         if permitted is not True:
+                            audit_artifact_access(permitted=False)
                             raise HTTPException(
                                 404, detail="STAGE_ARTIFACT_NOT_FOUND",
                             )
+                        if not audit_artifact_access(permitted=True):
+                            raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
                         artifact, content = stored
                         return Response(
                             content=content, media_type=artifact.content_type,

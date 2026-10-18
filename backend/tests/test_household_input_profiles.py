@@ -503,6 +503,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             "byte_length": len(image), "stored": True,
         })
         download_path = upload_path + "/" + digest
+        artifact_audit_start = len(self.ledger.audit_snapshot())
         unlinked = api_client.get(download_path, headers=self.bearer())
         self.assertEqual(unlinked.status_code, 404)
 
@@ -516,6 +517,20 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(downloaded.headers["content-type"], "image/png")
         self.assertEqual(downloaded.headers["cache-control"], "no-store")
         self.assertEqual(downloaded.headers["x-content-type-options"], "nosniff")
+
+        self.browser_session()
+        browser_client = TestClient(
+            self.make_app(artifact_store=store), base_url=ORIGIN,
+        )
+        browser_client.cookies.set(
+            "__Host-ronas_session", self.client.cookies.get("__Host-ronas_session"),
+        )
+        browser_download = browser_client.get(
+            "/my-drafts/" + REF + "/stage-observations/artifacts/"
+            + "DEMO-STAGE-01/" + digest,
+        )
+        self.assertEqual(browser_download.status_code, 200, browser_download.text)
+        self.assertEqual(browser_download.content, image)
 
         access = {"allowed": True}
 
@@ -544,7 +559,6 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertNotEqual(raced_api.content, image)
 
         access["allowed"] = True
-        self.browser_session()
         browser_race_client = TestClient(self.make_app(
             artifact_store=RevokeDuringRead(),
             profile_access_authority=changing_access,
@@ -557,6 +571,21 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             + "DEMO-STAGE-01/" + digest,
         )
         self.assertEqual(raced_browser.status_code, 404, raced_browser.text)
+        household_audit = [
+            entry for entry in self.ledger.audit_snapshot()[artifact_audit_start:]
+            if entry.access_mode == "HOUSEHOLD_STAGE_ARTIFACT"
+        ]
+        self.assertEqual([entry.kind for entry in household_audit], [
+            "READ_DENIED", "READ_ALLOWED", "READ_ALLOWED",
+            "READ_DENIED", "READ_DENIED",
+        ])
+        self.assertTrue(all(
+            entry.reason_ref == "DEMO-STAGE-01"
+            and entry.target_digest == hashlib.sha256(
+                digest.encode("utf-8")
+            ).hexdigest()
+            for entry in household_audit
+        ))
 
         wrong_owner = api_client.get(
             download_path,

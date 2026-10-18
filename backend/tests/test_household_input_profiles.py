@@ -1456,7 +1456,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
 
     @unittest.skipUnless(POSTGRES_DSN, "RONAS_TEST_POSTGRES_DSN is not configured")
     def test_postgres_pkce_session_and_stage_artifact_cross_bff_instances(self):
-        """Join PostgreSQL sessions and encrypted artifacts in the real BFF flow."""
+        """Join Bearer upload, browser receipt, and PostgreSQL-backed BFF reads."""
         callback_origin = "https://127.0.0.1:8765"
         callback = callback_origin + "/api/auth/callback"
         realm = KeycloakConfig(
@@ -1481,6 +1481,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             )
 
         nonce_holder = {}
+        access_holder = {}
         state_hash = None
         session_hash = None
 
@@ -1500,6 +1501,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
                  "resource_access": {API: {"roles": ["household"]}}},
                 self.key, algorithm="RS256", headers={"kid": "profile-test"},
             )
+            access_holder["token"] = access
             identity = jwt.encode(
                 {**common, "aud": WEB, "azp": WEB,
                  "nonce": nonce_holder["nonce"]},
@@ -1560,20 +1562,28 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             session_hash = hashlib.sha256(sid.encode("ascii")).hexdigest()
 
             page = "/my-drafts/" + REF + "/stage-observations"
+            artifact_path = (
+                "/api/v1/domestic/household-intake/my-drafts/" + REF
+                + "/stage-observations/artifacts/DEMO-STAGE-01"
+            )
+            api_headers = {
+                "Authorization": "Bearer " + access_holder["token"],
+                "Content-Type": "image/png",
+                "X-Ronas-Case-Version": "2",
+                "X-Ronas-Input-Revision": "1",
+                "X-Ronas-Plan-Digest": self.stage_plan_digest,
+                "X-Ronas-Requirements-Digest": "a" * 64,
+            }
             upload = browser_b.put(
-                page + "/artifacts", content=image, headers={
-                    "Origin": callback_origin,
-                    "X-CSRF-Token": session.json()["csrf"],
-                    "Content-Type": "image/png",
-                    "X-Ronas-Case-Version": "2",
-                    "X-Ronas-Input-Revision": "1",
-                    "X-Ronas-Plan-Digest": self.stage_plan_digest,
-                    "X-Ronas-Stage-Ref": "DEMO-STAGE-01",
-                    "X-Ronas-Requirements-Digest": "a" * 64,
-                },
+                artifact_path, content=image, headers=api_headers,
             )
             self.assertEqual(upload.status_code, 201, upload.text)
             digest = upload.json()["digest"]
+            api_download_path = artifact_path + "/" + digest
+            self.assertEqual(browser_b.get(
+                api_download_path,
+                headers={"Authorization": api_headers["Authorization"]},
+            ).status_code, 404)
             command = self.stage_command(action="DEMO-PG-CROSS-BFF-RECEIPT")
             form = {
                 "csrf": session.json()["csrf"], "action_id": command["action_id"],
@@ -1607,6 +1617,14 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             self.assertEqual(downloaded.status_code, 200, downloaded.text)
             self.assertEqual(downloaded.content, image)
             self.assertEqual(downloaded.headers["cache-control"], "no-store")
+            api_download = browser_a.get(
+                api_download_path,
+                headers={"Authorization": api_headers["Authorization"]},
+            )
+            self.assertEqual(api_download.status_code, 200, api_download.text)
+            self.assertEqual(api_download.content, image)
+            self.assertIn("no-store", api_download.headers["cache-control"])
+            self.assertEqual(api_download.headers["x-content-type-options"], "nosniff")
             self.assertEqual(first_app.state.ronas_local_bff_session_backend,
                              "postgresql")
             self.assertEqual(second_app.state.ronas_local_bff_session_backend,

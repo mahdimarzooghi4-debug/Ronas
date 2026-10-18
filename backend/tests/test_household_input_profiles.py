@@ -1509,7 +1509,8 @@ class HouseholdProfileFlowTests(unittest.TestCase):
     def test_postgres_artifact_store_completes_household_and_specialist_bff_flow(self):
         image = b"\x89PNG\r\n\x1a\n" + b"postgres-backed-browser-flow"
         store = PostgresStageArtifactStore(
-            POSTGRES_DSN, secrets.token_bytes(32), scope_key=b"p" * 32,
+            POSTGRES_DSN, secrets.token_bytes(32),
+            scope_key=secrets.token_bytes(32),
         )
         case_artifact_ref = REF + ":DEMO-STAGE-01"
         owner_hash, case_hash = store._scope(OWNER, case_artifact_ref)

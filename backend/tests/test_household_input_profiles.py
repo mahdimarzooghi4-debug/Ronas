@@ -227,12 +227,17 @@ class HouseholdProfileFlowTests(unittest.TestCase):
     def make_app(self, *, schema=True, authority=True, stage_authority=True,
                  artifact_store=None, surplus_authority=None,
                  surplus_draft_ledger=None, surplus_consent_ledger=None,
-                 stage_context_authority=None):
+                 stage_context_authority=None,
+                 profile_access_authority=None):
         return create_app(
             self.config, self.flow, scoped_registry=self.ledger,
             technical_review_ledger=self.ledger,
             household_profile_schema=self.schema if schema else None,
-            household_profile_access_authority=self.allowed if authority else None,
+            household_profile_access_authority=(
+                profile_access_authority
+                if profile_access_authority is not None
+                else self.allowed if authority else None
+            ),
             household_stage_context_authority=(
                 (stage_context_authority or self.stage_context)
                 if stage_authority and schema else None
@@ -511,6 +516,48 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(downloaded.headers["content-type"], "image/png")
         self.assertEqual(downloaded.headers["cache-control"], "no-store")
         self.assertEqual(downloaded.headers["x-content-type-options"], "nosniff")
+
+        access = {"allowed": True}
+
+        def changing_access(principal, ref, schema_ref):
+            return (access["allowed"]
+                    and self.allowed(principal, ref, schema_ref))
+
+        class RevokeDuringRead:
+            def put(inner_self, *args, **kwargs):
+                return store.put(*args, **kwargs)
+
+            def get(inner_self, owner, case_ref, artifact_digest):
+                result = store.get(owner, case_ref, artifact_digest)
+                access["allowed"] = False
+                return result
+
+            def contains(inner_self, *args, **kwargs):
+                return store.contains(*args, **kwargs)
+
+        race_client = TestClient(self.make_app(
+            artifact_store=RevokeDuringRead(),
+            profile_access_authority=changing_access,
+        ), base_url=ORIGIN)
+        raced_api = race_client.get(download_path, headers=self.bearer())
+        self.assertEqual(raced_api.status_code, 404, raced_api.text)
+        self.assertNotEqual(raced_api.content, image)
+
+        access["allowed"] = True
+        self.browser_session()
+        browser_race_client = TestClient(self.make_app(
+            artifact_store=RevokeDuringRead(),
+            profile_access_authority=changing_access,
+        ), base_url=ORIGIN)
+        browser_race_client.cookies.set(
+            "__Host-ronas_session", self.client.cookies.get("__Host-ronas_session"),
+        )
+        raced_browser = browser_race_client.get(
+            "/my-drafts/" + REF + "/stage-observations/artifacts/"
+            + "DEMO-STAGE-01/" + digest,
+        )
+        self.assertEqual(raced_browser.status_code, 404, raced_browser.text)
+
         wrong_owner = api_client.get(
             download_path,
             headers=self.bearer("synthetic-other", ("household",)),

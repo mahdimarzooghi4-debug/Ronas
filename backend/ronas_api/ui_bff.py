@@ -2518,6 +2518,20 @@ def build_authenticated_ui_router(
                             ) from exc
                         if stored is None:
                             raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
+                        try:
+                            permitted = household_profile_access_authority(
+                                principal, ref,
+                                household_profile_schema.schema_ref,
+                            )
+                        except Exception as exc:
+                            raise HTTPException(
+                                503,
+                                detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                            ) from exc
+                        if permitted is not True:
+                            raise HTTPException(
+                                404, detail="STAGE_ARTIFACT_NOT_FOUND",
+                            )
                         artifact, content = stored
                         return Response(
                             content=content, media_type=artifact.content_type,

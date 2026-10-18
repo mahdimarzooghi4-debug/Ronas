@@ -502,6 +502,10 @@ def build_household_input_router(
                         raise HTTPException(
                             404, detail="STAGE_ARTIFACT_NOT_FOUND",
                         )
+                    if not profile_allowed(p, ref):
+                        raise HTTPException(
+                            404, detail="STAGE_ARTIFACT_NOT_FOUND",
+                        )
                     artifact, content = stored
                     return Response(
                         content=content, media_type=artifact.content_type,

@@ -389,7 +389,8 @@ class SyntheticAgronomyWorkspace:
             if not self._allowed(subject, ref, record.version):
                 ledger._append(
                     db, kind="READ_DENIED", engine="DOMESTIC", ref=ref,
-                    actor=subject, mode="AGRONOMY_ASSIGNED_STAGE_ARTIFACT",
+                    actor=subject, target=digest, reason_ref=stage_ref,
+                    mode="AGRONOMY_ASSIGNED_STAGE_ARTIFACT",
                 )
                 return None
             bound = db.execute(
@@ -400,13 +401,26 @@ class SyntheticAgronomyWorkspace:
             if bound is None:
                 ledger._append(
                     db, kind="READ_DENIED", engine="DOMESTIC", ref=ref,
-                    actor=subject, mode="AGRONOMY_ASSIGNED_STAGE_ARTIFACT",
+                    actor=subject, target=digest, reason_ref=stage_ref,
+                    mode="AGRONOMY_ASSIGNED_STAGE_ARTIFACT",
                 )
                 return None
             owner = record.owner_subject
 
         stored = store.get(owner, ref + ":" + stage_ref, digest)
         if stored is None:
+            with ledger._transaction() as db:
+                ledger._verify(db)
+                record = ledger._catalogue.get(("DOMESTIC", ref))
+                current_subject = self._actor(principal)
+                if (record is not None and current_subject == subject
+                        and record.owner_subject == owner):
+                    ledger._append(
+                        db, kind="READ_DENIED", engine="DOMESTIC", ref=ref,
+                        actor=current_subject, target=digest,
+                        reason_ref=stage_ref,
+                        mode="AGRONOMY_ASSIGNED_STAGE_ARTIFACT",
+                    )
             return None
 
         with ledger._transaction() as db:
@@ -424,13 +438,15 @@ class SyntheticAgronomyWorkspace:
                 if record is not None and current_subject is not None:
                     ledger._append(
                         db, kind="READ_DENIED", engine="DOMESTIC", ref=ref,
-                        actor=current_subject,
+                        actor=current_subject, target=digest,
+                        reason_ref=stage_ref,
                         mode="AGRONOMY_ASSIGNED_STAGE_ARTIFACT",
                     )
                 return None
             ledger._append(
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
-                actor=current_subject, mode="AGRONOMY_ASSIGNED_STAGE_ARTIFACT",
+                actor=current_subject, target=digest, reason_ref=stage_ref,
+                mode="AGRONOMY_ASSIGNED_STAGE_ARTIFACT",
             )
             return stored
 

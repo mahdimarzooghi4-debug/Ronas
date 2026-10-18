@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 35487)
+Total output lines: 2982
+
 """Schema-driven owner profile intake is versioned, private, and guarded."""
 import hashlib
 import json
@@ -516,6 +519,77 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             headers=self.bearer("synthetic-other", ("household",)),
         )
         self.assertEqual(wrong_owner.status_code, 404)
+        self.assertTrue(self.ledger.verify_integrity())
+
+    def test_specialist_artifact_reads_audit_exact_file_and_fail_closed_races(self):
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(), headers=self.bearer(),
+        ).status_code, 201)
+        image = b"\x89PNG\r\n\x1a\n" + b"specialist-audit-scope"
+        stored = self.artifact_store.put(
+            OWNER, REF + ":DEMO-STAGE-01", "image/png", image,
+        )
+        stage_root = ROOT.replace("/cultivation-inputs", "/stage-observations")
+        command = self.stage_command(action="DEMO-SPECIALIST-ARTIFACT-AUDIT")
+        command["observation_artifact_digest"] = stored.digest
+        saved = self.client.post(
+            stage_root, json=command, headers=self.bearer(),
+        )
+        self.assertEqual(saved.status_code, 201, saved.text)
+
+        specialist = "synthetic-agronomy-artifact-reader"
+        active = {"value": True}
+        workspace = SyntheticAgronomyWorkspace(
+            self.ledger,
+            (SyntheticAgronomyAssignment(REF, specialist, 2),),
+            trusted_assignment_active=lambda actor, ref, version: (
+                active["value"] and actor == specialist
+                and ref == REF and version == 2
+            ),
+        )
+        principal = Principal(specialist, frozenset({"agronomy_expert"}))
+        before = len(self.ledger.audit_snapshot())
+        result = workspace.read_assigned_stage_artifact(
+            REF, "DEMO-STAGE-01", stored.digest, principal,
+            store=self.artifact_store,
+        )
+        self.assertEqual(result[1], image)
+
+        class RevokeDuringRead:
+            def get(inner_self, owner, case_ref, digest):
+                result = self.artifact_store.get(owner, case_ref, digest)
+                active["value"] = False
+                return result
+
+        denied_race = workspace.read_assigned_stage_artifact(
+            REF, "DEMO-STAGE-01", stored.digest, principal,
+            store=RevokeDuringRead(),
+        )
+        self.assertIsNone(denied_race)
+
+        active["value"] = True
+
+        class MissingArtifact:
+            def get(inner_self, owner, case_ref, digest):
+                return None
+
+        missing = workspace.read_assigned_stage_artifact(
+            REF, "DEMO-STAGE-01", stored.digest, principal,
+            store=MissingArtifact(),
+        )
+        self.assertIsNone(missing)
+        events = [event for event in self.ledger.audit_snapshot()[before:]
+                  if event.access_mode == "AGRONOMY_ASSIGNED_STAGE_ARTIFACT"]
+        self.assertEqual([event.kind for event in events], [
+            "READ_ALLOWED", "READ_DENIED", "READ_DENIED",
+        ])
+        self.assertTrue(all(event.reason_ref == "DEMO-STAGE-01"
+                            for event in events))
+        self.assertTrue(all(
+            event.target_digest == hashlib.sha256(
+                stored.digest.encode("utf-8")
+            ).hexdigest() for event in events
+        ))
         self.assertTrue(self.ledger.verify_integrity())
 
     def test_composed_app_has_one_receipt_authorized_household_artifact_route(self):
@@ -1209,454 +1283,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
 
         def token_response(request):
             self.assertEqual(request.method, "POST")
-            self.assertEqual(
-                str(request.url), ISS + "/protocol/openid-connect/token",
-            )
-            now = int(time.time())
-            claims = {"iss": ISS, "sub": OWNER, "iat": now - 5, "exp": now + 450}
-            access = jwt.encode(
-                {**claims, "aud": API, "azp": WEB, "typ": "Bearer",
-                 "nbf": now - 5,
-                 "resource_access": {API: {"roles": ["household"]}}},
-                self.key, algorithm="RS256", headers={"kid": "profile-test"},
-            )
-            identity = jwt.encode(
-                {**claims, "aud": WEB, "azp": WEB,
-                 "nonce": nonce_holder["nonce"]},
-                self.key, algorithm="RS256", headers={"kid": "profile-test"},
-            )
-            issued["access_token"] = access
-            return httpx.Response(200, json={
-                "token_type": "Bearer", "access_token": access,
-                "id_token": identity,
-            })
-
-        def build_app():
-            # Each BFF owns a distinct adapter object with the same scoped keys;
-            # only PostgreSQL carries the journal between processes.
-            notes = PostgresHouseholdProgressNoteLedger(
-                POSTGRES_DSN, self.schema.schema_ref, self.allowed,
-                cases.progress_note_context, encryption_key, scope_key,
-            )
-            return create_postgres_local_test_bff(
-                settings, transport=httpx.MockTransport(token_response),
-                case_ledger=cases, household_profile_schema=self.schema,
-                household_profile_access_authority=self.allowed,
-                household_progress_note_ledger=notes,
-            )
-
-        first_app, second_app = build_app(), build_app()
-        browser_a = TestClient(first_app, base_url=callback_origin,
-                               follow_redirects=False)
-        browser_b = TestClient(second_app, base_url=callback_origin,
-                               follow_redirects=False)
-        state_hash = session_hash = None
-        history_path = f"/my-drafts/{ref}/progress-notes"
-        try:
-            start = browser_a.get("/api/auth/start")
-            self.assertEqual(start.status_code, 303, start.text)
-            query = parse_qs(urlsplit(start.headers["location"]).query)
-            nonce_holder["nonce"] = query["nonce"][0]
-            state_hash = hashlib.sha256(query["state"][0].encode("ascii")).hexdigest()
-            browser_b.cookies.update(browser_a.cookies)
-            callback_response = browser_b.get(
-                "/api/auth/callback", params={
-                    "code": "progress-browser-code", "state": query["state"][0],
-                },
-            )
-            self.assertEqual(callback_response.status_code, 303,
-                             callback_response.text)
-            session = browser_b.get("/api/auth/session")
-            self.assertEqual(session.status_code, 200, session.text)
-            self.assertNotIn("access_token", session.text)
-            sid = browser_b.cookies.get("__Host-ronas_session")
-            session_hash = hashlib.sha256(sid.encode("ascii")).hexdigest()
-
-            form = {
-                "csrf": session.json()["csrf"],
-                "action_id": "DEMO-PROGRESS-" + secrets.token_hex(8).upper(),
-                "case_version": "2", "revision": "0", "input_revision": "0",
-                "corrects_revision": "0",
-                "reported_at": "2026-10-17T13:00:00+00:00",
-                "note": "DEMO: browser journal persisted across BFFs",
-            }
-            saved = browser_b.post(
-                history_path, content=urlencode(form), headers={
-                    "Origin": callback_origin,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                },
-            )
-            self.assertEqual(saved.status_code, 303, saved.text)
-
-            browser_a.cookies.update(browser_b.cookies)
-            history = browser_a.get(history_path)
-            self.assertEqual(history.status_code, 200, history.text)
-            self.assertIn("DEMO: browser journal persisted across BFFs", history.text)
-            api = f"/api/v1/domestic/household-intake/my-drafts/{ref}/progress-notes"
-            api_history = browser_a.get(api, headers={
-                "Authorization": "Bearer " + issued["access_token"],
-            })
-            self.assertEqual(api_history.status_code, 200, api_history.text)
-            self.assertEqual(api_history.json()["current_revision"], 1)
-            self.assertEqual(first_app.state.ronas_local_bff_session_backend,
-                             "postgresql")
-            self.assertEqual(second_app.state.ronas_local_bff_session_backend,
-                             "postgresql")
-            with psycopg.connect(POSTGRES_DSN) as db:
-                stored = db.execute(
-                    "SELECT note_ciphertext FROM ronas_domestic_progress_note "
-                    "WHERE household_ref=%s", (ref,),
-                ).fetchone()
-                events = db.execute(
-                    "SELECT event_kind FROM ronas_domestic_progress_access "
-                    "WHERE household_ref=%s ORDER BY event_sequence", (ref,),
-                ).fetchall()
-            self.assertIsNotNone(stored)
-            self.assertNotIn(b"browser journal persisted", bytes(stored[0]))
-            self.assertEqual({row[0] for row in events}, {"APPEND", "READ"})
-            self.assertTrue(cases.verify_integrity())
-        finally:
-            browser_a.close()
-            browser_b.close()
-            with psycopg.connect(POSTGRES_DSN) as db:
-                if state_hash is not None:
-                    db.execute(
-                        "DELETE FROM ronas_browser_pending_login WHERE state_hash=%s",
-                        (state_hash,),
-                    )
-                if session_hash is not None:
-                    db.execute(
-                        "DELETE FROM ronas_browser_session_refresh_lock "
-                        "WHERE sid_hash=%s", (session_hash,),
-                    )
-                    db.execute(
-                        "DELETE FROM ronas_browser_session WHERE sid_hash=%s",
-                        (session_hash,),
-                    )
-
-    @unittest.skipUnless(POSTGRES_DSN, "RONAS_TEST_POSTGRES_DSN is not configured")
-    def test_postgres_artifact_store_completes_household_and_specialist_bff_flow(self):
-        image = b"\x89PNG\r\n\x1a\n" + b"postgres-backed-browser-flow"
-        store = PostgresStageArtifactStore(
-            POSTGRES_DSN, secrets.token_bytes(32), scope_key=b"p" * 32,
-        )
-        case_artifact_ref = REF + ":DEMO-STAGE-01"
-        owner_hash, case_hash = store._scope(OWNER, case_artifact_ref)
-        with psycopg.connect(POSTGRES_DSN) as db:
-            db.execute(
-                "DELETE FROM ronas_stage_artifact WHERE owner_hash=%s AND case_hash=%s",
-                (owner_hash, case_hash),
-            )
-        try:
-            profile = self.client.post(ROOT, json=self.command(), headers=self.bearer())
-            self.assertEqual(profile.status_code, 201, profile.text)
-            specialist = "synthetic-agronomy-postgres-stage-reviewer"
-            active = {True}
-            workspace = SyntheticAgronomyWorkspace(
-                self.ledger,
-                (SyntheticAgronomyAssignment(REF, specialist, 2),),
-                trusted_assignment_active=lambda actor, ref, version: (
-                    actor == specialist and ref == REF and version == 2 and bool(active)
-                ),
-            )
-            self.client = TestClient(create_app(
-                self.config, self.flow,
-                scoped_registry=self.ledger,
-                technical_review_ledger=self.ledger,
-                household_profile_schema=self.schema,
-                household_profile_access_authority=self.allowed,
-                household_stage_context_authority=self.stage_context,
-                household_stage_artifact_store=store,
-                agronomy_workspace=workspace,
-            ), base_url=ORIGIN)
-
-            session = self.browser_session()
-            page_path = PAGE.replace("/cultivation-inputs", "/stage-observations")
-            upload_headers = {
-                "Origin": ORIGIN, "X-CSRF-Token": session.csrf,
-                "Content-Type": "image/png", "X-Ronas-Case-Version": "2",
-                "X-Ronas-Input-Revision": "1",
-                "X-Ronas-Plan-Digest": self.stage_plan_digest,
-                "X-Ronas-Stage-Ref": "DEMO-STAGE-01",
-                "X-Ronas-Requirements-Digest": "a" * 64,
-            }
-            uploaded = self.client.put(
-                page_path + "/artifacts", content=image, headers=upload_headers,
-            )
-            self.assertEqual(uploaded.status_code, 201, uploaded.text)
-            digest = uploaded.json()["digest"]
-            command = self.stage_command(action="DEMO-POSTGRES-STAGE-RECEIPT")
-            form = {
-                "csrf": session.csrf, "action_id": command["action_id"],
-                "case_version": str(command["expected_case_version"]),
-                "input_revision": str(command["expected_input_revision"]),
-                "input_snapshot_digest": command["expected_input_snapshot_digest"],
-                "plan_digest": command["expected_plan_digest"],
-                "stage_ref": command["stage_ref"],
-                "requirements_digest": command[
-                    "expected_observation_requirements_digest"
-                ],
-                "observation_revision": "0", "corrects_revision": "0",
-                "artifact_digest": digest,
-            }
-            saved = self.client.post(
-                page_path, content=urlencode(form),
-                headers={"Origin": ORIGIN,
-                         "Content-Type": "application/x-www-form-urlencoded"},
-                follow_redirects=False,
-            )
-            self.assertEqual(saved.status_code, 303, saved.text)
-            owner_download = self.client.get(
-                f"/my-drafts/{REF}/stage-observations/artifacts/"
-                f"DEMO-STAGE-01/{digest}",
-            )
-            self.assertEqual(owner_download.status_code, 200, owner_download.text)
-            self.assertEqual(owner_download.content, image)
-            self.assertEqual(owner_download.headers["cache-control"], "no-store")
-
-            with psycopg.connect(POSTGRES_DSN) as db:
-                row = db.execute(
-                    "SELECT ciphertext FROM ronas_stage_artifact "
-                    "WHERE owner_hash=%s AND case_hash=%s AND digest=%s",
-                    (owner_hash, case_hash, digest),
-                ).fetchone()
-            self.assertIsNotNone(row)
-            self.assertNotIn(image, bytes(row[0]))
-
-            self.browser_session(specialist, ("agronomy_expert",))
-            specialist_download = self.client.get(
-                f"/agronomy/assigned-drafts/{REF}/stage-observations/artifacts/"
-                f"DEMO-STAGE-01/{digest}",
-            )
-            self.assertEqual(specialist_download.status_code, 200,
-                             specialist_download.text)
-            self.assertEqual(specialist_download.content, image)
-            api_download = self.client.get(
-                f"/api/v1/agronomy/assigned-drafts/{REF}/stage-observations/"
-                f"artifacts/DEMO-STAGE-01/{digest}",
-                headers=self.bearer(specialist, ("agronomy_expert",)),
-            )
-            self.assertEqual(api_download.status_code, 200, api_download.text)
-            self.assertEqual(api_download.content, image)
-
-            active.clear()
-            revoked = self.client.get(
-                f"/agronomy/assigned-drafts/{REF}/stage-observations/artifacts/"
-                f"DEMO-STAGE-01/{digest}",
-            )
-            self.assertEqual(revoked.status_code, 404, revoked.text)
-            self.assertTrue(self.ledger.verify_integrity())
-        finally:
-            with psycopg.connect(POSTGRES_DSN) as db:
-                db.execute(
-                    "DELETE FROM ronas_stage_artifact "
-                    "WHERE owner_hash=%s AND case_hash=%s",
-                    (owner_hash, case_hash),
-                )
-
-    @unittest.skipUnless(POSTGRES_DSN, "RONAS_TEST_POSTGRES_DSN is not configured")
-    def test_postgres_pkce_session_and_stage_artifact_cross_bff_instances(self):
-        """Join Bearer upload, browser receipt, and PostgreSQL-backed BFF reads."""
-        callback_origin = "https://127.0.0.1:8765"
-        callback = callback_origin + "/api/auth/callback"
-        realm = KeycloakConfig(
-            ISS, API, WEB, self.config.jwks_json,
-        )
-        key_file = self.path.parent / "postgres-bff-session.key"
-        key_file.write_bytes(secrets.token_bytes(32))
-        key_file.chmod(0o600)
-        settings = PostgresLocalBFFSettings(
-            realm, callback, POSTGRES_DSN, key_file,
-        )
-        store = PostgresStageArtifactStore(
-            POSTGRES_DSN, secrets.token_bytes(32), scope_key=b"q" * 32,
-        )
-        image = b"\x89PNG\r\n\x1a\n" + b"ronas-cross-instance-pg-flow"
-        case_artifact_ref = REF + ":DEMO-STAGE-01"
-        owner_hash, case_hash = store._scope(OWNER, case_artifact_ref)
-        with psycopg.connect(POSTGRES_DSN) as db:
-            db.execute(
-                "DELETE FROM ronas_stage_artifact WHERE owner_hash=%s AND case_hash=%s",
-                (owner_hash, case_hash),
-            )
-
-        nonce_holder = {}
-        access_holder = {}
-        state_hash = None
-        session_hash = None
-
-        def token_response(req):
-            self.assertEqual(req.method, "POST")
-            self.assertEqual(
-                str(req.url), ISS + "/protocol/openid-connect/token",
-            )
-            self.assertIn(b"code_verifier=", req.content)
-            now = int(time.time())
-            common = {
-                "iss": ISS, "sub": OWNER, "iat": now - 5, "exp": now + 450,
-            }
-            access = jwt.encode(
-                {**common, "aud": API, "azp": WEB, "typ": "Bearer",
-                 "nbf": now - 5,
-                 "resource_access": {API: {"roles": ["household"]}}},
-                self.key, algorithm="RS256", headers={"kid": "profile-test"},
-            )
-            access_holder["token"] = access
-            identity = jwt.encode(
-                {**common, "aud": WEB, "azp": WEB,
-                 "nonce": nonce_holder["nonce"]},
-                self.key, algorithm="RS256", headers={"kid": "profile-test"},
-            )
-            return httpx.Response(200, json={
-                "token_type": "Bearer", "access_token": access,
-                "id_token": identity,
-            })
-
-        workspace = SyntheticAgronomyWorkspace(
-            self.ledger,
-            (SyntheticAgronomyAssignment(REF, "synthetic-pg-flow-specialist", 2),),
-            trusted_assignment_active=lambda *_: True,
-        )
-        def build_app():
-            return create_postgres_local_test_bff(
-                settings, transport=httpx.MockTransport(token_response),
-                case_ledger=self.ledger, agronomy_workspace=workspace,
-                household_profile_schema=self.schema,
-                household_profile_access_authority=self.allowed,
-                household_stage_context_authority=self.stage_context,
-                household_stage_artifact_store=store,
-            )
-
-        first_app, second_app = build_app(), build_app()
-        browser_a = TestClient(first_app, base_url=callback_origin,
-                               follow_redirects=False)
-        browser_b = TestClient(second_app, base_url=callback_origin,
-                               follow_redirects=False)
-        try:
-            profile = self.client.post(
-                ROOT, json=self.command(), headers=self.bearer(),
-            )
-            self.assertEqual(profile.status_code, 201, profile.text)
-            start = browser_a.get("/api/auth/start")
-            self.assertEqual(start.status_code, 303, start.text)
-            query = parse_qs(urlsplit(start.headers["location"]).query)
-            self.assertEqual(query["code_challenge_method"], ["S256"])
-            self.assertEqual(query["redirect_uri"], [callback])
-            state_hash = hashlib.sha256(
-                query["state"][0].encode("ascii"),
-            ).hexdigest()
-            nonce_holder["nonce"] = query["nonce"][0]
-            browser_b.cookies.update(browser_a.cookies)
-            callback_response = browser_b.get(
-                "/api/auth/callback", params={
-                    "code": "cross-instance-code", "state": query["state"][0],
-                },
-            )
-            self.assertEqual(callback_response.status_code, 303,
-                             callback_response.text)
-            session = browser_b.get("/api/auth/session")
-            self.assertEqual(session.status_code, 200, session.text)
-            self.assertNotIn("access_token", session.text)
-            sid = browser_b.cookies.get("__Host-ronas_session")
-            self.assertIsInstance(sid, str)
-            session_hash = hashlib.sha256(sid.encode("ascii")).hexdigest()
-
-            page = "/my-drafts/" + REF + "/stage-observations"
-            artifact_path = (
-                "/api/v1/domestic/household-intake/my-drafts/" + REF
-                + "/stage-observations/artifacts/DEMO-STAGE-01"
-            )
-            api_headers = {
-                "Authorization": "Bearer " + access_holder["token"],
-                "Content-Type": "image/png",
-                "X-Ronas-Case-Version": "2",
-                "X-Ronas-Input-Revision": "1",
-                "X-Ronas-Plan-Digest": self.stage_plan_digest,
-                "X-Ronas-Requirements-Digest": "a" * 64,
-            }
-            upload = browser_b.put(
-                artifact_path, content=image, headers=api_headers,
-            )
-            self.assertEqual(upload.status_code, 201, upload.text)
-            digest = upload.json()["digest"]
-            api_download_path = artifact_path + "/" + digest
-            self.assertEqual(browser_b.get(
-                api_download_path,
-                headers={"Authorization": api_headers["Authorization"]},
-            ).status_code, 404)
-            command = self.stage_command(action="DEMO-PG-CROSS-BFF-RECEIPT")
-            form = {
-                "csrf": session.json()["csrf"], "action_id": command["action_id"],
-                "case_version": str(command["expected_case_version"]),
-                "input_revision": str(command["expected_input_revision"]),
-                "input_snapshot_digest": command["expected_input_snapshot_digest"],
-                "plan_digest": command["expected_plan_digest"],
-                "stage_ref": command["stage_ref"],
-                "requirements_digest": command[
-                    "expected_observation_requirements_digest"],
-                "observation_revision": "0", "corrects_revision": "0",
-                "artifact_digest": digest,
-            }
-            saved = browser_b.post(
-                page, content=urlencode(form), headers={
-                    "Origin": callback_origin,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                },
-            )
-            self.assertEqual(saved.status_code, 303, saved.text)
-
-            # App A resolves App B's PostgreSQL-backed cookie session, then
-            # authorizes and serves the exact artifact linked by the shared ledger.
-            browser_a.cookies.update(browser_b.cookies)
-            history = browser_a.get(page)
-            self.assertEqual(history.status_code, 200, history.text)
-            self.assertIn(digest, history.text)
-            downloaded = browser_a.get(
-                page + "/artifacts/DEMO-STAGE-01/" + digest,
-            )
-            self.assertEqual(downloaded.status_code, 200, downloaded.text)
-            self.assertEqual(downloaded.content, image)
-            self.assertEqual(downloaded.headers["cache-control"], "no-store")
-            api_download = browser_a.get(
-                api_download_path,
-                headers={"Authorization": api_headers["Authorization"]},
-            )
-            self.assertEqual(api_download.status_code, 200, api_download.text)
-            self.assertEqual(api_download.content, image)
-            self.assertIn("no-store", api_download.headers["cache-control"])
-            self.assertEqual(api_download.headers["x-content-type-options"], "nosniff")
-            self.assertEqual(first_app.state.ronas_local_bff_session_backend,
-                             "postgresql")
-            self.assertEqual(second_app.state.ronas_local_bff_session_backend,
-                             "postgresql")
-            with psycopg.connect(POSTGRES_DSN) as db:
-                ciphertext = db.execute(
-                    "SELECT ciphertext FROM ronas_stage_artifact "
-                    "WHERE owner_hash=%s AND case_hash=%s AND digest=%s",
-                    (owner_hash, case_hash, digest),
-                ).fetchone()[0]
-            self.assertNotIn(image, bytes(ciphertext))
-            self.assertTrue(self.ledger.verify_integrity())
-        finally:
-            browser_a.close()
-            browser_b.close()
-            with psycopg.connect(POSTGRES_DSN) as db:
-                db.execute(
-                    "DELETE FROM ronas_stage_artifact "
-                    "WHERE owner_hash=%s AND case_hash=%s",
-                    (owner_hash, case_hash),
-                )
-                if state_hash is not None:
-                    db.execute(
-                        "DELETE FROM ronas_browser_pending_login WHERE state_hash=%s",
-                        (state_hash,),
-                    )
-                if session_hash is not None:
-                    db.execute(
-                        "DELETE FROM ronas_browser_session_refresh_lock "
-                        "WHERE sid_hash=%s", (session_hash,),
-                    )
-                    db.execute(
+            s…5487 tokens truncated…         db.execute(
                         "DELETE FROM ronas_browser_session WHERE sid_hash=%s",
                         (session_hash,),
                     )

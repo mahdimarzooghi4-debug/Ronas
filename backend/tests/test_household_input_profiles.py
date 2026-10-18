@@ -226,14 +226,16 @@ class HouseholdProfileFlowTests(unittest.TestCase):
 
     def make_app(self, *, schema=True, authority=True, stage_authority=True,
                  artifact_store=None, surplus_authority=None,
-                 surplus_draft_ledger=None, surplus_consent_ledger=None):
+                 surplus_draft_ledger=None, surplus_consent_ledger=None,
+                 stage_context_authority=None):
         return create_app(
             self.config, self.flow, scoped_registry=self.ledger,
             technical_review_ledger=self.ledger,
             household_profile_schema=self.schema if schema else None,
             household_profile_access_authority=self.allowed if authority else None,
             household_stage_context_authority=(
-                self.stage_context if stage_authority and schema else None
+                (stage_context_authority or self.stage_context)
+                if stage_authority and schema else None
             ),
             household_stage_artifact_store=artifact_store,
             household_surplus_publication_authority=surplus_authority,
@@ -515,6 +517,78 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         )
         self.assertEqual(wrong_owner.status_code, 404)
         self.assertTrue(self.ledger.verify_integrity())
+
+    def test_stage_artifact_upload_rechecks_context_after_stream_before_storage(self):
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(), headers=self.bearer(),
+        ).status_code, 201)
+        root = ROOT.replace("/cultivation-inputs", "/stage-observations")
+        image = b"\x89PNG\r\n\x1a\n" + b"stale-context-upload"
+        digest = hashlib.sha256(image).hexdigest()
+        upload_headers = {
+            **self.bearer(), "Content-Type": "image/png",
+            "X-Ronas-Case-Version": "2", "X-Ronas-Input-Revision": "1",
+            "X-Ronas-Plan-Digest": self.stage_plan_digest,
+            "X-Ronas-Requirements-Digest": "a" * 64,
+        }
+
+        api_context = self.stage_context(REF)
+        api_reads = []
+
+        def api_racing_context(ref):
+            api_reads.append(ref)
+            return api_context if len(api_reads) == 1 else None
+
+        api = TestClient(self.make_app(
+            artifact_store=self.artifact_store,
+            stage_context_authority=api_racing_context,
+        ), base_url=ORIGIN)
+        api_result = api.put(
+            root + "/artifacts/DEMO-STAGE-01", content=image,
+            headers=upload_headers,
+        )
+        self.assertEqual(api_result.status_code, 409, api_result.text)
+        self.assertEqual(api_result.json()["detail"],
+                         "STAGE_OBSERVATION_CONTEXT_CHANGED")
+        self.assertEqual(api_reads, [REF, REF])
+        self.assertFalse(self.artifact_store.contains(
+            OWNER, REF + ":DEMO-STAGE-01", digest,
+        ))
+
+        browser_reads = []
+
+        def browser_racing_context(ref):
+            browser_reads.append(ref)
+            return api_context if len(browser_reads) == 1 else None
+
+        browser = TestClient(self.make_app(
+            artifact_store=self.artifact_store,
+            stage_context_authority=browser_racing_context,
+        ), base_url=ORIGIN)
+        session = self.browser_session()
+        browser.cookies.set(
+            "__Host-ronas_session",
+            self.client.cookies.get("__Host-ronas_session"),
+        )
+        browser_result = browser.put(
+            "/my-drafts/" + REF + "/stage-observations/artifacts",
+            content=image,
+            headers={
+                "Origin": ORIGIN, "X-CSRF-Token": session.csrf,
+                "Content-Type": "image/png", "X-Ronas-Case-Version": "2",
+                "X-Ronas-Input-Revision": "1",
+                "X-Ronas-Plan-Digest": self.stage_plan_digest,
+                "X-Ronas-Stage-Ref": "DEMO-STAGE-01",
+                "X-Ronas-Requirements-Digest": "a" * 64,
+            },
+        )
+        self.assertEqual(browser_result.status_code, 409, browser_result.text)
+        self.assertEqual(browser_result.json()["detail"],
+                         "STAGE_OBSERVATION_CONTEXT_CHANGED")
+        self.assertEqual(browser_reads, [REF, REF])
+        self.assertFalse(self.artifact_store.contains(
+            OWNER, REF + ":DEMO-STAGE-01", digest,
+        ))
 
     def test_stage_observation_correction_appends_and_supersedes_one_current_receipt(self):
         path = ROOT.replace("/cultivation-inputs", "/stage-observations")

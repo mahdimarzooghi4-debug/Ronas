@@ -2437,6 +2437,16 @@ def build_authenticated_ui_router(
                             chunks.append(chunk)
                         _check_upload_size(declared_size, size)
                         try:
+                            current_context = household_stage_context_authority(ref)
+                        except Exception as exc:
+                            raise HTTPException(
+                                503, detail="STAGE_CONTEXT_UNAVAILABLE",
+                            ) from exc
+                        if current_context != context:
+                            raise HTTPException(
+                                409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                            )
+                        try:
                             artifact = household_stage_artifact_store.put(
                                 principal.subject, ref + ":" + stage_ref,
                                 request.headers.get("content-type", ""),

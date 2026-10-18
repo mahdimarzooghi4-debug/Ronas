@@ -427,6 +427,16 @@ def build_household_input_router(
                         chunks.append(chunk)
                     _check_upload_size(declared_size, size)
                     try:
+                        current_context = stage_context_authority(ref)
+                    except Exception as exc:
+                        raise HTTPException(
+                            503, detail="STAGE_CONTEXT_UNAVAILABLE",
+                        ) from exc
+                    if current_context != context:
+                        raise HTTPException(
+                            409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                        )
+                    try:
                         artifact = stage_artifact_store.put(
                             p.subject, ref + ":" + stage_ref,
                             request.headers.get("content-type", ""),

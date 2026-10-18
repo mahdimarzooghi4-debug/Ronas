@@ -351,6 +351,12 @@ def build_stage_artifact_router(
         _check_upload_size(declared_size, size)
         content = b"".join(chunks)
         try:
+            current = stage_context_authority(ref)
+        except Exception as exc:
+            raise HTTPException(503, detail="STAGE_CONTEXT_UNAVAILABLE") from exc
+        if current != context or not _context_matches(current, ref, headers):
+            raise HTTPException(409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED")
+        try:
             artifact = store.put(
                 p.subject, ref + ":" + headers["stage_ref"],
                 request.headers.get("content-type", ""), content,

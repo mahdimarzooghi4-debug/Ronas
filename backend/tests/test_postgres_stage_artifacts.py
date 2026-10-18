@@ -132,6 +132,55 @@ class PostgresStageArtifactStoreTests(unittest.TestCase):
         )
         self.assertEqual(conflict.status_code, 409)
 
+    def test_access_audit_is_cross_instance_ordered_redacted_and_immutable(self):
+        stage_ref = "DEMO-STAGE-AUDIT"
+        artifact = self.store.put(
+            self.owner, self.case + ":" + stage_ref, "image/png", PNG,
+        )
+        peer = PostgresStageArtifactStore(
+            DSN, self.key, scope_key=self.key,
+        )
+        decisions = [False, True] * 6
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            list(pool.map(
+                lambda item: (self.store if item[0] % 2 == 0 else peer).record_access(
+                    self.owner, self.case, stage_ref, artifact.digest,
+                    permitted=item[1],
+                ),
+                enumerate(decisions),
+            ))
+        events = peer._access_events_for_scope(
+            self.owner, self.case, stage_ref, artifact.digest,
+        )
+        self.assertEqual([event["event_sequence"] for event in events],
+                         list(range(1, len(decisions) + 1)))
+        self.assertCountEqual(
+            [event["decision"] for event in events],
+            ["READ_ALLOWED" if allowed else "READ_DENIED"
+             for allowed in decisions],
+        )
+        self.assertTrue(all(
+            event["stage_hash"] != stage_ref
+            and event["artifact_digest_hash"] != artifact.digest
+            and event["previous_event_digest"]
+            for event in events
+        ))
+        owner_hash, case_hash = self.store._scope(
+            self.owner, self.case + ":" + stage_ref, artifact.digest,
+        )
+        with self.assertRaises(psycopg.Error):
+            with psycopg.connect(DSN) as db:
+                db.execute(
+                    "UPDATE ronas_stage_artifact_access_event "
+                    "SET decision='READ_DENIED' "
+                    "WHERE owner_hash=%s AND case_hash=%s AND event_sequence=1",
+                    (owner_hash, case_hash),
+                )
+        self.assertEqual(len(peer._access_events_for_scope(
+            self.owner, self.case, stage_ref, artifact.digest,
+        )), len(decisions))
+
     def test_scope_hashes_are_keyed_and_domain_separated(self):
         owner_hash, case_hash = self.store._scope(self.owner, self.case)
         self.assertNotEqual(owner_hash, hashlib.sha256(self.owner.encode()).hexdigest())

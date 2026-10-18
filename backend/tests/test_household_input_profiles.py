@@ -24,7 +24,9 @@ from ronas_api.household_input_profiles import (
     HouseholdInputField, HouseholdInputSchema,
     SqliteSyntheticHouseholdProfileLedger,
 )
-from ronas_api.stage_observation_artifacts import PrivateFilesystemStageArtifactStore
+from ronas_api.stage_observation_artifacts import (
+    PrivateFilesystemStageArtifactStore, StageArtifactStoreError,
+)
 from ronas_api.postgres_stage_artifacts import PostgresStageArtifactStore
 from ronas_api.postgres_household_progress_notes import PostgresHouseholdProgressNoteLedger
 from ronas_api.keycloak import KeycloakConfig
@@ -531,6 +533,28 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         )
         self.assertEqual(browser_download.status_code, 200, browser_download.text)
         self.assertEqual(browser_download.content, image)
+
+        class FailedAuditStore:
+            def put(inner_self, *args, **kwargs):
+                return store.put(*args, **kwargs)
+
+            def get(inner_self, *args, **kwargs):
+                return store.get(*args, **kwargs)
+
+            def contains(inner_self, *args, **kwargs):
+                return store.contains(*args, **kwargs)
+
+            def record_access(inner_self, *args, **kwargs):
+                raise StageArtifactStoreError("audit unavailable")
+
+        failed_audit_client = TestClient(
+            self.make_app(artifact_store=FailedAuditStore()), base_url=ORIGIN,
+        )
+        failed_audit = failed_audit_client.get(
+            download_path, headers=self.bearer(),
+        )
+        self.assertEqual(failed_audit.status_code, 503)
+        self.assertNotEqual(failed_audit.content, image)
 
         access = {"allowed": True}
 
@@ -1485,7 +1509,8 @@ class HouseholdProfileFlowTests(unittest.TestCase):
     def test_postgres_artifact_store_completes_household_and_specialist_bff_flow(self):
         image = b"\x89PNG\r\n\x1a\n" + b"postgres-backed-browser-flow"
         store = PostgresStageArtifactStore(
-            POSTGRES_DSN, secrets.token_bytes(32), scope_key=b"p" * 32,
+            POSTGRES_DSN, secrets.token_bytes(32),
+            scope_key=secrets.token_bytes(32),
         )
         case_artifact_ref = REF + ":DEMO-STAGE-01"
         owner_hash, case_hash = store._scope(OWNER, case_artifact_ref)
@@ -1532,6 +1557,14 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             )
             self.assertEqual(uploaded.status_code, 201, uploaded.text)
             digest = uploaded.json()["digest"]
+            api_artifact_path = (
+                f"/api/v1/domestic/household-intake/my-drafts/{REF}"
+                f"/stage-observations/artifacts/DEMO-STAGE-01/{digest}"
+            )
+            denied_before_receipt = self.client.get(
+                api_artifact_path, headers=self.bearer(),
+            )
+            self.assertEqual(denied_before_receipt.status_code, 404)
             command = self.stage_command(action="DEMO-POSTGRES-STAGE-RECEIPT")
             form = {
                 "csrf": session.csrf, "action_id": command["action_id"],
@@ -1560,6 +1593,19 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             self.assertEqual(owner_download.status_code, 200, owner_download.text)
             self.assertEqual(owner_download.content, image)
             self.assertEqual(owner_download.headers["cache-control"], "no-store")
+
+            audit_owner, audit_case = store._scope(
+                OWNER, case_artifact_ref, digest,
+            )
+            with psycopg.connect(POSTGRES_DSN) as db:
+                owner_access = db.execute(
+                    "SELECT decision FROM ronas_stage_artifact_access_event "
+                    "WHERE owner_hash=%s AND case_hash=%s "
+                    "ORDER BY event_sequence", (audit_owner, audit_case),
+                ).fetchall()
+            self.assertEqual([row[0] for row in owner_access], [
+                "READ_DENIED", "READ_ALLOWED",
+            ])
 
             with psycopg.connect(POSTGRES_DSN) as db:
                 row = db.execute(

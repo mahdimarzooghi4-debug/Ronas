@@ -292,9 +292,11 @@ def build_stage_artifact_router(
     profile_schema_ref: str,
     profile_access_authority: Callable[[Principal, str, str], bool],
     stage_context_authority: Callable[[str], CurrentStageContext | None],
+    receipt_authority: Callable[[Principal, str, str, str], bool] | None = None,
 ) -> APIRouter:
     if (not all(callable(value) for value in (
-            verified_principal, profile_access_authority, stage_context_authority))
+            verified_principal, profile_access_authority, stage_context_authority,
+            receipt_authority))
             or not isinstance(profile_schema_ref, str) or not profile_schema_ref
             or not all(callable(getattr(store, name, None))
                        for name in ("put", "get", "contains"))):
@@ -308,6 +310,17 @@ def build_stage_artifact_router(
             raise HTTPException(503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE") from exc
         if allowed is not True:
             raise HTTPException(404, detail="DRAFT_NOT_FOUND")
+
+    def authorize_receipt(p: Principal, ref: str, stage_ref: str,
+                          digest: str) -> None:
+        try:
+            allowed = receipt_authority(p, ref, stage_ref, digest)
+        except Exception as exc:
+            raise HTTPException(
+                503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+            ) from exc
+        if allowed is not True:
+            raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
 
     @router.put(
         "/api/v1/domestic/household-intake/my-drafts/{ref}/stage-observations/artifacts",
@@ -378,6 +391,7 @@ def build_stage_artifact_router(
         authorize(p, ref)
         if not _STAGE_REF.fullmatch(stage_ref) or not _DIGEST.fullmatch(digest):
             raise HTTPException(404, detail="STAGE_ARTIFACT_NOT_FOUND")
+        authorize_receipt(p, ref, stage_ref, digest)
         try:
             item = store.get(p.subject, ref + ":" + stage_ref, digest)
         except (ValueError, StageArtifactStoreError) as exc:

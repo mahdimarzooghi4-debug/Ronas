@@ -5,10 +5,12 @@ It cannot receive cultivation information, personal details or legal consent.
 Keycloak Bearer access (not ambient session cookies) is required to mutate.
 """
 from collections.abc import Callable
+import re
 import sqlite3
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from .auth import Principal
@@ -25,7 +27,10 @@ from .expert_review_questions_sqlite import (
 from .household_input_profiles import (
     HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
 )
-from .stage_observation_artifacts import StageArtifactStore, StageArtifactStoreError
+from .stage_observation_artifacts import (
+    MAX_ARTIFACT_BYTES, StageArtifactStore, StageArtifactStoreError,
+    _check_upload_size, _declared_upload_size,
+)
 from .postgres_household_progress_notes import PostgresHouseholdProgressNoteLedger
 
 HouseholdProfileKey = Annotated[StrictStr, Field(max_length=32)]
@@ -347,6 +352,155 @@ def build_household_input_router(
                 if result is None:
                     raise HTTPException(404, detail="DRAFT_NOT_FOUND")
                 return result
+
+            if stage_artifact_store is not None:
+                @router.put(
+                    "/api/v1/domestic/household-intake/my-drafts/{ref}/"
+                    "stage-observations/artifacts/{stage_ref}",
+                    status_code=201,
+                )
+                async def upload_stage_observation_artifact(
+                    ref: str, stage_ref: str, request: Request,
+                    authorization: str | None = Header(default=None),
+                    p: Principal = Depends(verified_principal),
+                ) -> dict:
+                    if (not isinstance(authorization, str)
+                            or not authorization.startswith("Bearer ")):
+                        raise HTTPException(
+                            401, detail="BEARER_REQUIRED_FOR_MUTATION",
+                        )
+                    if not profile_allowed(p, ref):
+                        raise HTTPException(
+                            403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED",
+                        )
+
+                    def required_version_header(name: str) -> int:
+                        value = request.headers.get(name, "")
+                        if not re.fullmatch(r"[1-9][0-9]{0,8}", value):
+                            raise HTTPException(
+                                422, detail="INVALID_STAGE_ARTIFACT_CONTEXT",
+                            )
+                        return int(value)
+
+                    case_version = required_version_header(
+                        "x-ronas-case-version",
+                    )
+                    input_revision = required_version_header(
+                        "x-ronas-input-revision",
+                    )
+                    plan_digest = request.headers.get("x-ronas-plan-digest", "")
+                    requirements_digest = request.headers.get(
+                        "x-ronas-requirements-digest", "",
+                    )
+                    try:
+                        context = stage_context_authority(ref)
+                    except Exception as exc:
+                        raise HTTPException(
+                            503, detail="STAGE_CONTEXT_UNAVAILABLE",
+                        ) from exc
+                    if (not isinstance(context, CurrentStageContext)
+                            or context.case_ref != ref
+                            or context.case_version != case_version
+                            or context.input_revision != input_revision
+                            or context.plan_digest != plan_digest
+                            or not any(
+                                item.stage_ref == stage_ref
+                                and item.observation_requirements_digest
+                                    == requirements_digest
+                                for item in context.requirements
+                            )):
+                        raise HTTPException(
+                            409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                        )
+
+                    declared_size = _declared_upload_size(
+                        request.headers.get("content-length"),
+                    )
+                    chunks: list[bytes] = []
+                    size = 0
+                    async for chunk in request.stream():
+                        size += len(chunk)
+                        if size > MAX_ARTIFACT_BYTES:
+                            raise HTTPException(
+                                413, detail="STAGE_ARTIFACT_TOO_LARGE",
+                            )
+                        chunks.append(chunk)
+                    _check_upload_size(declared_size, size)
+                    try:
+                        artifact = stage_artifact_store.put(
+                            p.subject, ref + ":" + stage_ref,
+                            request.headers.get("content-type", ""),
+                            b"".join(chunks),
+                        )
+                    except ValueError as exc:
+                        raise HTTPException(
+                            422, detail="INVALID_STAGE_ARTIFACT",
+                        ) from exc
+                    except StageArtifactStoreError as exc:
+                        raise HTTPException(
+                            503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
+                        ) from exc
+                    return {
+                        "digest": artifact.digest,
+                        "content_type": artifact.content_type,
+                        "byte_length": artifact.byte_length,
+                        "stored": True,
+                    }
+
+                @router.get(
+                    "/api/v1/domestic/household-intake/my-drafts/{ref}/"
+                    "stage-observations/artifacts/{stage_ref}/{digest}",
+                )
+                def download_stage_observation_artifact(
+                    ref: str, stage_ref: str, digest: str,
+                    p: Principal = Depends(verified_principal),
+                ) -> Response:
+                    if not profile_allowed(p, ref):
+                        raise HTTPException(
+                            403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED",
+                        )
+                    try:
+                        history = profile_ledger.read_owned_stage_observations(
+                            ref, p, context_authority=stage_context_authority,
+                        )
+                    except StageObservationConflict as exc:
+                        raise HTTPException(
+                            409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                        ) from exc
+                    except (LedgerIntegrityError, sqlite3.Error) as exc:
+                        raise HTTPException(
+                            503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
+                        ) from exc
+                    receipt_exists = bool(history and any(
+                        item["stage_ref"] == stage_ref
+                        and item["observation_artifact_digest"] == digest
+                        for item in history["observations"]
+                    ))
+                    if not receipt_exists:
+                        raise HTTPException(
+                            404, detail="STAGE_ARTIFACT_NOT_FOUND",
+                        )
+                    try:
+                        stored = stage_artifact_store.get(
+                            p.subject, ref + ":" + stage_ref, digest,
+                        )
+                    except (ValueError, StageArtifactStoreError) as exc:
+                        raise HTTPException(
+                            503, detail="STAGE_ARTIFACT_STORE_UNAVAILABLE",
+                        ) from exc
+                    if stored is None:
+                        raise HTTPException(
+                            404, detail="STAGE_ARTIFACT_NOT_FOUND",
+                        )
+                    artifact, content = stored
+                    return Response(
+                        content=content, media_type=artifact.content_type,
+                        headers={
+                            "Content-Disposition": 'attachment; filename="stage-observation"',
+                            "Cache-Control": "private, no-store",
+                            "X-Content-Type-Options": "nosniff",
+                        },
+                    )
 
             @router.post(
                 "/api/v1/domestic/household-intake/my-drafts/{ref}/stage-observations",

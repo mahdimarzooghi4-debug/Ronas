@@ -122,12 +122,12 @@ class PostgresStageArtifactStore:
             """)
             db.execute("""
                 CREATE OR REPLACE FUNCTION ronas_reject_stage_artifact_access_mutation()
-                RETURNS trigger LANGUAGE plpgsql AS $
+                RETURNS trigger LANGUAGE plpgsql AS $$
                 BEGIN RAISE EXCEPTION 'stage artifact access history is immutable'; END;
-                $
+                $$
             """)
             db.execute("""
-                DO $ BEGIN
+                DO $$ BEGIN
                     IF NOT EXISTS (SELECT 1 FROM pg_trigger
                         WHERE tgname='ronas_stage_artifact_access_immutable'
                         AND tgrelid='ronas_stage_artifact_access_event'::regclass
@@ -136,7 +136,7 @@ class PostgresStageArtifactStore:
                       BEFORE UPDATE OR DELETE ON ronas_stage_artifact_access_event
                       FOR EACH ROW EXECUTE FUNCTION ronas_reject_stage_artifact_access_mutation();
                     END IF;
-                END $
+                END $$
             """)
 
     def _scope(self, owner: str, case_ref: str,

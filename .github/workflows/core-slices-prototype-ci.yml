@@ -5,6 +5,7 @@ on:
       - 'feat/**'
       - 'fix/**'
       - 'sprint/**'
+      - 'test/**'
   pull_request:
     branches:
       - main

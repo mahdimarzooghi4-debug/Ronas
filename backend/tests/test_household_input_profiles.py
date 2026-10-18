@@ -1516,6 +1516,26 @@ class HouseholdProfileFlowTests(unittest.TestCase):
                 f"DEMO-STAGE-01/{digest}",
             )
             self.assertEqual(revoked.status_code, 404, revoked.text)
+            revoked_api = self.client.get(
+                f"/api/v1/agronomy/assigned-drafts/{REF}/stage-observations/"
+                f"artifacts/DEMO-STAGE-01/{digest}",
+                headers=self.bearer(specialist, ("agronomy_expert",)),
+            )
+            self.assertEqual(revoked_api.status_code, 404, revoked_api.text)
+            specialist_audit = [
+                entry for entry in self.ledger.audit_snapshot()
+                if entry.access_mode == "AGRONOMY_ASSIGNED_STAGE_ARTIFACT"
+            ]
+            self.assertEqual([entry.kind for entry in specialist_audit], [
+                "READ_ALLOWED", "READ_ALLOWED", "READ_DENIED", "READ_DENIED",
+            ])
+            self.assertTrue(all(
+                entry.reason_ref == "DEMO-STAGE-01"
+                and entry.target_digest == hashlib.sha256(
+                    digest.encode("utf-8")
+                ).hexdigest()
+                for entry in specialist_audit
+            ))
             self.assertTrue(self.ledger.verify_integrity())
         finally:
             with psycopg.connect(POSTGRES_DSN) as db:

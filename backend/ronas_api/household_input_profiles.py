@@ -1131,6 +1131,32 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
             )
             return result
 
+    def record_owned_stage_artifact_access(
+        self, ref: str, principal: Principal, *, stage_ref: str,
+        artifact_digest: str, permitted: bool,
+    ) -> bool | None:
+        """Audit one owner artifact decision against its exact receipt scope."""
+        if (not _synthetic_ref(ref) or not _synthetic_ref(stage_ref)
+                or not _digest(artifact_digest) or type(permitted) is not bool):
+            raise ValueError("invalid household stage artifact access")
+        with self._transaction() as db:
+            self._verify(db)
+            if not self._owner(ref, principal):
+                return None
+            linked = db.execute(
+                "SELECT 1 FROM household_stage_observation "
+                "WHERE ref=? AND stage_ref=? AND artifact_digest=? LIMIT 1",
+                (ref, stage_ref, artifact_digest),
+            ).fetchone() is not None
+            allowed = permitted and linked
+            self._append(
+                db, kind="READ_ALLOWED" if allowed else "READ_DENIED",
+                engine="DOMESTIC", ref=ref, actor=principal.subject,
+                target=artifact_digest, reason_ref=stage_ref,
+                mode="HOUSEHOLD_STAGE_ARTIFACT",
+            )
+            return allowed
+
     def append_owned_stage_observation(
         self, ref: str, principal: Principal, command: StageObservationCommand, *,
         expected_observation_revision: int,

@@ -273,6 +273,15 @@ def build_household_input_router(
         profile_ledger = ledger
 
         def profile_allowed(p: Principal, ref: str) -> bool:
+            try:
+                return profile_access_authority(
+                    p, ref, profile_schema.schema_ref,
+                ) is True
+            except Exception as exc:
+                raise HTTPException(
+                    503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
+                ) from exc
+
         def record_stage_artifact_access(
             ref: str, p: Principal, stage_ref: str, digest: str, *,
             permitted: bool,
@@ -287,15 +296,6 @@ def build_household_input_router(
             except (LedgerIntegrityError, sqlite3.Error) as exc:
                 raise HTTPException(
                     503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
-                ) from exc
-
-            try:
-                return profile_access_authority(
-                    p, ref, profile_schema.schema_ref,
-                ) is True
-            except Exception as exc:
-                raise HTTPException(
-                    503, detail="HOUSEHOLD_PROFILE_AUTHORITY_UNAVAILABLE",
                 ) from exc
 
         @router.get(

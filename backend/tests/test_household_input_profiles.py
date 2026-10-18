@@ -440,6 +440,82 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(stale.status_code, 409)
         self.assertTrue(self.ledger.verify_integrity())
 
+    def test_stage_artifact_bearer_api_is_current_context_and_receipt_bound(self):
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(), headers=self.bearer(),
+        ).status_code, 201)
+        store = PrivateFilesystemStageArtifactStore(
+            self.artifact_root, b"x" * 32,
+        )
+        api_client = TestClient(
+            self.make_app(artifact_store=store), base_url=ORIGIN,
+        )
+        root = ROOT.replace("/cultivation-inputs", "/stage-observations")
+        upload_path = root + "/artifacts/DEMO-STAGE-01"
+        image = b"\x89PNG\r\n\x1a\n" + b"bearer-stage-upload"
+        headers = {
+            **self.bearer(), "Content-Type": "image/png",
+            "X-Ronas-Case-Version": "2", "X-Ronas-Input-Revision": "1",
+            "X-Ronas-Plan-Digest": self.stage_plan_digest,
+            "X-Ronas-Requirements-Digest": "a" * 64,
+        }
+
+        self.assertEqual(api_client.put(
+            upload_path, content=image,
+            headers={k: v for k, v in headers.items()
+                     if k != "Authorization"},
+        ).status_code, 401)
+        stale = dict(headers, **{"X-Ronas-Plan-Digest": "f" * 64})
+        rejected_context = api_client.put(upload_path, content=image, headers=stale)
+        self.assertEqual(rejected_context.status_code, 409,
+                         rejected_context.text)
+        rejected_type = api_client.put(
+            upload_path, content=image,
+            headers=dict(headers, **{"Content-Type": "application/pdf"}),
+        )
+        self.assertEqual(rejected_type.status_code, 422,
+                         rejected_type.text)
+        oversized = api_client.put(
+            upload_path, content=image,
+            headers=dict(headers, **{
+                "Content-Length": str(8 * 1024 * 1024 + 1),
+            }),
+        )
+        self.assertEqual(oversized.status_code, 413, oversized.text)
+        mismatch = api_client.put(
+            upload_path, content=image,
+            headers=dict(headers, **{"Content-Length": str(len(image) - 1)}),
+        )
+        self.assertEqual(mismatch.status_code, 400, mismatch.text)
+
+        uploaded = api_client.put(upload_path, content=image, headers=headers)
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        digest = hashlib.sha256(image).hexdigest()
+        self.assertEqual(uploaded.json(), {
+            "digest": digest, "content_type": "image/png",
+            "byte_length": len(image), "stored": True,
+        })
+        download_path = upload_path + "/" + digest
+        unlinked = api_client.get(download_path, headers=self.bearer())
+        self.assertEqual(unlinked.status_code, 404)
+
+        receipt = self.stage_command(action="DEMO-STAGE-ARTIFACT-API")
+        receipt["observation_artifact_digest"] = digest
+        saved = api_client.post(root, json=receipt, headers=self.bearer())
+        self.assertEqual(saved.status_code, 201, saved.text)
+        downloaded = api_client.get(download_path, headers=self.bearer())
+        self.assertEqual(downloaded.status_code, 200, downloaded.text)
+        self.assertEqual(downloaded.content, image)
+        self.assertEqual(downloaded.headers["content-type"], "image/png")
+        self.assertEqual(downloaded.headers["cache-control"], "no-store")
+        self.assertEqual(downloaded.headers["x-content-type-options"], "nosniff")
+        wrong_owner = api_client.get(
+            download_path,
+            headers=self.bearer("synthetic-other", ("household",)),
+        )
+        self.assertEqual(wrong_owner.status_code, 404)
+        self.assertTrue(self.ledger.verify_integrity())
+
     def test_stage_observation_correction_appends_and_supersedes_one_current_receipt(self):
         path = ROOT.replace("/cultivation-inputs", "/stage-observations")
         self.assertEqual(self.client.post(

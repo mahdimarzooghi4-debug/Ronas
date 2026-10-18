@@ -2479,6 +2479,20 @@ def build_authenticated_ui_router(
                             raise HTTPException(401, detail="INVALID_SESSION") from None
                         principal = Principal(session.subject, session.roles)
                         def audit_artifact_access(*, permitted: bool) -> bool:
+                            recorder = getattr(
+                                household_stage_artifact_store, "record_access", None,
+                            )
+                            if callable(recorder):
+                                try:
+                                    return recorder(
+                                        principal.subject, ref, stage_ref, digest,
+                                        permitted=permitted,
+                                    ) is True
+                                except StageArtifactStoreError as exc:
+                                    raise HTTPException(
+                                        503,
+                                        detail="STAGE_ARTIFACT_AUDIT_UNAVAILABLE",
+                                    ) from exc
                             try:
                                 return household_input_ledger.record_owned_stage_artifact_access(
                                     ref, principal, stage_ref=stage_ref,

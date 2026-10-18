@@ -286,6 +286,17 @@ def build_household_input_router(
             ref: str, p: Principal, stage_ref: str, digest: str, *,
             permitted: bool,
         ) -> bool:
+            recorder = getattr(stage_artifact_store, "record_access", None)
+            if callable(recorder):
+                try:
+                    return recorder(
+                        p.subject, ref, stage_ref, digest,
+                        permitted=permitted,
+                    ) is True
+                except StageArtifactStoreError as exc:
+                    raise HTTPException(
+                        503, detail="STAGE_ARTIFACT_AUDIT_UNAVAILABLE",
+                    ) from exc
             try:
                 return profile_ledger.record_owned_stage_artifact_access(
                     ref, p, stage_ref=stage_ref, artifact_digest=digest,
@@ -482,6 +493,9 @@ def build_household_input_router(
                     p: Principal = Depends(verified_principal),
                 ) -> Response:
                     if not profile_allowed(p, ref):
+                        record_stage_artifact_access(
+                            ref, p, stage_ref, digest, permitted=False,
+                        )
                         raise HTTPException(
                             403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED",
                         )

@@ -78,6 +78,7 @@ class PostgresStageArtifactStoreTests(unittest.TestCase):
             case_ref, case_version, input_revision, input_digest, plan_digest,
             (StageRequirement(stage_ref, requirements_digest),),
         )
+        linked_receipts = set()
         app = FastAPI()
         app.include_router(build_stage_artifact_router(
             self.store,
@@ -87,6 +88,10 @@ class PostgresStageArtifactStoreTests(unittest.TestCase):
                 principal.subject == owner and ref == case_ref and schema == "schema-v1"
             ),
             lambda ref: context if ref == case_ref else None,
+            lambda principal, ref, stage, digest: (
+                principal.subject == owner
+                and (ref, stage, digest) in linked_receipts
+            ),
         ))
         client = TestClient(app)
         headers = {
@@ -105,8 +110,14 @@ class PostgresStageArtifactStoreTests(unittest.TestCase):
         self.assertEqual(upload.status_code, 201, upload.text)
         self.assertEqual(upload.json()["byte_length"], len(PNG))
         digest = upload.json()["digest"]
+        artifact_path = (
+            f"/api/v1/domestic/household-intake/my-drafts/{case_ref}"
+            f"/stage-observations/artifacts/{stage_ref}/{digest}"
+        )
+        self.assertEqual(client.get(artifact_path).status_code, 404)
+        linked_receipts.add((case_ref, stage_ref, digest))
         download = client.get(
-            f"/api/v1/domestic/household-intake/my-drafts/{case_ref}/stage-observations/artifacts/{stage_ref}/{digest}"
+            artifact_path
         )
         self.assertEqual(download.status_code, 200, download.text)
         self.assertEqual(download.content, PNG)

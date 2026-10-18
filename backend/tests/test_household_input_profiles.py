@@ -518,6 +518,22 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual(wrong_owner.status_code, 404)
         self.assertTrue(self.ledger.verify_integrity())
 
+    def test_composed_app_has_one_receipt_authorized_household_artifact_route(self):
+        app = self.make_app(artifact_store=self.artifact_store)
+        path = (
+            "/api/v1/domestic/household-intake/my-drafts/{ref}/"
+            "stage-observations/artifacts/{stage_ref}/{digest}"
+        )
+        matches = [route for included in app.routes
+                   for route in getattr(
+                       getattr(included, "original_router", None), "routes", (),
+                   )
+                   if getattr(route, "path", None) == path
+                   and "GET" in getattr(route, "methods", set())]
+        self.assertEqual(len(matches), 1)
+        self.assertIn("download_stage_observation_artifact",
+                      matches[0].name)
+
     def test_stage_artifact_upload_rechecks_context_after_stream_before_storage(self):
         self.assertEqual(self.client.post(
             ROOT, json=self.command(), headers=self.bearer(),

@@ -20,7 +20,7 @@ from .household_input_profiles import (
     HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
 )
 from .domestic_stage_observation import CurrentStageContext
-from .stage_observation_artifacts import StageArtifactStore, build_stage_artifact_router
+from .stage_observation_artifacts import StageArtifactStore
 
 from .household_input_api import build_household_input_router
 from .technical_review_api import build_technical_review_read_router
@@ -410,14 +410,6 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                     else None
                 ),
             ))
-        if household_stage_artifact_store is not None:
-            app.include_router(build_stage_artifact_router(
-                household_stage_artifact_store, principal,
-                household_profile_schema.schema_ref,
-                household_profile_access_authority,
-                household_stage_context_authority,
-            ))
-
     if technical_review_ledger is not None:
         # Opt-in LOCAL/TEST only: the review store and the case-grant store
         # must be the *identical* object. Reject generic token verification,

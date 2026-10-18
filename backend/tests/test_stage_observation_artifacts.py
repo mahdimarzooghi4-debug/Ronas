@@ -111,11 +111,13 @@ class StageArtifactRouterTests(unittest.TestCase):
         self.path.mkdir(mode=0o700)
         self.path.chmod(0o700)
         store = PrivateFilesystemStageArtifactStore(self.path, b"s" * 32)
+        self.store = store
         context = CurrentStageContext(
             "DEMO-D-001", 2, 4, D, PLAN,
             (StageRequirement("DEMO-STAGE-01", REQ),),
         )
         self.principal = Principal("owner-1", frozenset({"household"}))
+        self.linked_receipts = set()
         app = FastAPI()
         app.include_router(build_stage_artifact_router(
             store, lambda: self.principal, "demo-profile-v1",
@@ -124,6 +126,10 @@ class StageArtifactRouterTests(unittest.TestCase):
                 and schema == "demo-profile-v1"
             ),
             lambda ref: context if ref == context.case_ref else None,
+            lambda principal, ref, stage_ref, digest: (
+                principal.subject == "owner-1"
+                and (ref, stage_ref, digest) in self.linked_receipts
+            ),
         ))
         self.client = TestClient(app)
         self.headers = {
@@ -142,6 +148,11 @@ class StageArtifactRouterTests(unittest.TestCase):
             "digest": digest, "content_type": "image/png",
             "byte_length": len(PNG), "stored": True,
         })
+        self.assertEqual(self.client.get(
+            self.url + "/DEMO-STAGE-01/" + digest,
+            headers={"Authorization": self.headers["Authorization"]},
+        ).status_code, 404)
+        self.linked_receipts.add(("DEMO-D-001", "DEMO-STAGE-01", digest))
         downloaded = self.client.get(self.url + "/DEMO-STAGE-01/" + digest,
                                      headers={"Authorization": self.headers["Authorization"]})
         self.assertEqual(downloaded.status_code, 200, downloaded.text)
@@ -149,6 +160,13 @@ class StageArtifactRouterTests(unittest.TestCase):
         self.assertEqual(downloaded.headers["content-type"], "image/png")
         self.assertIn("attachment", downloaded.headers["content-disposition"])
         self.assertEqual(downloaded.headers["x-content-type-options"], "nosniff")
+
+    def test_download_fails_closed_when_receipt_authority_is_missing(self):
+        with self.assertRaises(ValueError):
+            build_stage_artifact_router(
+                self.store, lambda: self.principal, "demo-profile-v1",
+                lambda *_: True, lambda *_: None,
+            )
 
     def test_upload_requires_bearer_context_and_owner(self):
         no_bearer = dict(self.headers)

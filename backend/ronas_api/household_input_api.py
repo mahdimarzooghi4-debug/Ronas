@@ -9,7 +9,7 @@ import re
 import sqlite3
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
@@ -176,9 +176,19 @@ def build_household_input_router(
         return result
 
     @router.get("/api/v1/domestic/household-intake/my-drafts/{ref}/progress-notes")
-    def own_progress_notes(ref: str, p: Principal = Depends(verified_principal)) -> dict:
+    def own_progress_notes(
+        ref: str, limit: int = Query(default=20, ge=1, le=50),
+        after_revision: int = Query(default=0, ge=0),
+        snapshot_revision: int | None = Query(default=None, ge=0),
+        p: Principal = Depends(verified_principal),
+    ) -> dict:
         try:
-            result = notes.read_owned_progress_notes(ref, p)
+            result = notes.read_owned_progress_notes(
+                ref, p, limit=limit, after_revision=after_revision,
+                snapshot_revision=snapshot_revision,
+            )
+        except ValueError as exc:
+            raise HTTPException(422, detail="INVALID_PROGRESS_NOTE_PAGE") from exc
         except (LedgerIntegrityError, sqlite3.Error) as exc:
             raise HTTPException(503, detail="SYNTHETIC_PROGRESS_HISTORY_UNAVAILABLE") from exc
         if result is None:

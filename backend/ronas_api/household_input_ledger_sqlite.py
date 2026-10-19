@@ -392,12 +392,12 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
                         input_revision is not None
                         and input_revision == current_input_revision
                     ),
-                } for version, input_revision, revision, reported_at, text,
+                } for version, revision, input_revision, reported_at, text,
                      corrects_revision in page_rows],
                 "current_revision": current_revision,
                 "snapshot_revision": snapshot, "after_revision": after_revision,
                 "page_limit": limit, "has_more": has_more,
-                "next_after_revision": page_rows[-1][2] if has_more and page_rows else None,
+                "next_after_revision": page_rows[-1][1] if has_more and page_rows else None,
                 "real_data": False, "scientific_review": False,
                 "expert_inspection": False, "plan_accepted": False,
             }

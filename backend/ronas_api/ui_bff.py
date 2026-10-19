@@ -14,7 +14,7 @@ import hmac
 import secrets
 import sqlite3
 
-from fastapi import APIRouter, Cookie, HTTPException, Request
+from fastapi import APIRouter, Cookie, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, JSONResponse, Response
 
 from .auth import InvalidToken, Principal
@@ -1844,16 +1844,27 @@ def build_authenticated_ui_router(
     if household_input_ledger is not None:
         @router.get("/my-drafts/{ref}/progress-notes")
         def household_progress_notes_page(
-            ref: str, corrects_revision: int = 0,
+            ref: str, corrects_revision: int = Query(default=0, ge=0),
+            limit: int = Query(default=20, ge=1, le=50),
+            after_revision: int = Query(default=0, ge=0),
+            snapshot_revision: int | None = Query(default=None, ge=0),
             sid: str | None = Cookie(default=None, alias=cookie_name),
         ) -> HTMLResponse:
             try:
                 session = flow.session(sid)
             except InvalidToken:
                 raise HTTPException(401, detail="INVALID_SESSION") from None
-            result = progress_note_store.read_owned_progress_notes(
-                ref, Principal(session.subject, session.roles),
-            )
+            try:
+                result = progress_note_store.read_owned_progress_notes(
+                    ref, Principal(session.subject, session.roles), limit=limit,
+                    after_revision=after_revision, snapshot_revision=snapshot_revision,
+                )
+            except LedgerIntegrityError as exc:
+                raise HTTPException(
+                    503, detail="SYNTHETIC_PROGRESS_HISTORY_UNAVAILABLE",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_PROGRESS_NOTE_PAGE") from exc
             if result is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
             correction_target = None
@@ -1878,6 +1889,9 @@ def build_authenticated_ui_router(
                 + ('' if item["is_superseded"] else
                    ' · <a href="/my-drafts/' + quote(ref)
                    + '/progress-notes?corrects_revision=' + str(item["revision"])
+                   + '&amp;limit=' + str(limit)
+                   + '&amp;after_revision=' + str(after_revision)
+                   + '&amp;snapshot_revision=' + str(result["snapshot_revision"])
                    + '">اصلاح این یادداشت</a>') + '</li>'
                 for item in result["notes"]
             )
@@ -1914,7 +1928,18 @@ def build_authenticated_ui_router(
                 '<p>فقط متن ساختگی با پیشوند DEMO: و زمان واردشده توسط شما ثبت می‌شود. '
                 'مرحله علمی از پیش تعریف‌شده یا ارزیابی محصول وجود ندارد.</p>'
                 + ('<ol>' + notes + '</ol>' if notes else
-                   '<p>یادداشتی ثبت نشده است.</p>')
+                   '<p>یادداشتی در این بخش از تاریخچه نیست.</p>')
+                + ('<p><a href="/my-drafts/' + quote(ref)
+                   + '/progress-notes?limit=' + str(limit)
+                   + '&amp;after_revision=' + str(result["next_after_revision"])
+                   + '&amp;snapshot_revision=' + str(result["snapshot_revision"])
+                   + '">یادداشت‌های بعدی ←</a></p>' if result["has_more"] else '')
+                + ('<p><a href="/my-drafts/' + quote(ref)
+                   + '/progress-notes?limit=' + str(limit)
+                   + '&after_revision=0&snapshot_revision='
+                   + str(result["snapshot_revision"])
+                   + '">بازگشت به ابتدای همین تاریخچه</a></p>'
+                   if after_revision else '')
                 + '<p>این یادداشت‌ها داده واقعی، نظارت متخصص، ارزیابی علمی یا '
                 'تأیید برنامه کشت محسوب نمی‌شوند و فقط برای مالک قابل مشاهده‌اند.</p>'
                 + form

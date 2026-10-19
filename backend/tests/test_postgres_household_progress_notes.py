@@ -117,6 +117,35 @@ class PostgresHouseholdProgressNoteTests(unittest.TestCase):
             1,
         )
 
+    def test_history_pages_are_bounded_and_keep_a_stable_snapshot(self):
+        self.append(action="DEMO-PAGE-1", expected=0, note="DEMO: page one")
+        self.append(action="DEMO-PAGE-2", expected=1, note="DEMO: page two")
+        self.append(action="DEMO-PAGE-3", expected=2, note="DEMO: page three")
+        self.append(action="DEMO-PAGE-4", expected=3,
+                    note="DEMO: page correction", correction=1)
+
+        first = self.ledger.read_owned_progress_notes(
+            self.ref, self.principal, limit=2,
+        )
+        self.assertEqual([item["revision"] for item in first["notes"]], [1, 2])
+        self.assertTrue(first["has_more"])
+        self.assertEqual(first["next_after_revision"], 2)
+        self.assertEqual(first["notes"][0]["superseded_by_revision"], 4)
+        self.assertEqual(first["snapshot_revision"], 4)
+
+        self.append(action="DEMO-PAGE-5", expected=4, note="DEMO: newer page")
+        second = self.ledger.read_owned_progress_notes(
+            self.ref, self.principal, limit=2, after_revision=2,
+            snapshot_revision=first["snapshot_revision"],
+        )
+        self.assertEqual([item["revision"] for item in second["notes"]], [3, 4])
+        self.assertFalse(second["has_more"])
+        with self.assertRaises(ValueError):
+            self.ledger.read_owned_progress_notes(
+                self.ref, self.principal, limit=2, after_revision=5,
+                snapshot_revision=4,
+            )
+
     def test_owner_authority_and_compare_and_swap_fail_closed(self):
         self.assertIsNone(self.ledger.read_owned_progress_notes(
             self.ref, Principal("synthetic-other-owner", frozenset({"household"})),
@@ -206,6 +235,18 @@ class PostgresHouseholdProgressNoteTests(unittest.TestCase):
         )
         self.assertEqual(read.status_code, 200, read.text)
         self.assertEqual(read.json()["notes"][0]["note"], body["note"])
+        invalid_page = client.get(
+            f"/api/v1/domestic/household-intake/my-drafts/{self.ref}/progress-notes"
+            "?limit=1&after_revision=1&snapshot_revision=0",
+        )
+        self.assertEqual(invalid_page.status_code, 422)
+        bounded_page = client.get(
+            f"/api/v1/domestic/household-intake/my-drafts/{self.ref}/progress-notes"
+            "?limit=1",
+        )
+        self.assertEqual(bounded_page.status_code, 200, bounded_page.text)
+        self.assertEqual(bounded_page.json()["page_limit"], 1)
+        self.assertEqual(bounded_page.json()["snapshot_revision"], 1)
 
 
 if __name__ == "__main__":

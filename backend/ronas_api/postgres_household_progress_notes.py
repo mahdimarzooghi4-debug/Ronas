@@ -245,7 +245,15 @@ class PostgresHouseholdProgressNoteLedger:
             previous = receipt
         return notes
 
-    def read_owned_progress_notes(self, ref: str, principal: Principal) -> dict | None:
+    def read_owned_progress_notes(
+        self, ref: str, principal: Principal, *, limit: int = 20,
+        after_revision: int = 0, snapshot_revision: int | None = None,
+    ) -> dict | None:
+        if (type(limit) is not int or not 1 <= limit <= 50
+                or type(after_revision) is not int or after_revision < 0
+                or snapshot_revision is not None
+                   and (type(snapshot_revision) is not int or snapshot_revision < 0)):
+            raise ValueError("invalid progress note page")
         context = self._authorized_context(ref, principal)
         if context is None:
             return None
@@ -255,12 +263,22 @@ class PostgresHouseholdProgressNoteLedger:
                 db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                             ("household:" + ref,))
                 rows = self._verify(self._rows(db, ref), owner_hash)
-                self._record_access(db, ref, owner_hash, "READ", len(rows), "",
+                current_revision = len(rows)
+                snapshot = current_revision if snapshot_revision is None else snapshot_revision
+                if snapshot > current_revision or after_revision > snapshot:
+                    raise ValueError("progress note page is outside the available snapshot")
+                self._record_access(db, ref, owner_hash, "READ", current_revision, "",
                                     rows[-1][0]["receipt_digest"].strip() if rows else "0" * 64)
         except psycopg.Error as exc:
             raise LedgerIntegrityError("progress note storage unavailable") from exc
-        corrected = {row["corrects_revision"] for row, _ in rows
-                     if row["corrects_revision"] is not None}
+        eligible = [(row, note) for row, note in rows
+                    if after_revision < row["revision"] <= snapshot]
+        page = eligible[:limit]
+        has_more = len(eligible) > limit
+        corrected_by = {
+            row["corrects_revision"]: row["revision"] for row, _ in rows
+            if row["corrects_revision"] is not None
+        }
         return {
             "contract_version": PROGRESS_CORRECTION_CONTRACT, "engine": "DOMESTIC",
             "ref": ref, "case_version": context["case_version"],
@@ -269,14 +287,17 @@ class PostgresHouseholdProgressNoteLedger:
                 "case_version": row["case_version"], "input_revision": row["input_revision"],
                 "revision": row["revision"], "reported_at": row["reported_at"],
                 "note": note, "corrects_revision": row["corrects_revision"],
-                "superseded_by_revision": next((r["revision"] for r, _ in rows
-                    if r["corrects_revision"] == row["revision"]), None),
-                "is_superseded": row["revision"] in corrected,
+                "superseded_by_revision": corrected_by.get(row["revision"]),
+                "is_superseded": row["revision"] in corrected_by,
                 "current_case_version": row["case_version"] == context["case_version"],
                 "current_input_context": row["input_revision"] == context["current_input_revision"],
-            } for row, note in rows],
-            "current_revision": len(rows), "real_data": False,
-            "scientific_review": False, "expert_inspection": False, "plan_accepted": False,
+            } for row, note in page],
+            "current_revision": current_revision,
+            "snapshot_revision": snapshot, "after_revision": after_revision,
+            "page_limit": limit, "has_more": has_more,
+            "next_after_revision": page[-1][0]["revision"] if has_more and page else None,
+            "real_data": False, "scientific_review": False,
+            "expert_inspection": False, "plan_accepted": False,
         }
 
     def append_owned_progress_note(self, ref: str, principal: Principal, *, action_id: str,

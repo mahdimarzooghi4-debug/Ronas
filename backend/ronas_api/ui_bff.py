@@ -1889,9 +1889,9 @@ def build_authenticated_ui_router(
                 + ('' if item["is_superseded"] else
                    ' · <a href="/my-drafts/' + quote(ref)
                    + '/progress-notes?corrects_revision=' + str(item["revision"])
-                   + '&limit=' + str(limit)
-                   + '&after_revision=' + str(after_revision)
-                   + '&snapshot_revision=' + str(result["snapshot_revision"])
+                   + '&amp;limit=' + str(limit)
+                   + '&amp;after_revision=' + str(after_revision)
+                   + '&amp;snapshot_revision=' + str(result["snapshot_revision"])
                    + '">اصلاح این یادداشت</a>') + '</li>'
                 for item in result["notes"]
             )
@@ -1931,8 +1931,8 @@ def build_authenticated_ui_router(
                    '<p>یادداشتی در این بخش از تاریخچه نیست.</p>')
                 + ('<p><a href="/my-drafts/' + quote(ref)
                    + '/progress-notes?limit=' + str(limit)
-                   + '&after_revision=' + str(result["next_after_revision"])
-                   + '&snapshot_revision=' + str(result["snapshot_revision"])
+                   + '&amp;after_revision=' + str(result["next_after_revision"])
+                   + '&amp;snapshot_revision=' + str(result["snapshot_revision"])
                    + '">یادداشت‌های بعدی ←</a></p>' if result["has_more"] else '')
                 + ('<p><a href="/my-drafts/' + quote(ref)
                    + '/progress-notes?limit=' + str(limit)

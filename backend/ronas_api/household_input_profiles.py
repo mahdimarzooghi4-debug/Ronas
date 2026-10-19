@@ -1200,8 +1200,7 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 # the same action ID and exact lineage/artifact must return the
                 # original receipt even though the server clock has advanced.
                 same_command = (
-                    existing[:7] == expected_existing[:7]
-                    and existing[8:9] == expected_existing[8:9]
+                    existing[:9] == expected_existing[:9]
                     and existing[13] == expected_existing[9]
                 )
                 if same_command and existing[10] == actor:

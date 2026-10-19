@@ -409,6 +409,11 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertFalse(saved.json()["stage_completed"])
         replay = self.client.post(path, json=command, headers=self.bearer())
         self.assertTrue(replay.json()["idempotent_replay"])
+        changed_timestamp = self.client.post(
+            path, json={**command, "observed_at": "2026-10-13T10:20:30+00:00"},
+            headers=self.bearer(),
+        )
+        self.assertEqual(changed_timestamp.status_code, 409)
         current = self.client.get(path, headers=self.bearer())
         self.assertEqual(current.status_code, 200, current.text)
         self.assertEqual(current.json()["state"], "CURRENT_PLAN_AVAILABLE")

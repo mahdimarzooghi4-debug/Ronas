@@ -343,7 +343,15 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
         if used != set(linked):
             raise LedgerIntegrityError("orphaned synthetic progress audit event")
 
-    def read_owned_progress_notes(self, ref: str, principal: Principal) -> dict | None:
+    def read_owned_progress_notes(
+        self, ref: str, principal: Principal, *, limit: int = 20,
+        after_revision: int = 0, snapshot_revision: int | None = None,
+    ) -> dict | None:
+        if (type(limit) is not int or not 1 <= limit <= 50
+                or type(after_revision) is not int or after_revision < 0
+                or snapshot_revision is not None
+                   and (type(snapshot_revision) is not int or snapshot_revision < 0)):
+            raise ValueError("invalid progress note page")
         with self._transaction() as db:
             self._verify(db)
             if not self._owner(ref, principal):
@@ -356,13 +364,19 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
             current_input_revision = latest_input[0] if latest_input else 0
             rows = list(db.execute(
                 "SELECT case_version,revision,input_revision,reported_at,note,"
-                "corrects_revision "
-                "FROM household_progress_note "
+                "corrects_revision FROM household_progress_note "
                 "WHERE ref=? ORDER BY revision", (ref,),
             ))
+            current_revision = rows[-1][1] if rows else 0
+            snapshot = current_revision if snapshot_revision is None else snapshot_revision
+            if snapshot > current_revision or after_revision > snapshot:
+                raise ValueError("progress note page is outside the available snapshot")
             self._append(db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                          actor=principal.subject, mode="HOUSEHOLD_PROGRESS_NOTE_HISTORY")
-            corrected = {row[5] for row in rows if row[5] is not None}
+            corrected_by = {row[5]: row[1] for row in rows if row[5] is not None}
+            eligible = [row for row in rows if after_revision < row[1] <= snapshot]
+            page_rows = eligible[:limit]
+            has_more = len(eligible) > limit
             return {
                 "contract_version": PROGRESS_CORRECTION_CONTRACT, "engine": "DOMESTIC",
                 "ref": ref, "case_version": record.version,
@@ -370,19 +384,20 @@ class SqliteSyntheticHouseholdInputLedger(SqliteSyntheticHumanReviewLedger):
                 "notes": [{
                     "case_version": version, "input_revision": input_revision,
                     "revision": revision, "reported_at": reported_at,
-                    "note": text,
-                    "corrects_revision": corrects_revision,
-                    "superseded_by_revision": next((item[1] for item in rows
-                        if item[5] == revision), None),
-                    "is_superseded": revision in corrected,
+                    "note": text, "corrects_revision": corrects_revision,
+                    "superseded_by_revision": corrected_by.get(revision),
+                    "is_superseded": revision in corrected_by,
                     "current_case_version": version == record.version,
                     "current_input_context": (
                         input_revision is not None
                         and input_revision == current_input_revision
                     ),
                 } for version, revision, input_revision, reported_at, text,
-                     corrects_revision in rows],
-                "current_revision": rows[-1][1] if rows else 0,
+                     corrects_revision in page_rows],
+                "current_revision": current_revision,
+                "snapshot_revision": snapshot, "after_revision": after_revision,
+                "page_limit": limit, "has_more": has_more,
+                "next_after_revision": page_rows[-1][1] if has_more and page_rows else None,
                 "real_data": False, "scientific_review": False,
                 "expert_inspection": False, "plan_accepted": False,
             }

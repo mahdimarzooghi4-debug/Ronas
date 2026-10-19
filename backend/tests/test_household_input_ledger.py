@@ -867,6 +867,36 @@ class SyntheticHouseholdInputLedgerTests(unittest.TestCase):
         self.assertIn("/my-drafts/DEMO-D-1/progress-notes",
                       self.client.get("/my-drafts/DEMO-D-1").text)
 
+    def test_progress_note_history_browser_uses_stable_pages(self):
+        self.browser()
+        route = "/my-drafts/DEMO-D-1/progress-notes"
+        csrf = self.sessions.get_session(
+            self.client.cookies.get("__Host-ronas_session")
+        ).csrf
+        for revision, note in enumerate(("DEMO: first page", "DEMO: second page")):
+            response = self.client.post(
+                route,
+                data={
+                    "csrf": csrf, "action_id": f"DEMO-PROGRESS-PAGE-{revision}",
+                    "case_version": "3", "input_revision": "0",
+                    "revision": str(revision), "corrects_revision": "0",
+                    "reported_at": "2026-10-12T10:30:00+03:30", "note": note,
+                },
+                headers={"Origin": ORIGIN}, follow_redirects=False,
+            )
+            self.assertEqual(response.status_code, 303, response.text)
+        first = self.client.get(route + "?limit=1")
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertIn("DEMO: first page", first.text)
+        self.assertNotIn("DEMO: second page", first.text)
+        self.assertIn("after_revision=1", first.text)
+        second = self.client.get(
+            route + "?limit=1&after_revision=1&snapshot_revision=2",
+        )
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertIn("DEMO: second page", second.text)
+        self.assertNotIn("DEMO: first page", second.text)
+
     def test_progress_note_browser_marks_input_context_stale_and_rejects_old_form(self):
         self.browser()
         route = "/my-drafts/DEMO-D-1/progress-notes"

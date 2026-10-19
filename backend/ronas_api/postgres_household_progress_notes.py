@@ -252,7 +252,8 @@ class PostgresHouseholdProgressNoteLedger:
         owner_hash = self._owner_hash(principal.subject)
         try:
             with self._connect() as db:
-                db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (ref,))
+                db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                            ("household:" + ref,))
                 rows = self._verify(self._rows(db, ref), owner_hash)
                 self._record_access(db, ref, owner_hash, "READ", len(rows), "",
                                     rows[-1][0]["receipt_digest"].strip() if rows else "0" * 64)
@@ -300,7 +301,20 @@ class PostgresHouseholdProgressNoteLedger:
         owner_hash = self._owner_hash(principal.subject)
         try:
             with self._connect() as db:
-                db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (ref,))
+                # Lock both the case revision and globally unique command ID. Stable
+                # ordering prevents deadlocks between concurrent cases.
+                for lock_key in sorted(("action:" + action_id, "household:" + ref)):
+                    db.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (lock_key,),
+                    )
+                foreign_action = db.execute(
+                    "SELECT household_ref FROM ronas_domestic_progress_note "
+                    "WHERE action_id=%s", (action_id,),
+                ).fetchone()
+                if (foreign_action is not None
+                        and foreign_action["household_ref"] != ref):
+                    raise InputRevisionConflict("conflicting progress note action ID")
                 rows = self._rows(db, ref)
                 verified = self._verify(rows, owner_hash)
                 self._verify_access(db, ref, owner_hash)

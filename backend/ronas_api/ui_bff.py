@@ -1859,12 +1859,12 @@ def build_authenticated_ui_router(
                     ref, Principal(session.subject, session.roles), limit=limit,
                     after_revision=after_revision, snapshot_revision=snapshot_revision,
                 )
-            except ValueError as exc:
-                raise HTTPException(422, detail="INVALID_PROGRESS_NOTE_PAGE") from exc
             except LedgerIntegrityError as exc:
                 raise HTTPException(
                     503, detail="SYNTHETIC_PROGRESS_HISTORY_UNAVAILABLE",
                 ) from exc
+            except ValueError as exc:
+                raise HTTPException(422, detail="INVALID_PROGRESS_NOTE_PAGE") from exc
             if result is None:
                 raise HTTPException(404, detail="DRAFT_NOT_FOUND")
             correction_target = None

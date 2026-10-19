@@ -190,8 +190,8 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         journal._schema_ref = self.schema.schema_ref
         journal._authority = self.allowed
         journal._context_reader = self.ledger.progress_note_context
-        journal.read_owned_progress_notes = lambda ref, principal: (
-            calls.append((ref, principal.subject))
+        journal.read_owned_progress_notes = lambda ref, principal, **page: (
+            calls.append((ref, principal.subject, page))
             or {"notes": [], "current_revision": 0, "real_data": False}
         )
         key_file = self.path.parent / "local-bff-composition.key"
@@ -212,7 +212,9 @@ class HouseholdProfileFlowTests(unittest.TestCase):
             headers=self.bearer(),
         )
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(calls, [(REF, OWNER)])
+        self.assertEqual(calls, [(
+            REF, OWNER, {"limit": 20, "after_revision": 0, "snapshot_revision": None},
+        )])
 
     def stage_context(self, ref):
         if not self.stage_plan_available:

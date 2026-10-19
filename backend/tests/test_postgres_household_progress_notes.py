@@ -96,10 +96,10 @@ class PostgresHouseholdProgressNoteTests(unittest.TestCase):
         def append_for(ref):
             try:
                 return self.ledger.append_owned_progress_note(
-                ref, self.principal, action_id=self.action_id,
-                expected_case_version=1, expected_revision=0,
-                expected_input_revision=0, corrects_revision=None,
-                reported_at="2026-10-17T10:00:00+00:00",
+                    ref, self.principal, action_id=self.action_id,
+                    expected_case_version=1, expected_revision=0,
+                    expected_input_revision=0, corrects_revision=None,
+                    reported_at="2026-10-17T10:00:00+00:00",
                     note="DEMO: shared retry token",
                 )
             except InputRevisionConflict as exc:

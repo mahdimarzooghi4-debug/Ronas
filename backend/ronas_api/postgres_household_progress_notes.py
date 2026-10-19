@@ -301,6 +301,8 @@ class PostgresHouseholdProgressNoteLedger:
         owner_hash = self._owner_hash(principal.subject)
         try:
             with self._connect() as db:
+                # Lock both the case revision and globally unique command ID. Stable
+                # ordering prevents deadlocks between concurrent cases.
                 for lock_key in sorted(("action:" + action_id, "household:" + ref)):
                     db.execute(
                         "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",

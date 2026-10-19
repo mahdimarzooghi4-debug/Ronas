@@ -263,14 +263,14 @@ class PostgresHouseholdProgressNoteLedger:
                 db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                             ("household:" + ref,))
                 rows = self._verify(self._rows(db, ref), owner_hash)
-                self._record_access(db, ref, owner_hash, "READ", len(rows), "",
+                current_revision = len(rows)
+                snapshot = current_revision if snapshot_revision is None else snapshot_revision
+                if snapshot > current_revision or after_revision > snapshot:
+                    raise ValueError("progress note page is outside the available snapshot")
+                self._record_access(db, ref, owner_hash, "READ", current_revision, "",
                                     rows[-1][0]["receipt_digest"].strip() if rows else "0" * 64)
         except psycopg.Error as exc:
             raise LedgerIntegrityError("progress note storage unavailable") from exc
-        current_revision = len(rows)
-        snapshot = current_revision if snapshot_revision is None else snapshot_revision
-        if snapshot > current_revision or after_revision > snapshot:
-            raise ValueError("progress note page is outside the available snapshot")
         eligible = [(row, note) for row, note in rows
                     if after_revision < row["revision"] <= snapshot]
         page = eligible[:limit]

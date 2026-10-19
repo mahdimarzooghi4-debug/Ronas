@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from ronas_api.auth import Principal
 from ronas_api.grant_ledger_sqlite import LedgerIntegrityError
+from ronas_api.household_input_ledger_sqlite import InputRevisionConflict
 from ronas_api.household_input_api import build_household_input_router
 from ronas_api.household_input_profiles import (
     HouseholdInputField, HouseholdInputSchema, SqliteSyntheticHouseholdProfileLedger,
@@ -25,6 +26,7 @@ DSN = os.environ.get("RONAS_TEST_POSTGRES_DSN")
 class PostgresHouseholdProgressNoteTests(unittest.TestCase):
     def setUp(self):
         self.ref = "DEMO-PROGRESS-" + secrets.token_hex(6).upper()
+        self.other_ref = "DEMO-PROGRESS-" + secrets.token_hex(6).upper()
         self.action_id = "DEMO-PROGRESS-" + secrets.token_hex(8).upper()
         self.owner = "synthetic-progress-" + secrets.token_hex(6)
         self.principal = Principal(self.owner, frozenset({"household"}))
@@ -35,14 +37,18 @@ class PostgresHouseholdProgressNoteTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.case_ledger = SqliteSyntheticHouseholdProfileLedger(
             os.path.join(temp.name, "case.db"),
-            (ScopedDraft(self.ref, "DOMESTIC", self.owner, 1, ()),),
+            (
+                ScopedDraft(self.ref, "DOMESTIC", self.owner, 1, ()),
+                ScopedDraft(self.other_ref, "DOMESTIC", self.owner, 1, ()),
+            ),
             profile_schema=self.schema,
             trusted_revoke_authorizer=lambda *_: False,
             trusted_human_review_authorizer=lambda *_: False,
         )
 
         def authority(principal, ref, schema_ref):
-            return (principal.subject == self.owner and ref == self.ref
+            return (principal.subject == self.owner
+                    and ref in {self.ref, self.other_ref}
                     and schema_ref == self.schema.schema_ref
                     and "household" in principal.roles)
 
@@ -83,6 +89,33 @@ class PostgresHouseholdProgressNoteTests(unittest.TestCase):
         self.assertEqual(self.ledger.read_owned_progress_notes(
             self.ref, self.principal,
         )["current_revision"], 2)
+
+    def test_action_id_collision_across_households_is_a_conflict(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        def append_for(ref):
+            try:
+                return self.ledger.append_owned_progress_note(
+                ref, self.principal, action_id=self.action_id,
+                expected_case_version=1, expected_revision=0,
+                expected_input_revision=0, corrects_revision=None,
+                reported_at="2026-10-17T10:00:00+00:00",
+                    note="DEMO: shared retry token",
+                )
+            except InputRevisionConflict as exc:
+                return exc
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(append_for, (self.ref, self.other_ref)))
+        successes = [item for item in outcomes if isinstance(item, dict)]
+        conflicts = [item for item in outcomes if isinstance(item, InputRevisionConflict)]
+        self.assertEqual(len(successes), 1)
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(
+            sum(self.ledger.read_owned_progress_notes(ref, self.principal)["current_revision"]
+                for ref in (self.ref, self.other_ref)),
+            1,
+        )
 
     def test_owner_authority_and_compare_and_swap_fail_closed(self):
         self.assertIsNone(self.ledger.read_owned_progress_notes(

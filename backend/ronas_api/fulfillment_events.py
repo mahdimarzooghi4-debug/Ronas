@@ -23,6 +23,7 @@ from .auth import Principal
 _PROVIDERS = {"courier": "courier", "local-hub": "local_hub"}
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_EVENT_CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
 
 
 class FulfillmentEventError(Exception):
@@ -57,8 +58,8 @@ class FulfillmentEventInput(BaseModel):
     @field_validator("event_code")
     @classmethod
     def bounded_event_code(cls, value: str) -> str:
-        if not value or any(ord(ch) < 0x20 for ch in value):
-            raise ValueError("printable opaque event code required")
+        if not _EVENT_CODE.fullmatch(value):
+            raise ValueError("opaque provider event code required")
         return value
 
     @field_validator("occurred_at")
@@ -211,6 +212,38 @@ class PostgresFulfillmentEventLedger:
              snapshot_sequence: int | None = None) -> dict:
         if provider not in _PROVIDERS or _PROVIDERS[provider] not in principal.roles:
             raise PermissionError("provider role required")
+        return self._read_page(
+            provider, principal, order_ref, limit=limit,
+            after_sequence=after_sequence, snapshot_sequence=snapshot_sequence,
+            check_provider_assignment=True,
+        )
+
+    def read_for_household(self, provider: str, principal: Principal, order_ref: str,
+                           order_access_authority, *, limit: int = 20,
+                           after_sequence: int = 0,
+                           snapshot_sequence: int | None = None) -> dict:
+        if "household" not in principal.roles:
+            raise PermissionError("household role required")
+        if not callable(order_access_authority):
+            raise PermissionError("current order authority unavailable")
+        try:
+            authorized = order_access_authority(principal, order_ref) is True
+        except Exception:
+            authorized = False
+        if not authorized:
+            raise PermissionError("current order access is not authorized")
+        return self._read_page(
+            provider, principal, order_ref, limit=limit,
+            after_sequence=after_sequence, snapshot_sequence=snapshot_sequence,
+            check_provider_assignment=False,
+        )
+
+    def _read_page(self, provider: str, principal: Principal, order_ref: str, *,
+                   limit: int, after_sequence: int,
+                   snapshot_sequence: int | None,
+                   check_provider_assignment: bool) -> dict:
+        if provider not in _PROVIDERS:
+            raise ValueError("invalid fulfillment provider")
         if not _ID.fullmatch(order_ref):
             raise ValueError("invalid order reference")
         if (type(limit) is not int or not 1 <= limit <= 100
@@ -234,8 +267,9 @@ class PostgresFulfillmentEventLedger:
                         (order_ref, provider, after_sequence)).fetchone()
                     if predecessor is None:
                         raise ValueError("invalid fulfillment event cursor")
-                    if not self._authorized(
-                            principal, provider, order_ref, predecessor["assignment_ref"]):
+                    if (check_provider_assignment and not self._authorized(
+                            principal, provider, order_ref,
+                            predecessor["assignment_ref"])):
                         raise PermissionError("current assignment is not authorized")
                     previous = predecessor["event_digest"]
                 rows = list(db.execute("""SELECT * FROM ronas_domestic_fulfillment_event
@@ -249,6 +283,7 @@ class PostgresFulfillmentEventLedger:
 
         has_more = len(rows) > limit
         page = rows[:limit]
+        previous = ("0" * 64 if after_sequence == 0 else previous)
         views = []
         for offset, row in enumerate(page, 1):
             expected_sequence = after_sequence + offset
@@ -260,8 +295,8 @@ class PostgresFulfillmentEventLedger:
             ).hexdigest()
             if not hmac.compare_digest(actual, row["event_digest"]):
                 raise FulfillmentEventUnavailable
-            if not self._authorized(
-                    principal, provider, order_ref, row["assignment_ref"]):
+            if (check_provider_assignment and not self._authorized(
+                    principal, provider, order_ref, row["assignment_ref"])):
                 raise PermissionError("current assignment is not authorized")
             previous = actual
             views.append(self._view(row, replay=False))
@@ -287,7 +322,8 @@ class PostgresFulfillmentEventLedger:
 
 
 def build_fulfillment_event_router(ledger: PostgresFulfillmentEventLedger,
-                                   principal_dependency) -> APIRouter:
+                                   principal_dependency,
+                                   household_order_access_authority=None) -> APIRouter:
     router = APIRouter(prefix="/api/v1/domestic/fulfillment", tags=["fulfillment-api"])
 
     @router.post("/{provider}/orders/{order_ref}/events", status_code=201)
@@ -321,6 +357,44 @@ def build_fulfillment_event_router(ledger: PostgresFulfillmentEventLedger,
             )
         except PermissionError:
             raise HTTPException(403, "FULFILLMENT_ASSIGNMENT_FORBIDDEN") from None
+        except ValueError:
+            raise HTTPException(422, "INVALID_FULFILLMENT_EVENT_PAGE") from None
+        except FulfillmentEventUnavailable:
+            raise HTTPException(503, "FULFILLMENT_EVENT_LEDGER_UNAVAILABLE") from None
+
+    @router.get("/household-orders/{order_ref}/providers/{provider}/events")
+    def read_household_events(
+        order_ref: str, provider: str,
+        limit: int = Query(default=20, ge=1, le=100),
+        after_sequence: int = Query(default=0, ge=0),
+        snapshot_sequence: int | None = Query(default=None, ge=0),
+        principal: Principal = Depends(principal_dependency),
+    ):
+        if not callable(household_order_access_authority):
+            raise HTTPException(503, "HOUSEHOLD_ORDER_AUTHORITY_UNAVAILABLE")
+        try:
+            result = ledger.read_for_household(
+                provider, principal, order_ref, household_order_access_authority,
+                limit=limit, after_sequence=after_sequence,
+                snapshot_sequence=snapshot_sequence,
+            )
+            return {
+                "order_ref": result["order_ref"],
+                "provider": result["provider"],
+                "events": [{
+                    "sequence": event["sequence"],
+                    "provider_event_code": event["event_code"],
+                    "occurred_at": event["occurred_at"],
+                    "meaning": "PROVIDER_ASSERTION_ONLY",
+                } for event in result["events"]],
+                "limit": result["limit"],
+                "after_sequence": result["after_sequence"],
+                "snapshot_sequence": result["snapshot_sequence"],
+                "has_more": result["has_more"],
+                "next_after_sequence": result["next_after_sequence"],
+            }
+        except PermissionError:
+            raise HTTPException(404, "FULFILLMENT_EVENTS_NOT_FOUND") from None
         except ValueError:
             raise HTTPException(422, "INVALID_FULFILLMENT_EVENT_PAGE") from None
         except FulfillmentEventUnavailable:

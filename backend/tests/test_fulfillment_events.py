@@ -102,7 +102,46 @@ class FulfillmentEventTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         replay = client.post(url, json=body)
         self.assertEqual(replay.status_code, 200, replay.text)
-        self.assertEqual(client.get(url).json()["events"][0]["event_code"], "custom.code")
+        history = client.get(url + "?limit=1")
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual(history.json()["events"][0]["event_code"], "custom.code")
+        self.assertFalse(history.json()["has_more"])
+        self.assertEqual(client.get(url + "?limit=101").status_code, 422)
+
+    def test_event_pages_keep_a_stable_snapshot_and_verify_page_linkage(self):
+        for n in range(1, 5):
+            self.ledger.append(
+                "courier", self.courier,
+                self.event(f"PAGE-{n}", code=f"external.{n}"),
+            )
+        first = self.ledger.read(
+            "courier", self.courier, self.order, limit=2,
+        )
+        self.assertEqual([e["sequence"] for e in first["events"]], [1, 2])
+        self.assertTrue(first["has_more"])
+        self.assertEqual(first["next_after_sequence"], 2)
+        self.assertEqual(first["snapshot_sequence"], 4)
+
+        self.ledger.append(
+            "courier", self.courier,
+            self.event("PAGE-5", code="external.5"),
+        )
+        second = self.ledger.read(
+            "courier", self.courier, self.order, limit=2,
+            after_sequence=first["next_after_sequence"],
+            snapshot_sequence=first["snapshot_sequence"],
+        )
+        self.assertEqual([e["sequence"] for e in second["events"]], [3, 4])
+        self.assertFalse(second["has_more"])
+        self.assertIsNone(second["next_after_sequence"])
+
+        with self.assertRaises(ValueError):
+            self.ledger.read(
+                "courier", self.courier, self.order, limit=2,
+                after_sequence=5, snapshot_sequence=4,
+            )
+        with self.assertRaises(ValueError):
+            self.ledger.read("courier", self.courier, self.order, limit=101)
 
     def test_ledger_detects_tampering_and_database_rejects_mutation(self):
         self.ledger.append("courier", self.courier, self.event())

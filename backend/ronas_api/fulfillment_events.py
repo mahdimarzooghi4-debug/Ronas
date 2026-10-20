@@ -87,6 +87,17 @@ def _canonical(provider: str, data: FulfillmentEventInput) -> bytes:
         "payload_digest": data.payload_digest,
     }, sort_keys=True, separators=(",", ":")).encode()
 
+def _canonical_row(provider: str, row) -> bytes:
+    return json.dumps({
+        "provider": provider,
+        "provider_event_id": row["provider_event_id"],
+        "order_ref": row["order_ref"],
+        "assignment_ref": row["assignment_ref"],
+        "event_code": row["event_code"],
+        "occurred_at": row["occurred_at"].astimezone(timezone.utc).isoformat(),
+        "payload_digest": row["payload_digest"].strip(),
+    }, sort_keys=True, separators=(",", ":")).encode()
+
 
 class PostgresFulfillmentEventLedger:
     """Immutable per-order event stream guarded by live assignment authority."""
@@ -169,7 +180,9 @@ class PostgresFulfillmentEventLedger:
                 if existing:
                     if (existing["order_ref"] != data.order_ref
                             or existing["assignment_ref"] != data.assignment_ref
-                            or not hmac.compare_digest(existing["event_digest"], digest)):
+                            or not hmac.compare_digest(
+                                hashlib.sha256(_canonical_row(provider, existing)).hexdigest(),
+                                digest)):
                         raise FulfillmentEventConflict("provider event id was reused")
                     return self._view(existing, replay=True)
                 last = db.execute("""SELECT sequence,event_digest
@@ -221,13 +234,7 @@ class PostgresFulfillmentEventLedger:
                 raise FulfillmentEventUnavailable
             view = self._view(row, replay=False)
             # Verify chain integrity without storing private payload content.
-            canonical = json.dumps({
-                "provider": provider, "provider_event_id": row["provider_event_id"],
-                "order_ref": order_ref, "assignment_ref": row["assignment_ref"],
-                "event_code": row["event_code"],
-                "occurred_at": row["occurred_at"].astimezone(timezone.utc).isoformat(),
-                "payload_digest": row["payload_digest"].strip(),
-            }, sort_keys=True, separators=(",", ":")).encode()
+            canonical = _canonical_row(provider, row)
             actual = hashlib.sha256(
                 bytes.fromhex(previous) + expected_sequence.to_bytes(8, "big") + canonical
             ).hexdigest()

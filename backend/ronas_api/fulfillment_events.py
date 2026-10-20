@@ -173,8 +173,8 @@ class PostgresFulfillmentEventLedger:
                         raise FulfillmentEventConflict("provider event id was reused")
                     return self._view(existing, replay=True)
                 last = db.execute("""SELECT sequence,event_digest
-                    FROM ronas_domestic_fulfillment_event WHERE order_ref=%s
-                    ORDER BY sequence DESC LIMIT 1""", (data.order_ref,)).fetchone()
+                    FROM ronas_domestic_fulfillment_event WHERE order_ref=%s AND provider=%s
+                    ORDER BY sequence DESC LIMIT 1""", (data.order_ref, provider)).fetchone()
                 sequence = 1 if last is None else last["sequence"] + 1
                 previous = "0" * 64 if last is None else last["event_digest"]
                 chain_digest = hashlib.sha256(

@@ -45,6 +45,9 @@ from .export_research_question import (
 )
 from .oidc_browser import BrowserOIDC
 from .postgres_household_progress_notes import PostgresHouseholdProgressNoteLedger
+from .fulfillment_events import (
+    FulfillmentEventUnavailable, PostgresFulfillmentEventLedger,
+)
 from .financial_source_arithmetic import source_arithmetic
 from .operational_readiness import readiness, verify_decision_sources
 from .case_journey_guidance import (
@@ -373,7 +376,19 @@ def build_authenticated_ui_router(
     household_surplus_producer_consent_ledger: ProducerConsentLedger | None = None,
     export_research_finding_ledger=None,
     household_progress_note_ledger: PostgresHouseholdProgressNoteLedger | None = None,
+    fulfillment_event_ledger: PostgresFulfillmentEventLedger | None = None,
+    fulfillment_household_order_access_authority=None,
 ) -> APIRouter:
+    if (fulfillment_event_ledger is not None
+            and (not callable(getattr(fulfillment_event_ledger,
+                                      "read_for_household", None))
+                 or not callable(fulfillment_household_order_access_authority))):
+        raise ValueError(
+            "household fulfillment UI requires the event ledger and live order authority"
+        )
+    if (fulfillment_event_ledger is None
+            and fulfillment_household_order_access_authority is not None):
+        raise ValueError("household order authority requires fulfillment event ledger")
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
             or technical_review_ledger is None):
@@ -1799,10 +1814,92 @@ def build_authenticated_ui_router(
                       '<p>وضعیت خدمت: نیازمند شواهد و مجوز عملیاتی.</p>'
                       '<p><a href="/workspace/' + quote(name)
                       + '">مشاهده فضای کار این نقش</a></p>'
+                      + ('<p><a href="/my-fulfillment">پیگیری رویدادهای سفارش</a></p>'
+                         if name == "household" and fulfillment_event_ledger is not None
+                         else '')
                       + household + '</article>')
         if not cards:
             cards = '<p>هیچ نمای کاربری بیرونی برای دسترسی‌های فعلی شما تخصیص نیافته است.</p>'
         return page("روناس — محیط کاربران و همکاران", cards, logged_in=True)
+
+    if fulfillment_event_ledger is not None:
+        @router.get("/my-fulfillment")
+        def household_fulfillment_page(
+            order_ref: str | None = Query(default=None, max_length=128),
+            provider: str = Query(default="courier", pattern="^(courier|local-hub)$"),
+            limit: int = Query(default=20, ge=1, le=100),
+            after_sequence: int = Query(default=0, ge=0, le=2147483647),
+            snapshot_sequence: int | None = Query(default=None, ge=0, le=2147483647),
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            principal = Principal(session.subject, session.roles)
+            if "household" not in principal.roles:
+                raise HTTPException(403, detail="HOUSEHOLD_ROLE_REQUIRED")
+            form = (
+                '<form method="get" action="/my-fulfillment">'
+                '<label for="ronas-order-ref">شناسه سفارش</label>'
+                '<input id="ronas-order-ref" name="order_ref" required '
+                'maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}" '
+                'value="' + escape(order_ref or "", quote=True) + '">'
+                '<label for="ronas-provider">منبع رویداد</label>'
+                '<select id="ronas-provider" name="provider">'
+                '<option value="courier"' + (' selected' if provider == "courier" else '')
+                + '>پیک</option><option value="local-hub"'
+                + (' selected' if provider == "local-hub" else '')
+                + '>هاب محلی</option></select>'
+                '<button type="submit">نمایش رویدادها</button></form>'
+            )
+            body = (
+                '<article class="panel"><h2>پیگیری رویدادهای سفارش</h2>'
+                '<p>این صفحه فقط کدهای ثبت‌شده توسط پیک یا هاب را نشان می‌دهد. '
+                'هر کد ادعای ثبت‌شدهٔ همان منبع است و به‌تنهایی وضعیت تحویل، '
+                'دریافت توسط خانوار یا کیفیت را اثبات نمی‌کند.</p>' + form
+            )
+            if order_ref is not None:
+                try:
+                    result = fulfillment_event_ledger.read_for_household(
+                        provider, principal, order_ref,
+                        fulfillment_household_order_access_authority,
+                        limit=limit, after_sequence=after_sequence,
+                        snapshot_sequence=snapshot_sequence,
+                    )
+                except PermissionError:
+                    # Do not reveal whether an order reference exists.
+                    raise HTTPException(404, detail="FULFILLMENT_EVENTS_NOT_FOUND") from None
+                except ValueError:
+                    raise HTTPException(422, detail="INVALID_FULFILLMENT_EVENT_PAGE") from None
+                except FulfillmentEventUnavailable:
+                    raise HTTPException(503, detail="FULFILLMENT_EVENT_LEDGER_UNAVAILABLE") from None
+                rows = ''.join(
+                    '<li><span>رویداد ' + str(event["sequence"]) + '</span> — '
+                    + escape(event["event_code"]) + ' · '
+                    + escape(event["occurred_at"])
+                    + ' <strong>ادعای ثبت‌شده از منبع، بدون تفسیر وضعیت</strong></li>'
+                    for event in result["events"]
+                )
+                body += (
+                    '<section aria-label="رویدادهای ثبت‌شده">'
+                    '<h3>رویدادهای ثبت‌شده برای ' + escape(result["order_ref"]) + '</h3>'
+                    + ('<ol>' + rows + '</ol>' if rows else
+                       '<p>برای این سفارش در این بازه رویدادی ثبت نشده است.</p>')
+                    + '<p>منبع: ' + ('پیک' if provider == "courier" else 'هاب محلی')
+                    + ' · توالی ' + str(result["after_sequence"])
+                    + ' از snapshot ' + str(result["snapshot_sequence"]) + '</p>'
+                    + ('<p><a href="/my-fulfillment?order_ref='
+                       + quote(result["order_ref"]) + '&amp;provider=' + quote(provider)
+                       + '&amp;limit=' + str(result["limit"])
+                       + '&amp;after_sequence=' + str(result["next_after_sequence"])
+                       + '&amp;snapshot_sequence=' + str(result["snapshot_sequence"])
+                       + '">رویدادهای بعدی در همین snapshot</a></p>'
+                       if result["has_more"] else '')
+                    + '</section>'
+                )
+            body += '<p><a href="/">بازگشت به فضای کاربران</a></p></article>'
+            return page("روناس — پیگیری رویدادهای سفارش", body, logged_in=True)
 
     if owned_case_ledger is not None:
         @router.get("/my-drafts/{ref}/versions")

@@ -20,6 +20,7 @@ DSN = os.environ.get("RONAS_TEST_POSTGRES_DSN")
 class FulfillmentEventTests(unittest.TestCase):
     def setUp(self):
         suffix = secrets.token_hex(8)
+        self.prefix = "DEMO-RUN-" + suffix + "-"
         self.order = "DEMO-ORDER-" + suffix
         self.assignment = "DEMO-ASSIGN-" + suffix
         self.courier = Principal("synthetic-courier", frozenset({"courier"}))
@@ -36,7 +37,7 @@ class FulfillmentEventTests(unittest.TestCase):
     def event(self, event_id="DEMO-EVENT-1", *, order=None, assignment=None,
               code="provider.status.unknown", payload_digest=None):
         return FulfillmentEventInput(
-            provider_event_id=event_id, order_ref=order or self.order,
+            provider_event_id=self.prefix + event_id, order_ref=order or self.order,
             assignment_ref=assignment or self.assignment,
             event_code=code, occurred_at="2026-10-20T10:00:00+03:30",
             payload_digest=payload_digest or "a" * 64,
@@ -88,7 +89,7 @@ class FulfillmentEventTests(unittest.TestCase):
         ))
         client = TestClient(app)
         body = {
-            "provider_event_id": "DEMO-HTTP-EVENT", "order_ref": self.order,
+            "provider_event_id": self.prefix + "HTTP-EVENT", "order_ref": self.order,
             "assignment_ref": self.assignment, "event_code": "custom.code",
             "occurred_at": "2026-10-20T10:00:00Z", "payload_digest": "b" * 64,
         }

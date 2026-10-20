@@ -1014,7 +1014,15 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
             raise StageObservationConflict("current household input changed")
         return context
 
-    def _stage_observation_read_view(self, db, ref, record, context) -> dict:
+    def _stage_observation_read_view(
+        self, db, ref, record, context, *, limit: int | None = None,
+        after_revision: int = 0, snapshot_revision: int | None = None,
+    ) -> dict:
+        if (limit is not None and (type(limit) is not int or not 1 <= limit <= 50)
+                or type(after_revision) is not int or after_revision < 0
+                or snapshot_revision is not None
+                   and (type(snapshot_revision) is not int or snapshot_revision < 0)):
+            raise ValueError("invalid stage observation page")
         rows = db.execute(
             "SELECT action_id,case_version,input_revision,input_snapshot_digest,"
             "plan_digest,stage_ref,requirements_digest,observed_at,artifact_digest,"
@@ -1088,6 +1096,14 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                         latest is not None and latest["receipt_inspected"]
                     ),
                 })
+        current_revision = rows[-1][9] if rows else 0
+        snapshot = current_revision if snapshot_revision is None else snapshot_revision
+        if snapshot > current_revision or after_revision > snapshot:
+            raise ValueError("stage observation page is outside the available snapshot")
+        page_rows = [item for item in items
+                     if after_revision < item["revision"] <= snapshot]
+        has_more = limit is not None and len(page_rows) > limit
+        page_items = page_rows[:limit] if limit is not None else page_rows
         return {
             "engine": "DOMESTIC", "ref": ref,
             "case_version": record.version,
@@ -1103,8 +1119,13 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                         item.observation_requirements_digest,
                 } for item in context.requirements],
             } if context else None),
-            "current_revision": rows[-1][9] if rows else 0,
-            "observations": items,
+            "current_revision": current_revision,
+            "snapshot_revision": snapshot,
+            "limit": limit,
+            "after_revision": after_revision,
+            "observations": page_items,
+            "has_more": has_more,
+            "next_after_revision": page_items[-1]["revision"] if has_more else None,
             "stage_progress": stage_progress,
             "real_data": False,
             "scientific_review_approved": False,
@@ -1114,7 +1135,14 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
     def read_owned_stage_observations(
         self, ref: str, principal: Principal, *,
         context_authority: Callable[[str], CurrentStageContext | None],
+        limit: int | None = None, after_revision: int = 0,
+        snapshot_revision: int | None = None,
     ) -> dict | None:
+        if (limit is not None and (type(limit) is not int or not 1 <= limit <= 50)
+                or type(after_revision) is not int or after_revision < 0
+                or snapshot_revision is not None
+                   and (type(snapshot_revision) is not int or snapshot_revision < 0)):
+            raise ValueError("invalid stage observation page")
         if not self._owner(ref, principal):
             return None
         provided_context = self._read_stage_context(ref, context_authority)
@@ -1124,7 +1152,11 @@ class SqliteSyntheticHouseholdProfileLedger(SqliteSyntheticExpertQuestionLedger)
                 return None
             record = self._catalogue[("DOMESTIC", ref)]
             context = self._resolve_stage_context(db, ref, provided_context)
-            result = self._stage_observation_read_view(db, ref, record, context)
+            result = self._stage_observation_read_view(
+                db, ref, record, context, limit=limit,
+                after_revision=after_revision,
+                snapshot_revision=snapshot_revision,
+            )
             self._append(
                 db, kind="READ_ALLOWED", engine="DOMESTIC", ref=ref,
                 actor=principal.subject, mode="HOUSEHOLD_STAGE_OBSERVATIONS",

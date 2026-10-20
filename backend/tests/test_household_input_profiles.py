@@ -19,7 +19,9 @@ from fastapi.testclient import TestClient
 
 from ronas_api.app import create_app
 from ronas_api.auth import Principal
-from ronas_api.domestic_stage_observation import CurrentStageContext, StageRequirement
+from ronas_api.domestic_stage_observation import (
+    CurrentStageContext, StageObservationCommand, StageRequirement,
+)
 from ronas_api.household_input_profiles import (
     HouseholdInputField, HouseholdInputSchema,
     SqliteSyntheticHouseholdProfileLedger,
@@ -815,6 +817,65 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertTrue(self.ledger.verify_integrity())
         self.ledger = self.reopen()
         self.assertTrue(self.ledger.verify_integrity())
+
+    def test_stage_observation_pages_preserve_snapshot_and_current_stage_state(self):
+        self.assertEqual(self.client.post(
+            ROOT, json=self.command(), headers=self.bearer(),
+        ).status_code, 201)
+        principal = Principal(OWNER, frozenset({"household"}))
+        for revision in range(3):
+            command = self.stage_command(
+                action=f"DEMO-STAGE-PAGE-{revision + 1}", revision=revision,
+            )
+            command["observation_artifact_digest"] = str(revision + 1) * 64
+            command.pop("expected_observation_revision")
+            self.ledger.append_owned_stage_observation(
+                REF, principal, StageObservationCommand(**command),
+                expected_observation_revision=revision,
+                context_authority=self.stage_context,
+            )
+        first = self.ledger.read_owned_stage_observations(
+            REF, principal, context_authority=self.stage_context, limit=2,
+        )
+        self.assertEqual([x["revision"] for x in first["observations"]], [1, 2])
+        self.assertTrue(first["has_more"])
+        self.assertEqual(first["next_after_revision"], 2)
+        self.assertEqual(first["snapshot_revision"], 3)
+        next_page = self.ledger.read_owned_stage_observations(
+            REF, principal, context_authority=self.stage_context, limit=2,
+            after_revision=first["next_after_revision"],
+            snapshot_revision=first["snapshot_revision"],
+        )
+        self.assertEqual([x["revision"] for x in next_page["observations"]], [3])
+        self.assertFalse(next_page["has_more"])
+        self.assertEqual(next_page["stage_progress"][0]["observation_revision"], 3)
+
+        api_path = ROOT.replace("/cultivation-inputs", "/stage-observations")
+        api_first = self.client.get(api_path + "?limit=2", headers=self.bearer())
+        self.assertEqual(api_first.status_code, 200, api_first.text)
+        self.assertEqual(
+            [item["revision"] for item in api_first.json()["observations"]], [1, 2],
+        )
+        self.assertTrue(api_first.json()["has_more"])
+
+        self.browser_session()
+        page_path = PAGE.replace("/cultivation-inputs", "/stage-observations")
+        browser_first = self.client.get(page_path + "?limit=2")
+        self.assertEqual(browser_first.status_code, 200, browser_first.text)
+        self.assertIn("after_revision=2", browser_first.text)
+        self.assertIn("snapshot_revision=3", browser_first.text)
+        self.assertNotIn("3" * 64, browser_first.text)
+        browser_next = self.client.get(
+            page_path + "?limit=2&after_revision=2&snapshot_revision=3",
+        )
+        self.assertEqual(browser_next.status_code, 200, browser_next.text)
+        self.assertIn("3" * 64, browser_next.text)
+
+        with self.assertRaises(ValueError):
+            self.ledger.read_owned_stage_observations(
+                REF, principal, context_authority=self.stage_context,
+                after_revision=4, snapshot_revision=3,
+            )
 
     def test_stage_observation_ui_uses_current_context_and_marks_old_receipts(self):
         self.assertEqual(self.client.post(

@@ -370,17 +370,26 @@ def build_household_input_router(
                 "/api/v1/domestic/household-intake/my-drafts/{ref}/stage-observations",
             )
             def read_stage_observations(
-                ref: str, p: Principal = Depends(verified_principal),
+                ref: str, limit: int = Query(default=20, ge=1, le=50),
+                after_revision: int = Query(default=0, ge=0),
+                snapshot_revision: int | None = Query(default=None, ge=0),
+                p: Principal = Depends(verified_principal),
             ) -> dict:
                 if not profile_allowed(p, ref):
                     raise HTTPException(403, detail="HOUSEHOLD_PROFILE_ACCESS_DENIED")
                 try:
                     result = profile_ledger.read_owned_stage_observations(
                         ref, p, context_authority=stage_context_authority,
+                        limit=limit, after_revision=after_revision,
+                        snapshot_revision=snapshot_revision,
                     )
                 except StageObservationConflict as exc:
                     raise HTTPException(
                         409, detail="STAGE_OBSERVATION_CONTEXT_CHANGED",
+                    ) from exc
+                except ValueError as exc:
+                    raise HTTPException(
+                        422, detail="INVALID_STAGE_OBSERVATION_PAGE",
                     ) from exc
                 except (LedgerIntegrityError, sqlite3.Error) as exc:
                     raise HTTPException(

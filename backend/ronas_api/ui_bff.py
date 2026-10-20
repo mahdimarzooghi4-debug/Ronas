@@ -2605,7 +2605,10 @@ def build_authenticated_ui_router(
                     response_class=HTMLResponse,
                 )
                 def household_stage_observations_page(
-                    ref: str, corrects_revision: int = 0,
+                    ref: str, corrects_revision: int = Query(default=0, ge=0),
+                    limit: int = Query(default=20, ge=1, le=50),
+                    after_revision: int = Query(default=0, ge=0),
+                    snapshot_revision: int | None = Query(default=None, ge=0),
                     sid: str | None = Cookie(default=None, alias=cookie_name),
                 ) -> HTMLResponse:
                     try:
@@ -2627,9 +2630,15 @@ def build_authenticated_ui_router(
                         result = household_input_ledger.read_owned_stage_observations(
                             ref, principal,
                             context_authority=household_stage_context_authority,
+                            limit=limit, after_revision=after_revision,
+                            snapshot_revision=snapshot_revision,
                         )
                     except StageObservationConflict:
                         return stale_household_command_page(ref, "stage-observations")
+                    except ValueError as exc:
+                        raise HTTPException(
+                            422, detail="INVALID_STAGE_OBSERVATION_PAGE",
+                        ) from exc
                     except (LedgerIntegrityError, sqlite3.Error) as exc:
                         raise HTTPException(
                             503, detail="STAGE_OBSERVATIONS_UNAVAILABLE",
@@ -2759,7 +2768,11 @@ def build_authenticated_ui_router(
                         + ('' if item["is_superseded"] or not item["current"] else
                            ' · <a href="/my-drafts/' + quote(ref)
                            + '/stage-observations?corrects_revision='
-                           + str(item["revision"]) + '">اصلاح رسید</a>')
+                           + str(item["revision"])
+                           + '&amp;limit=' + str(limit)
+                           + '&amp;after_revision=' + str(after_revision)
+                           + '&amp;snapshot_revision=' + str(result["snapshot_revision"])
+                           + '">اصلاح رسید</a>')
                         + '</li>'
                         for item in result["observations"]
                     )
@@ -2776,7 +2789,18 @@ def build_authenticated_ui_router(
                            + stage_progress_html + '</ul>')
                         + ''.join(forms)
                         + ('<ol>' + history + '</ol>' if history else
-                           '<p>رسیدی ثبت نشده است.</p>')
+                           '<p>رسیدی در این صفحه از تاریخچه نیست.</p>')
+                        + ('<p><a href="/my-drafts/' + quote(ref)
+                           + '/stage-observations?limit=' + str(limit)
+                           + '&amp;after_revision=' + str(result["next_after_revision"])
+                           + '&amp;snapshot_revision=' + str(result["snapshot_revision"])
+                           + '">رسیدهای بعدی ←</a></p>' if result["has_more"] else '')
+                        + ('<p><a href="/my-drafts/' + quote(ref)
+                           + '/stage-observations?limit=' + str(limit)
+                           + '&amp;after_revision=0&amp;snapshot_revision='
+                           + str(result["snapshot_revision"])
+                           + '">بازگشت به ابتدای همین تاریخچه</a></p>'
+                           if after_revision else '')
                         + '<p>با اصلاح پرونده یا تغییر طرح، رسیدهای قبلی حفظ می‌شوند '
                         'و به‌عنوان رسید جاری نمایش داده نخواهند شد.</p>'
                         + '<p><a href="/my-drafts/' + quote(ref)

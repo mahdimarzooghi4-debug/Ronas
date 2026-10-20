@@ -50,6 +50,9 @@ from .domestic_surplus_producer_consent import (
 )
 from .request_body_limits import HouseholdProfileBodyLimitMiddleware
 from .postgres_household_progress_notes import PostgresHouseholdProgressNoteLedger
+from .fulfillment_events import (
+    PostgresFulfillmentEventLedger, build_fulfillment_event_router,
+)
 
 DOMESTIC_EXAMPLE = {
     "engine": "DOMESTIC", "ref": "DEMO-H01", "status": "DEMO_EVIDENCE_REQUIRED",
@@ -81,7 +84,12 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                household_surplus_producer_consent_ledger: ProducerConsentLedger | None = None,
                household_progress_note_ledger: PostgresHouseholdProgressNoteLedger | None = None,
                export_source_connectors: ExportSourceConnectorRegistry | None = None,
-               export_research_finding_ledger: PostgresExportResearchFindingLedger | None = None) -> FastAPI:
+               export_research_finding_ledger: PostgresExportResearchFindingLedger | None = None,
+               fulfillment_event_ledger: PostgresFulfillmentEventLedger | None = None) -> FastAPI:
+    if fulfillment_event_ledger is not None and (
+            not isinstance(fulfillment_event_ledger, PostgresFulfillmentEventLedger)
+            or not isinstance(config, KeycloakConfig)):
+        raise ValueError("fulfillment event API requires Keycloak and the PostgreSQL event ledger")
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
             or not isinstance(config, KeycloakConfig)
@@ -429,6 +437,12 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             require_role(p, name)
             return p
         return dependency
+
+    if fulfillment_event_ledger is not None:
+        # Provider APIs are machine-to-machine routes; intentionally no UI is mounted.
+        app.include_router(build_fulfillment_event_router(
+            fulfillment_event_ledger, principal,
+        ))
 
     @app.get("/healthz")
     def health() -> dict[str, str]:

@@ -16,6 +16,7 @@ from fastapi import HTTPException, status
 ALL_ROLES = frozenset({
     "household", "local_buyer", "agronomy_expert", "equipment_seller",
     "export_supplier", "domestic_ops", "export_ops", "finance", "governance",
+    "courier", "local_hub",
 })
 
 

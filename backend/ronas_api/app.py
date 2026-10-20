@@ -85,11 +85,19 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
                household_progress_note_ledger: PostgresHouseholdProgressNoteLedger | None = None,
                export_source_connectors: ExportSourceConnectorRegistry | None = None,
                export_research_finding_ledger: PostgresExportResearchFindingLedger | None = None,
-               fulfillment_event_ledger: PostgresFulfillmentEventLedger | None = None) -> FastAPI:
+               fulfillment_event_ledger: PostgresFulfillmentEventLedger | None = None,
+               fulfillment_household_order_access_authority=None) -> FastAPI:
     if fulfillment_event_ledger is not None and (
             not isinstance(fulfillment_event_ledger, PostgresFulfillmentEventLedger)
             or not isinstance(config, KeycloakConfig)):
         raise ValueError("fulfillment event API requires Keycloak and the PostgreSQL event ledger")
+    if fulfillment_household_order_access_authority is not None and (
+            fulfillment_event_ledger is None
+            or not callable(fulfillment_household_order_access_authority)
+            or not isinstance(config, KeycloakConfig)):
+        raise ValueError(
+            "household fulfillment tracking requires Keycloak, the event ledger, and live order authority"
+        )
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
             or not isinstance(config, KeycloakConfig)
@@ -442,6 +450,7 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
         # Provider APIs are machine-to-machine routes; intentionally no UI is mounted.
         app.include_router(build_fulfillment_event_router(
             fulfillment_event_ledger, principal,
+            household_order_access_authority=fulfillment_household_order_access_authority,
         ))
 
     @app.get("/healthz")

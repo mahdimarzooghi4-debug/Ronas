@@ -25,6 +25,7 @@ class FulfillmentEventTests(unittest.TestCase):
         self.assignment = "DEMO-ASSIGN-" + suffix
         self.courier = Principal("synthetic-courier", frozenset({"courier"}))
         self.hub = Principal("synthetic-hub", frozenset({"local_hub"}))
+        self.household = Principal("synthetic-household", frozenset({"household"}))
         self.active = {("courier", self.order): self.assignment}
         self.ledger = PostgresFulfillmentEventLedger(
             DSN,
@@ -98,6 +99,9 @@ class FulfillmentEventTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         response = client.post(url.replace(self.order, "DEMO-OTHER"), json=body)
         self.assertEqual(response.status_code, 422)
+        prose = {**body, "provider_event_id": self.prefix + "PROSE",
+                 "event_code": "Delivered to a person at this address"}
+        self.assertEqual(client.post(url, json=prose).status_code, 422)
         response = client.post(url, json=body)
         self.assertEqual(response.status_code, 201, response.text)
         replay = client.post(url, json=body)
@@ -107,6 +111,40 @@ class FulfillmentEventTests(unittest.TestCase):
         self.assertEqual(history.json()["events"][0]["event_code"], "custom.code")
         self.assertFalse(history.json()["has_more"])
         self.assertEqual(client.get(url + "?limit=101").status_code, 422)
+
+    def test_household_tracking_is_owner_scoped_and_redacts_provider_internals(self):
+        self.ledger.append(
+            "courier", self.courier,
+            self.event("HOUSEHOLD-TRACK", code="external.in_transit"),
+        )
+        app = FastAPI()
+        app.include_router(build_fulfillment_event_router(
+            self.ledger, lambda: self.courier,
+            household_order_access_authority=lambda principal, order_ref:
+                principal.subject == "synthetic-household" and order_ref == self.order,
+        ))
+        client = TestClient(app)
+        url = (
+            f"/api/v1/domestic/fulfillment/household-orders/{self.order}"
+            "/providers/courier/events"
+        )
+        response = client.get(url)
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["events"][0]["provider_event_code"], "external.in_transit")
+        self.assertEqual(body["events"][0]["meaning"], "PROVIDER_ASSERTION_ONLY")
+        for private_field in (
+            "assignment_ref", "provider_event_id", "payload_digest", "event_digest",
+        ):
+            self.assertNotIn(private_field, response.text)
+
+        other_app = FastAPI()
+        other_app.include_router(build_fulfillment_event_router(
+            self.ledger, lambda: self.household,
+            household_order_access_authority=lambda _principal, _order_ref: False,
+        ))
+        denied = TestClient(other_app).get(url)
+        self.assertEqual(denied.status_code, 404)
 
     def test_event_pages_keep_a_stable_snapshot_and_verify_page_linkage(self):
         for n in range(1, 5):

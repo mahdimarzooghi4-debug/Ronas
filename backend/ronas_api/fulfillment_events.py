@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import psycopg
@@ -36,6 +37,32 @@ class FulfillmentEventConflict(FulfillmentEventError):
 
 class FulfillmentEventUnavailable(FulfillmentEventError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class HouseholdOrderReferencePage:
+    """Bounded, stable page of opaque order references from the order source."""
+
+    order_refs: tuple[str, ...]
+    next_cursor: str | None
+    snapshot_ref: str
+    has_more: bool
+    limit: int
+
+    def __post_init__(self):
+        if (type(self.order_refs) is not tuple
+                or type(self.limit) is not int or not 1 <= self.limit <= 100
+                or len(self.order_refs) > self.limit
+                or any(not isinstance(ref, str) or not _ID.fullmatch(ref)
+                       for ref in self.order_refs)
+                or len(set(self.order_refs)) != len(self.order_refs)
+                or not isinstance(self.snapshot_ref, str)
+                or not _ID.fullmatch(self.snapshot_ref)
+                or type(self.has_more) is not bool
+                or (self.has_more and (not isinstance(self.next_cursor, str)
+                                       or not _ID.fullmatch(self.next_cursor)))
+                or (not self.has_more and self.next_cursor is not None)):
+            raise ValueError("invalid household order reference page")
 
 
 class FulfillmentEventInput(BaseModel):
@@ -321,10 +348,83 @@ class PostgresFulfillmentEventLedger:
         }
 
 
+def read_household_order_reference_page(
+    principal: Principal, listing_authority, order_access_authority, *,
+    after_ref: str | None = None, snapshot_ref: str | None = None,
+    limit: int = 20,
+) -> HouseholdOrderReferencePage:
+    """List references only; live per-order access is rechecked before return."""
+    if "household" not in principal.roles:
+        raise PermissionError("household role required")
+    if (not callable(listing_authority) or not callable(order_access_authority)
+            or type(limit) is not int or not 1 <= limit <= 100
+            or after_ref is not None and (
+                not isinstance(after_ref, str) or not _ID.fullmatch(after_ref)
+                or snapshot_ref is None
+            )
+            or snapshot_ref is not None and (
+                not isinstance(snapshot_ref, str) or not _ID.fullmatch(snapshot_ref)
+            )):
+        raise ValueError("invalid household order page request")
+    try:
+        page = listing_authority(
+            principal, after_ref=after_ref, snapshot_ref=snapshot_ref, limit=limit,
+        )
+    except Exception as exc:
+        raise FulfillmentEventUnavailable from exc
+    if (not isinstance(page, HouseholdOrderReferencePage)
+            or page.limit != limit
+            or snapshot_ref is not None and page.snapshot_ref != snapshot_ref):
+        raise FulfillmentEventUnavailable
+    visible: list[str] = []
+    for order_ref in page.order_refs:
+        try:
+            if order_access_authority(principal, order_ref) is True:
+                visible.append(order_ref)
+        except Exception as exc:
+            raise FulfillmentEventUnavailable from exc
+    return HouseholdOrderReferencePage(
+        tuple(visible), page.next_cursor, page.snapshot_ref,
+        page.has_more, page.limit,
+    )
+
+
 def build_fulfillment_event_router(ledger: PostgresFulfillmentEventLedger,
                                    principal_dependency,
-                                   household_order_access_authority=None) -> APIRouter:
+                                   household_order_access_authority=None,
+                                   household_order_listing_authority=None) -> APIRouter:
     router = APIRouter(prefix="/api/v1/domestic/fulfillment", tags=["fulfillment-api"])
+
+    @router.get("/household-orders")
+    def list_household_orders(
+        limit: int = Query(default=20, ge=1, le=100),
+        after_ref: str | None = Query(default=None, max_length=128),
+        snapshot_ref: str | None = Query(default=None, max_length=128),
+        principal: Principal = Depends(principal_dependency),
+    ):
+        if (not callable(household_order_access_authority)
+                or not callable(household_order_listing_authority)):
+            raise HTTPException(503, "HOUSEHOLD_ORDER_SOURCE_UNAVAILABLE")
+        try:
+            result = read_household_order_reference_page(
+                principal, household_order_listing_authority,
+                household_order_access_authority, after_ref=after_ref,
+                snapshot_ref=snapshot_ref, limit=limit,
+            )
+            return {
+                "contract_version": "ronas.domestic.fulfillment.household-order-page.v1",
+                "order_refs": list(result.order_refs),
+                "next_cursor": result.next_cursor,
+                "snapshot_ref": result.snapshot_ref,
+                "has_more": result.has_more,
+                "limit": result.limit,
+            }
+        except PermissionError:
+            raise HTTPException(403, "HOUSEHOLD_ROLE_REQUIRED") from None
+        except ValueError:
+            raise HTTPException(422, "INVALID_HOUSEHOLD_ORDER_PAGE") from None
+        except FulfillmentEventUnavailable:
+            raise HTTPException(503, "HOUSEHOLD_ORDER_SOURCE_UNAVAILABLE") from None
 
     @router.post("/{provider}/orders/{order_ref}/events", status_code=201)
     def append_event(provider: str, order_ref: str, body: FulfillmentEventInput,

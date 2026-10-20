@@ -47,6 +47,7 @@ from .oidc_browser import BrowserOIDC
 from .postgres_household_progress_notes import PostgresHouseholdProgressNoteLedger
 from .fulfillment_events import (
     FulfillmentEventUnavailable, PostgresFulfillmentEventLedger,
+    read_household_order_reference_page,
 )
 from .financial_source_arithmetic import source_arithmetic
 from .operational_readiness import readiness, verify_decision_sources
@@ -378,6 +379,7 @@ def build_authenticated_ui_router(
     household_progress_note_ledger: PostgresHouseholdProgressNoteLedger | None = None,
     fulfillment_event_ledger: PostgresFulfillmentEventLedger | None = None,
     fulfillment_household_order_access_authority=None,
+    fulfillment_household_order_listing_authority=None,
 ) -> APIRouter:
     if (fulfillment_event_ledger is not None
             and (not callable(getattr(fulfillment_event_ledger,
@@ -389,6 +391,11 @@ def build_authenticated_ui_router(
     if (fulfillment_event_ledger is None
             and fulfillment_household_order_access_authority is not None):
         raise ValueError("household order authority requires fulfillment event ledger")
+    if (fulfillment_household_order_listing_authority is not None
+            and (fulfillment_event_ledger is None
+                 or not callable(fulfillment_household_order_listing_authority)
+                 or not callable(fulfillment_household_order_access_authority))):
+        raise ValueError("household order list requires its live listing and access authorities")
     if export_source_connectors is not None and (
             not isinstance(export_source_connectors, ExportSourceConnectorRegistry)
             or technical_review_ledger is None):
@@ -1817,6 +1824,10 @@ def build_authenticated_ui_router(
                       + ('<p><a href="/my-fulfillment">پیگیری رویدادهای سفارش</a></p>'
                          if name == "household" and fulfillment_event_ledger is not None
                          else '')
+                      + ('<p><a href="/my-orders">فهرست سفارش‌های من</a></p>'
+                         if name == "household"
+                         and fulfillment_household_order_listing_authority is not None
+                         else '')
                       + household + '</article>')
         if not cards:
             cards = '<p>هیچ نمای کاربری بیرونی برای دسترسی‌های فعلی شما تخصیص نیافته است.</p>'
@@ -1900,6 +1911,57 @@ def build_authenticated_ui_router(
                 )
             body += '<p><a href="/">بازگشت به فضای کاربران</a></p></article>'
             return page("روناس — پیگیری رویدادهای سفارش", body, logged_in=True)
+
+    if fulfillment_household_order_listing_authority is not None:
+        @router.get("/my-orders")
+        def household_orders_page(
+            limit: int = Query(default=20, ge=1, le=100),
+            after_ref: str | None = Query(default=None, max_length=128),
+            snapshot_ref: str | None = Query(default=None, max_length=128),
+            sid: str | None = Cookie(default=None, alias=cookie_name),
+        ) -> HTMLResponse:
+            try:
+                session = flow.session(sid)
+            except InvalidToken:
+                raise HTTPException(401, detail="INVALID_SESSION") from None
+            principal = Principal(session.subject, session.roles)
+            if "household" not in principal.roles:
+                raise HTTPException(403, detail="HOUSEHOLD_ROLE_REQUIRED")
+            try:
+                result = read_household_order_reference_page(
+                    principal, fulfillment_household_order_listing_authority,
+                    fulfillment_household_order_access_authority,
+                    after_ref=after_ref, snapshot_ref=snapshot_ref, limit=limit,
+                )
+            except PermissionError:
+                raise HTTPException(403, detail="HOUSEHOLD_ROLE_REQUIRED") from None
+            except ValueError:
+                raise HTTPException(422, detail="INVALID_HOUSEHOLD_ORDER_PAGE") from None
+            except FulfillmentEventUnavailable:
+                raise HTTPException(503, detail="HOUSEHOLD_ORDER_SOURCE_UNAVAILABLE") from None
+            links = ''.join(
+                '<li><strong>' + escape(order_ref) + '</strong> · '
+                '<a href="/my-fulfillment?order_ref=' + quote(order_ref)
+                + '&amp;provider=courier">رویدادهای پیک</a> · '
+                '<a href="/my-fulfillment?order_ref=' + quote(order_ref)
+                + '&amp;provider=local-hub">رویدادهای هاب محلی</a></li>'
+                for order_ref in result.order_refs
+            )
+            body = (
+                '<article class="panel"><h2>سفارش‌های من</h2>'
+                '<p>فهرست از منبع سفارش دریافت شده و دسترسی جاری هر مورد '
+                'پیش از نمایش دوباره کنترل می‌شود. رویدادهای پیک و هاب فقط '
+                'گزارش همان منبع‌اند و به‌تنهایی اثبات تحویل نیستند.</p>'
+                + ('<ul>' + links + '</ul>' if links else
+                   '<p>سفارشی در این صفحه برای حساب شما قابل نمایش نیست.</p>')
+                + ('<p><a href="/my-orders?limit=' + str(result.limit)
+                   + '&amp;after_ref=' + quote(result.next_cursor)
+                   + '&amp;snapshot_ref=' + quote(result.snapshot_ref)
+                   + '">سفارش‌های بعدی در همین snapshot</a></p>'
+                   if result.has_more else '')
+                + '<p><a href="/">بازگشت به فضای کاربران</a></p></article>'
+            )
+            return page("روناس — سفارش‌های من", body, logged_in=True)
 
     if owned_case_ledger is not None:
         @router.get("/my-drafts/{ref}/versions")

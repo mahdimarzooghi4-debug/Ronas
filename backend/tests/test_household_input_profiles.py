@@ -828,6 +828,7 @@ class HouseholdProfileFlowTests(unittest.TestCase):
                 action=f"DEMO-STAGE-PAGE-{revision + 1}", revision=revision,
             )
             command["observation_artifact_digest"] = str(revision + 1) * 64
+            command.pop("expected_observation_revision")
             self.ledger.append_owned_stage_observation(
                 REF, principal, StageObservationCommand(**command),
                 expected_observation_revision=revision,

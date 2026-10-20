@@ -849,6 +849,28 @@ class HouseholdProfileFlowTests(unittest.TestCase):
         self.assertEqual([x["revision"] for x in next_page["observations"]], [3])
         self.assertFalse(next_page["has_more"])
         self.assertEqual(next_page["stage_progress"][0]["observation_revision"], 3)
+
+        api_path = ROOT.replace("/cultivation-inputs", "/stage-observations")
+        api_first = self.client.get(api_path + "?limit=2", headers=self.bearer())
+        self.assertEqual(api_first.status_code, 200, api_first.text)
+        self.assertEqual(
+            [item["revision"] for item in api_first.json()["observations"]], [1, 2],
+        )
+        self.assertTrue(api_first.json()["has_more"])
+
+        self.browser_session()
+        page_path = PAGE.replace("/cultivation-inputs", "/stage-observations")
+        browser_first = self.client.get(page_path + "?limit=2")
+        self.assertEqual(browser_first.status_code, 200, browser_first.text)
+        self.assertIn("after_revision=2", browser_first.text)
+        self.assertIn("snapshot_revision=3", browser_first.text)
+        self.assertNotIn("3" * 64, browser_first.text)
+        browser_next = self.client.get(
+            page_path + "?limit=2&after_revision=2&snapshot_revision=3",
+        )
+        self.assertEqual(browser_next.status_code, 200, browser_next.text)
+        self.assertIn("3" * 64, browser_next.text)
+
         with self.assertRaises(ValueError):
             self.ledger.read_owned_stage_observations(
                 REF, principal, context_authority=self.stage_context,

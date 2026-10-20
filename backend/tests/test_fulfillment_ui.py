@@ -6,10 +6,13 @@ import unittest
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
+from unittest.mock import patch
 
 from ronas_api.auth import Principal
+from ronas_api.app import create_app
+from ronas_api.fulfillment_events import PostgresFulfillmentEventLedger
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.ui_bff import build_authenticated_ui_router
@@ -138,6 +141,32 @@ class FulfillmentUserPageTests(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 422)
         self.assertEqual(self.ledger.calls, [])
+
+    def test_provider_api_alone_does_not_mount_household_tracking_page(self):
+        # Route composition is tested without opening a PostgreSQL connection.
+        ledger = object.__new__(PostgresFulfillmentEventLedger)
+        with patch("ronas_api.app.build_authenticated_ui_router",
+                   return_value=APIRouter()) as ui_builder:
+            create_app(self.config, self.flow, fulfillment_event_ledger=ledger)
+        self.assertIsNone(ui_builder.call_args.kwargs["fulfillment_event_ledger"])
+        self.assertIsNone(
+            ui_builder.call_args.kwargs["fulfillment_household_order_access_authority"]
+        )
+
+    def test_household_tracking_mounts_only_with_live_order_authority(self):
+        ledger = object.__new__(PostgresFulfillmentEventLedger)
+        authority = lambda principal, order_ref: True
+        with patch("ronas_api.app.build_authenticated_ui_router",
+                   return_value=APIRouter()) as ui_builder:
+            create_app(
+                self.config, self.flow, fulfillment_event_ledger=ledger,
+                fulfillment_household_order_access_authority=authority,
+            )
+        self.assertIs(ui_builder.call_args.kwargs["fulfillment_event_ledger"], ledger)
+        self.assertIs(
+            ui_builder.call_args.kwargs["fulfillment_household_order_access_authority"],
+            authority,
+        )
 
 
 if __name__ == "__main__":

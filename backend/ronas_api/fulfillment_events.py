@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import psycopg
 from psycopg.rows import dict_row
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .auth import Principal
@@ -206,43 +206,72 @@ class PostgresFulfillmentEventLedger:
         except psycopg.Error as exc:
             raise FulfillmentEventUnavailable from exc
 
-    def read(self, provider: str, principal: Principal, order_ref: str) -> dict:
+    def read(self, provider: str, principal: Principal, order_ref: str, *,
+             limit: int = 20, after_sequence: int = 0,
+             snapshot_sequence: int | None = None) -> dict:
         if provider not in _PROVIDERS or _PROVIDERS[provider] not in principal.roles:
             raise PermissionError("provider role required")
         if not _ID.fullmatch(order_ref):
             raise ValueError("invalid order reference")
-        # Resolve the currently assigned provider on every read; caller must supply
-        # assignment reference via authority lookup without exposing order payloads.
+        if (type(limit) is not int or not 1 <= limit <= 100
+                or type(after_sequence) is not int or after_sequence < 0
+                or snapshot_sequence is not None
+                   and (type(snapshot_sequence) is not int or snapshot_sequence < 0)):
+            raise ValueError("invalid fulfillment event page")
         try:
             with self._connect() as db:
+                head = db.execute("""SELECT COALESCE(MAX(sequence), 0) AS sequence
+                    FROM ronas_domestic_fulfillment_event
+                    WHERE order_ref=%s AND provider=%s""",
+                    (order_ref, provider)).fetchone()["sequence"]
+                snapshot = head if snapshot_sequence is None else snapshot_sequence
+                if snapshot > head or after_sequence > snapshot:
+                    raise ValueError("invalid fulfillment event snapshot")
+                previous = "0" * 64
+                if after_sequence:
+                    predecessor = db.execute("""SELECT * FROM ronas_domestic_fulfillment_event
+                        WHERE order_ref=%s AND provider=%s AND sequence=%s""",
+                        (order_ref, provider, after_sequence)).fetchone()
+                    if predecessor is None:
+                        raise ValueError("invalid fulfillment event cursor")
+                    if not self._authorized(
+                            principal, provider, order_ref, predecessor["assignment_ref"]):
+                        raise PermissionError("current assignment is not authorized")
+                    previous = predecessor["event_digest"]
                 rows = list(db.execute("""SELECT * FROM ronas_domestic_fulfillment_event
-                    WHERE order_ref=%s AND provider=%s ORDER BY sequence""",
-                    (order_ref, provider)))
+                    WHERE order_ref=%s AND provider=%s AND sequence>%s AND sequence<=%s
+                    ORDER BY sequence LIMIT %s""",
+                    (order_ref, provider, after_sequence, snapshot, limit + 1)))
+        except (FulfillmentEventUnavailable, PermissionError, ValueError):
+            raise
         except psycopg.Error as exc:
             raise FulfillmentEventUnavailable from exc
-        if not rows:
-            return {"order_ref": order_ref, "provider": provider, "events": []}
-        # Authority is evaluated against each recorded assignment, so a revoked or
-        # reassigned provider cannot use a stale event stream.
-        if any(not self._authorized(principal, provider, order_ref, row["assignment_ref"])
-               for row in rows):
-            raise PermissionError("current assignment is not authorized")
-        previous = "0" * 64
+
+        has_more = len(rows) > limit
+        page = rows[:limit]
         views = []
-        for expected_sequence, row in enumerate(rows, 1):
+        for offset, row in enumerate(page, 1):
+            expected_sequence = after_sequence + offset
             if row["sequence"] != expected_sequence or row["previous_digest"] != previous:
                 raise FulfillmentEventUnavailable
-            view = self._view(row, replay=False)
-            # Verify chain integrity without storing private payload content.
             canonical = _canonical_row(provider, row)
             actual = hashlib.sha256(
                 bytes.fromhex(previous) + expected_sequence.to_bytes(8, "big") + canonical
             ).hexdigest()
             if not hmac.compare_digest(actual, row["event_digest"]):
                 raise FulfillmentEventUnavailable
+            if not self._authorized(
+                    principal, provider, order_ref, row["assignment_ref"]):
+                raise PermissionError("current assignment is not authorized")
             previous = actual
-            views.append(view)
-        return {"order_ref": order_ref, "provider": provider, "events": views}
+            views.append(self._view(row, replay=False))
+        next_after = page[-1]["sequence"] if page and has_more else None
+        return {
+            "order_ref": order_ref, "provider": provider, "events": views,
+            "limit": limit, "after_sequence": after_sequence,
+            "snapshot_sequence": snapshot, "has_more": has_more,
+            "next_after_sequence": next_after,
+        }
 
     @staticmethod
     def _view(row, *, replay: bool) -> dict:
@@ -280,13 +309,20 @@ def build_fulfillment_event_router(ledger: PostgresFulfillmentEventLedger,
 
     @router.get("/{provider}/orders/{order_ref}/events")
     def read_events(provider: str, order_ref: str,
+                    limit: int = Query(default=20, ge=1, le=100),
+                    after_sequence: int = Query(default=0, ge=0),
+                    snapshot_sequence: int | None = Query(default=None, ge=0),
                     principal: Principal = Depends(principal_dependency)):
         try:
-            return ledger.read(provider, principal, order_ref)
+            return ledger.read(
+                provider, principal, order_ref, limit=limit,
+                after_sequence=after_sequence,
+                snapshot_sequence=snapshot_sequence,
+            )
         except PermissionError:
             raise HTTPException(403, "FULFILLMENT_ASSIGNMENT_FORBIDDEN") from None
         except ValueError:
-            raise HTTPException(422, "INVALID_ORDER_REFERENCE") from None
+            raise HTTPException(422, "INVALID_FULFILLMENT_EVENT_PAGE") from None
         except FulfillmentEventUnavailable:
             raise HTTPException(503, "FULFILLMENT_EVENT_LEDGER_UNAVAILABLE") from None
 

@@ -12,7 +12,11 @@ from unittest.mock import patch
 
 from ronas_api.auth import Principal
 from ronas_api.app import create_app
-from ronas_api.fulfillment_events import PostgresFulfillmentEventLedger
+from ronas_api.fulfillment_events import (
+    FulfillmentEventUnavailable, HouseholdOrderReferencePage,
+    PostgresFulfillmentEventLedger, build_fulfillment_event_router,
+    read_household_order_reference_page,
+)
 from ronas_api.keycloak import KeycloakConfig
 from ronas_api.oidc_browser import BrowserOIDC, BrowserOIDCConfig, BrowserSession
 from ronas_api.ui_bff import build_authenticated_ui_router
@@ -74,10 +78,20 @@ class FulfillmentUserPageTests(unittest.TestCase):
             self.store, no_exchange,
         )
         self.ledger = EventLedger()
+        self.order_list_calls = []
+
+        def list_orders(principal, *, after_ref, snapshot_ref, limit):
+            self.order_list_calls.append((principal, after_ref, snapshot_ref, limit))
+            return HouseholdOrderReferencePage(
+                ("ORDER-1", "ORDER-2"), "CURSOR-2", "SNAPSHOT-9", True, limit,
+            )
+
+        self.list_orders = list_orders
         app = FastAPI()
         app.include_router(build_authenticated_ui_router(
             self.flow,
             fulfillment_event_ledger=self.ledger,
+            fulfillment_household_order_listing_authority=self.list_orders,
             fulfillment_household_order_access_authority=lambda principal, ref: (
                 principal.subject == "owner-1" and ref == "ORDER-1"
             ),
@@ -102,6 +116,7 @@ class FulfillmentUserPageTests(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn('href="/my-fulfillment"', response.text)
+        self.assertIn('href="/my-orders"', response.text)
         self.assertNotIn("پیگیری رویدادهای سفارش", self.client.get("/admin").text)
 
     def test_tracking_page_shows_only_escaped_opaque_assertions_and_stable_cursor(self):
@@ -167,6 +182,85 @@ class FulfillmentUserPageTests(unittest.TestCase):
             ui_builder.call_args.kwargs["fulfillment_household_order_access_authority"],
             authority,
         )
+
+    def test_app_mounts_order_list_only_with_both_live_order_authorities(self):
+        ledger = object.__new__(PostgresFulfillmentEventLedger)
+        access = lambda principal, order_ref: True
+        listing = lambda principal, **page: HouseholdOrderReferencePage(
+            (), None, "SNAPSHOT-1", False, page["limit"],
+        )
+        with patch("ronas_api.app.build_authenticated_ui_router",
+                   return_value=APIRouter()) as ui_builder:
+            create_app(
+                self.config, self.flow, fulfillment_event_ledger=ledger,
+                fulfillment_household_order_access_authority=access,
+                fulfillment_household_order_listing_authority=listing,
+            )
+        self.assertIs(ui_builder.call_args.kwargs[
+            "fulfillment_household_order_listing_authority"], listing)
+        with self.assertRaises(ValueError):
+            create_app(
+                self.config, self.flow, fulfillment_event_ledger=ledger,
+                fulfillment_household_order_listing_authority=listing,
+            )
+
+    def test_order_list_rechecks_each_order_and_links_existing_tracking_page(self):
+        self.sign_in(["household"])
+        response = self.client.get("/my-orders", params={"limit": 10})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("ORDER-1", response.text)
+        self.assertNotIn("ORDER-2", response.text)
+        self.assertIn("/my-fulfillment?order_ref=ORDER-1&amp;provider=courier", response.text)
+        self.assertIn("provider=local-hub", response.text)
+        self.assertIn("snapshot_ref=SNAPSHOT-9", response.text)
+        self.assertEqual(len(self.order_list_calls), 1)
+        self.assertEqual(self.order_list_calls[0][1:], (None, None, 10))
+
+    def test_order_list_continues_with_source_cursor_and_same_snapshot(self):
+        self.sign_in(["household"])
+        response = self.client.get("/my-orders", params={
+            "limit": 10, "after_ref": "CURSOR-2", "snapshot_ref": "SNAPSHOT-9",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.order_list_calls[0][1:],
+                         ("CURSOR-2", "SNAPSHOT-9", 10))
+
+    def test_order_list_requires_household_role(self):
+        self.sign_in(["domestic_ops"])
+        response = self.client.get("/my-orders")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.order_list_calls, [])
+
+    def test_order_list_rejects_invalid_or_unstable_cursor(self):
+        self.sign_in(["household"])
+        response = self.client.get("/my-orders", params={"after_ref": "CURSOR-2"})
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.order_list_calls, [])
+
+    def test_reference_page_rejects_malformed_source_page(self):
+        principal = Principal("owner-1", frozenset({"household"}))
+        with self.assertRaises(FulfillmentEventUnavailable):
+            read_household_order_reference_page(
+                principal, lambda *args, **kwargs: {"order_refs": ["ORDER-1"]},
+                lambda *_: True,
+            )
+
+    def test_api_returns_only_currently_authorized_order_references(self):
+        principal = Principal("owner-1", frozenset({"household"}))
+        app = FastAPI()
+        app.include_router(build_fulfillment_event_router(
+            self.ledger, lambda: principal,
+            household_order_access_authority=lambda p, ref: (
+                p.subject == "owner-1" and ref == "ORDER-1"
+            ),
+            household_order_listing_authority=self.list_orders,
+        ))
+        response = TestClient(app).get(
+            "/api/v1/domestic/fulfillment/household-orders",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["order_refs"], ["ORDER-1"])
+        self.assertEqual(response.json()["snapshot_ref"], "SNAPSHOT-9")
 
 
 if __name__ == "__main__":

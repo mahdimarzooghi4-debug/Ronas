@@ -246,9 +246,16 @@ def create_app(config: AuthConfig | KeycloakConfig | None = None,
             household_surplus_draft_ledger=household_surplus_draft_ledger,
             household_surplus_producer_consent_ledger=household_surplus_producer_consent_ledger,
             export_research_finding_ledger=export_research_finding_ledger,
-            fulfillment_event_ledger=fulfillment_event_ledger,
+            # Provider APIs can be enabled without exposing household reads.
+            # The user shell mounts tracking only when the live order authority
+            # is explicitly composed alongside the same ledger.
+            fulfillment_event_ledger=(
+                fulfillment_event_ledger
+                if callable(fulfillment_household_order_access_authority) else None
+            ),
             fulfillment_household_order_access_authority=(
                 fulfillment_household_order_access_authority
+                if callable(fulfillment_household_order_access_authority) else None
             ),
         ))
 

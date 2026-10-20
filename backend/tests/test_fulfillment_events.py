@@ -119,7 +119,7 @@ class FulfillmentEventTests(unittest.TestCase):
         )
         app = FastAPI()
         app.include_router(build_fulfillment_event_router(
-            self.ledger, lambda: self.courier,
+            self.ledger, lambda: self.household,
             household_order_access_authority=lambda principal, order_ref:
                 principal.subject == "synthetic-household" and order_ref == self.order,
         ))

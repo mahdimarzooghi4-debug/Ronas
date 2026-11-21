@@ -233,17 +233,11 @@ def page(title: str, body: str, *, logged_in: bool, code: int = 200,
                 '<title>' + escape(title) + '</title>'
                 '<link rel="stylesheet" href="/assets/ronas.css">'
                 '</head><body class="figma-home-body"><div class="rn-device">'
-                '<header class="rn-header">'
-            '<a class="rn-notifications" href="/app/notifications" aria-label="اعلان‌ها">'
-            '<img src="/assets/figma-home/bell.svg" alt=""></a>'
-                '<img class="rn-logo" src="/assets/figma-home/ronas-logo.png" alt="روناس؛ کشاورزی ثروت‌آفرین">'
-                '</header>'
-                '<div class="rn-demo"><strong>نسخه نمایشی متصل</strong> · داده‌ها ساختگی‌اند؛ ثبت و عملیات واقعی فعال نیست.</div>'
                 '<main class="rn-main" id="main">' + body + '</main>'
-                + ('<div class="rn-logout">' + logout + '</div>' if logged_in else '')
+                + ('<div class="rn-logout" id="rn-logout-panel">' + logout + '</div>' if logged_in else '')
                 + '</div><script src="/assets/ronas-auth.js" defer></script>'
-                + ('<script src="/assets/ronas-household-home.js" defer></script>'
-                   if figma_home else '') + '</body></html>')
+                + '<script type="module" src="/assets/ronas-household-demo.mjs" defer></script>'
+                + '</body></html>')
     else:
         html = ('<!doctype html><html lang="fa" dir="rtl"><head>'
             '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -516,6 +510,13 @@ def build_authenticated_ui_router(
         "account.svg": ("image/svg+xml", "account.svg"),
     }
     FIGMA_HOME_ASSET_DIR = STYLE.parent / "assets"
+    FIGMA_FRAME_ASSETS = {
+        "154-85.png", "199-426.png", "218-550.png", "176-478.png",
+        "471-1653.png", "481-1684.png", "510-1746.png", "865-1839.png",
+        "177-333.png", "194-364.png", "207-488.png", "204-457.png",
+        "224-581.png", "229-612.png", "233-657.png", "505-1715.png",
+        "679-1808.png", "333-1064.png", "196-395.png",
+    }
 
     @router.get("/assets/figma-home/{asset_name}")
     def figma_home_asset(asset_name: str) -> Response:
@@ -529,6 +530,16 @@ def build_authenticated_ui_router(
         return Response(path.read_bytes(), media_type=media_type,
                         headers={"Cache-Control": "public, max-age=3600"})
 
+    @router.get("/assets/figma-frames/{asset_name}")
+    def figma_frame_asset(asset_name: str) -> Response:
+        if asset_name not in FIGMA_FRAME_ASSETS:
+            raise HTTPException(404, detail="UI_ASSET_NOT_FOUND")
+        path = FIGMA_HOME_ASSET_DIR / "figma-frames" / asset_name
+        if not path.is_file():
+            raise HTTPException(503, detail="UI_ASSET_NOT_AVAILABLE")
+        return Response(path.read_bytes(), media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=3600"})
+
     @router.get("/assets/ronas-auth.js")
     def client_script() -> PlainTextResponse:
         return PlainTextResponse(LOGOUT_SCRIPT, media_type="text/javascript")
@@ -536,6 +547,14 @@ def build_authenticated_ui_router(
     @router.get("/assets/ronas-household-home.js")
     def household_home_script() -> PlainTextResponse:
         return PlainTextResponse(HOUSEHOLD_HOME_SCRIPT, media_type="text/javascript")
+
+    @router.get("/assets/ronas-household-demo.mjs")
+    def household_demo_script() -> PlainTextResponse:
+        path = STYLE.parent / "household-demo.mjs"
+        if not path.is_file():
+            raise HTTPException(503, detail="UI_ASSET_NOT_AVAILABLE")
+        return PlainTextResponse(path.read_text(encoding="utf-8"),
+                                 media_type="text/javascript")
 
     @router.get("/assets/ronas-stage-observation-upload.js")
     def stage_upload_script() -> PlainTextResponse:
@@ -1701,6 +1720,16 @@ def build_authenticated_ui_router(
             raise HTTPException(401, detail="INVALID_SESSION") from None
         if "household" not in session.roles:
             raise HTTPException(404, detail="PREVIEW_NOT_FOUND")
+        permitted_demo_screens = {
+            "home", "assistant", "training", "greenhouse", "market", "equipment",
+            "account", "notifications", "observation", "report-preview", "harvest",
+            "lesson", "orders", "product", "purchase-request", "order-tracking",
+            "equipment-detail", "equipment-request", "equipment-tracking",
+            "club", "privacy", "order-detail",
+        }
+        if screen not in permitted_demo_screens:
+            raise HTTPException(404, detail="DEMO_SCREEN_NOT_FOUND")
+        return RedirectResponse("/#" + quote(screen, safe=""), status_code=303)
 
         screens = {
             "assistant": ("دستیار روناس", "راهنمای نمونه برای شروع کشت؛ این محتوا توصیهٔ تخصصی یا تصمیم کشت نیست.",
@@ -1834,17 +1863,21 @@ def build_authenticated_ui_router(
                 for key, label, icon in household_nav
             )
             service_cards = [
-                '<a class="rn-service" href="/app/equipment"><span class="rn-service-icon">'
-                '<img src="/assets/figma-home/equipment.svg" alt=""></span>'
-                '<strong>تجهیزات کشاورزی</strong><small>مشاهده و انتخاب نمونه</small></a>',
                 '<a class="rn-service" href="/app/market"><span class="rn-service-icon">'
                 '<img src="/assets/figma-home/basket.svg" alt=""></span>'
-                '<strong>بازار محصولات</strong><small>محصولات نمونه روناس</small></a>',
+                '<strong>بازار محصولات</strong><small>عرضه و خرید خانگی</small></a>',
+                '<a class="rn-service" href="/app/equipment"><span class="rn-service-icon">'
+                '<img src="/assets/figma-home/equipment.svg" alt=""></span>'
+                '<strong>تجهیزات کشت</strong><small>انتخاب و سفارش</small></a>',
+                '<a class="rn-service rn-club-service" href="/app/club"><span class="rn-service-icon">'
+                '<img src="/assets/figma-home/wallet.svg" alt=""></span>'
+                '<strong>باشگاه روناس • پیش‌نمایش</strong>'
+                '<small>برنامه‌های مشارکتی، منابع آموزشی • هنوز فعال نیست</small></a>',
             ]
             data_state = '<span id="rn-api-status" class="rn-connected">اطلاعات نمونه</span>'
             body = (
-                '<section class="rn-welcome"><h1>خانواده سبزتر، هر روز نزدیک‌تر</h1>'
-                '<p>وضعیت گلخانه و مسیر بعدی تولیدت را یکجا ببین.</p></section>'
+                '<div class="rn-home-exact"><section class="rn-home-welcome"><h1>خانه‌ای سبزتر، هر روز نزدیک‌تر</h1>'
+                '<p>وضعیت گلخانه و مسیر بعدی تولیدت را یک‌جا ببین.</p></section>'
                 '<section class="rn-hero" aria-label="مدیریت گلخانه">'
                 '<img class="rn-hero-image" src="/assets/figma-home/greenhouse-hero.png" alt="گلخانه‌ای سرسبز">'
                 '<div class="rn-hero-shade"></div>'
@@ -1857,31 +1890,27 @@ def build_authenticated_ui_router(
                 '<div class="rn-section-title"><h2 id="rn-summary-title">خلاصه وضعیت</h2>'
                 + data_state + '</div>'
                 '<div class="rn-metrics">'
-                '<article><small>گلخانه‌های من</small><strong>۱</strong>'
-                '<span>گلخانهٔ نمونه</span></article>'
-                '<article><small>وضعیت کشت</small><strong>فعال</strong>'
-                '<span>دادهٔ فرضی</span></article>'
-                '<article><small>کارهای امروز</small><strong>۳</strong>'
-                '<span>چک‌لیست نمونه</span></article>'
+                '<article><small>فضای کشت</small><strong>۱ فعال</strong>'
+                '<span>گلخانه</span></article>'
+                '<article><small>محصول جاری</small><strong>ریحان</strong>'
+                '<span>نمونه</span></article>'
+                '<article><small>مرحله رشد</small><strong>۳</strong>'
+                '<span>برگ‌دهی</span></article>'
                 '</div></section>'
                 '<a class="rn-assistant rn-assistant-link" href="/app/assistant" aria-label="رفتن به دستیار نمونه روناس">'
                 '<span class="rn-assistant-icon"><img src="/assets/figma-home/sparkles.svg" alt=""></span>'
-                '<h2>دستیار هوشمند روناس</h2><p>راهنمای نمونه برای شروع کشت و کارهای گلخانه</p>'
-                '<span class="rn-disabled-label">مشاهده راهنمای نمونه ←</span></a>'
+                '<h2>دستیار هوشمند روناس</h2><p>راهنمای نمونه برای به‌کارگیری کشت</p>'
+                '<span class="rn-disabled-label">مشاهده راهنمای نمونه</span></a>'
                 '<section class="rn-services"><h2>خدمات روناس</h2><div class="rn-services-grid">'
                 + ''.join(service_cards) + '</div></section>'
                 '<section class="rn-quick"><h2>دسترسی سریع</h2><div>'
-                '<a class="rn-primary-action" href="/app/greenhouse">کارهای امروز</a>'
-                '<a class="rn-secondary-action" href="/app/observation">ثبت مشاهده جدید</a>'
-                '</div></section>'
-                '<section class="rn-cases" id="rn-cases"><h2>نمونه وضعیت گلخانه</h2>'
-                '<p>این اطلاعات فرضی‌اند و با API یا حسگر واقعی ارتباط ندارند.</p>'
-                '<ul><li><a href="/app/greenhouse">گلخانه بهار · وضعیت نمونه: فعال</a></li>'
-                '<li><a href="/app/observation">رطوبت خاک · نیازمند بازدید نمونه</a></li></ul></section>'
+                '<a class="rn-primary-action" href="/app/observation">ثبت مشاهده جدید</a>'
+                '<a class="rn-secondary-action" href="/app/orders">کارهای امروز</a>'
+                '</div></section></div>'
                 '<nav class="rn-bottom-nav" aria-label="ناوبری روناس">'
                 + ''.join(nav_items) + '</nav>'
             )
-            return page("روناس — خانه خانوار", body, logged_in=True,
+            return page("روناس — خانه خانوار", "", logged_in=True,
                         figma_home=True)
         cards = ''
         for name, label in active:

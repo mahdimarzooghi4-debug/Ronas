@@ -138,6 +138,82 @@ STAGE_UPLOAD_SCRIPT = r"""document.addEventListener('submit', async event => {
   }
 });"""
 
+HOUSEHOLD_HOME_SCRIPT = r"""document.addEventListener('DOMContentLoaded', async () => {
+  const cases = document.getElementById('rn-cases');
+  const status = document.getElementById('rn-api-status');
+  if (!cases || !cases.dataset.apiUrl) return;
+  const fa = value => String(value).replace(/[0-9]/g, d => '۰۱۲۳۴۵۶۷۸۹'[Number(d)]);
+  const message = text => {
+    const p = document.createElement('p');
+    p.className = 'rn-empty'; p.setAttribute('role', 'status'); p.textContent = text;
+    cases.replaceChildren(p);
+  };
+  try {
+    const response = await fetch(cases.dataset.apiUrl, {
+      credentials: 'same-origin', cache: 'no-store',
+      headers: { 'Accept': 'application/json' }
+    });
+    if (!response.ok) throw new Error('API_UNAVAILABLE');
+    const data = await response.json();
+    if (!data || !Array.isArray(data.items)
+        || !(data.next_cursor === null || typeof data.next_cursor === 'string'))
+      throw new Error('API_RESPONSE_INVALID');
+    const items = data.items;
+    const count = document.getElementById('rn-metric-cases');
+    const countNote = document.getElementById('rn-metric-cases-note');
+    const consent = document.getElementById('rn-metric-consent');
+    const consentNote = document.getElementById('rn-metric-consent-note');
+    const plan = document.getElementById('rn-metric-plan');
+    const planNote = document.getElementById('rn-metric-plan-note');
+    if (count) count.textContent = fa(items.length) + (data.next_cursor ? '+' : '');
+    if (countNote) countNote.textContent = data.next_cursor
+      ? 'پرونده در صفحهٔ نخست' : 'پروندهٔ متعلق به این حساب';
+    const consentCount = items.filter(item => item.purpose_consent_verified === true).length;
+    if (consent) consent.textContent = consentCount ? fa(consentCount) + ' ثبت‌شده' : 'ثبت نشده';
+    if (consentNote) consentNote.textContent = 'بر پایهٔ پرونده‌های نمایش‌داده‌شده';
+    const acceptedCount = items.filter(item =>
+      item.expert_approved === true && item.plan_accepted === true).length;
+    if (plan) plan.textContent = acceptedCount ? fa(acceptedCount) + ' تأییدشده' : 'تأیید نشده';
+    if (planNote) planNote.textContent = 'تصمیم متخصص لازم است';
+    const list = document.createElement('ul');
+    for (const item of items) {
+      if (!item || typeof item.ref !== 'string'
+          || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(item.ref)) continue;
+      const li = document.createElement('li');
+      const link = document.createElement('a');
+      link.href = '/my-drafts/' + encodeURIComponent(item.ref) + '/versions';
+      link.textContent = item.ref;
+      li.append(link, document.createTextNode(' — پروندهٔ آزمایشی'));
+      if (typeof item.technical_review_state === 'string') {
+        const labels = {
+          UNREQUESTED: 'بررسی فنی درخواست نشده',
+          EVIDENCE_REVIEW_REQUESTED: 'درخواست بررسی شواهد ثبت شده',
+          HUMAN_RESPONSE_RECORDED: 'پاسخ انسانی ثبت شده؛ به معنی تأیید نیست'
+        };
+        if (labels[item.technical_review_state])
+          li.append(document.createTextNode(' · ' + labels[item.technical_review_state]));
+      }
+      list.append(li);
+    }
+    const copy = cases.querySelector('[data-case-copy]');
+    cases.replaceChildren(...(copy ? [copy] : []));
+    if (list.childElementCount) cases.append(list);
+    else message('برای این حساب پروندهٔ آزمایشی ثبت نشده است.');
+    if (data.next_cursor) {
+      const more = document.createElement('a');
+      const target = new URL(window.location.href);
+      target.searchParams.set('household_after_ref', data.next_cursor);
+      more.href = target.pathname + target.search;
+      more.textContent = 'مشاهدهٔ پرونده‌های بعدی';
+      cases.append(more);
+    }
+    if (status) status.textContent = 'اتصال به API برقرار است · داده‌های این محیط آزمایشی‌اند';
+  } catch {
+    if (status) status.textContent = 'اتصال به API برقرار نشد';
+    message('دریافت پرونده‌ها از API انجام نشد. صفحه را تازه کنید یا وضعیت اتصال را بررسی کنید.');
+  }
+});"""
+
 def page(title: str, body: str, *, logged_in: bool, code: int = 200,
          local_test_form: bool = False,
          login_return_path: str = "/",
@@ -165,7 +241,9 @@ def page(title: str, body: str, *, logged_in: bool, code: int = 200,
                 '<div class="rn-demo"><strong>نسخه نمایشی متصل</strong> · داده‌ها ساختگی‌اند؛ ثبت و عملیات واقعی فعال نیست.</div>'
                 '<main class="rn-main" id="main">' + body + '</main>'
                 + ('<div class="rn-logout">' + logout + '</div>' if logged_in else '')
-                + '</div><script src="/assets/ronas-auth.js" defer></script></body></html>')
+                + '</div><script src="/assets/ronas-auth.js" defer></script>'
+                + ('<script src="/assets/ronas-household-home.js" defer></script>'
+                   if figma_home else '') + '</body></html>')
     else:
         html = ('<!doctype html><html lang="fa" dir="rtl"><head>'
             '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -454,6 +532,10 @@ def build_authenticated_ui_router(
     @router.get("/assets/ronas-auth.js")
     def client_script() -> PlainTextResponse:
         return PlainTextResponse(LOGOUT_SCRIPT, media_type="text/javascript")
+
+    @router.get("/assets/ronas-household-home.js")
+    def household_home_script() -> PlainTextResponse:
+        return PlainTextResponse(HOUSEHOLD_HOME_SCRIPT, media_type="text/javascript")
 
     @router.get("/assets/ronas-stage-observation-upload.js")
     def stage_upload_script() -> PlainTextResponse:
@@ -1623,13 +1705,22 @@ def build_authenticated_ui_router(
                         'این نسخه فقط داده ساختگی نمایش می‌دهد.</p>', logged_in=False)
         active = [(name, label) for name, label in USER_ROLES.items() if name in grants]
         if "household" in grants:
-            principal = Principal(session.subject, session.roles)
-            case_connection = (
-                household_worklist(principal, household_after_ref,
-                                   household_technical_state)
-                if owned_case_ledger is not None else
-                '<p class="rn-empty">سرویس پرونده خانوار در این محیط پیکربندی نشده است.</p>'
+            progress_api = (
+                technical_review_ledger is not None
+                and owned_case_ledger is technical_review_ledger
             )
+            household_api_url = (
+                '/api/v1/domestic/household-intake/my-drafts/technical-progress?limit=20'
+                if progress_api else
+                '/api/v1/domestic/household-intake/my-drafts?limit=20'
+                if owned_case_ledger is not None else ''
+            )
+            if household_api_url and household_after_ref is not None:
+                household_api_url += '&after_ref=' + quote(household_after_ref, safe='')
+            if progress_api:
+                household_api_url += '&technical_state=' + quote(
+                    household_technical_state, safe=''
+                )
             roles_nav = (
                 ("household", "کشت", "crop.svg"),
                 ("local_buyer", "بازار", "market.svg"),
@@ -1678,9 +1769,9 @@ def build_authenticated_ui_router(
                         + '</strong><small>تا تکمیل مجوزهای لازم غیرفعال</small></div>'
                     )
             data_state = (
-                '<span class="rn-connected">اتصال به دفتر آزمایشی برقرار</span>'
+                '<span id="rn-api-status" class="rn-connected">در حال اتصال به API پرونده‌ها…</span>'
                 if owned_case_ledger is not None else
-                '<span class="rn-disconnected">سرویس داده متصل نیست</span>'
+                '<span id="rn-api-status" class="rn-disconnected">API پرونده‌ها پیکربندی نشده</span>'
             )
             body = (
                 '<section class="rn-welcome"><h1>خانواده سبزتر، هر روز نزدیک‌تر</h1>'
@@ -1697,9 +1788,12 @@ def build_authenticated_ui_router(
                 '<div class="rn-section-title"><h2 id="rn-summary-title">خلاصه وضعیت</h2>'
                 + data_state + '</div>'
                 '<div class="rn-metrics">'
-                '<article><small>پرونده‌های من</small><strong>DEMO</strong><span>فقط آزمایشی</span></article>'
-                '<article><small>وضعیت رضایت</small><strong>ثبت نشده</strong><span>هیچ داده واقعی دریافت نشده</span></article>'
-                '<article><small>برنامه کشت</small><strong>تأیید نشده</strong><span>تصمیم متخصص لازم است</span></article>'
+                '<article><small>پرونده‌های من</small><strong id="rn-metric-cases">—</strong>'
+                '<span id="rn-metric-cases-note">در حال دریافت از API</span></article>'
+                '<article><small>وضعیت رضایت</small><strong id="rn-metric-consent">—</strong>'
+                '<span id="rn-metric-consent-note">در حال دریافت از API</span></article>'
+                '<article><small>برنامه کشت</small><strong id="rn-metric-plan">—</strong>'
+                '<span id="rn-metric-plan-note">در حال دریافت از API</span></article>'
                 '</div></section>'
                 '<section class="rn-assistant" aria-label="دستیار هوشمند روناس؛ غیرفعال">'
                 '<span class="rn-assistant-icon"><img src="/assets/figma-home/sparkles.svg" alt=""></span>'
@@ -1711,9 +1805,14 @@ def build_authenticated_ui_router(
                 '<a class="rn-primary-action" href="#rn-cases">مشاهده پرونده‌های من</a>'
                 '<span class="rn-secondary-action" aria-disabled="true">ثبت مشاهده جدید · غیرفعال</span>'
                 '</div></section>'
-                '<section class="rn-cases" id="rn-cases"><h2>پرونده‌های متصل به حساب</h2>'
-                '<p>نمایش فقط از نشست احراز‌شده و دفتر سمت سرور؛ همه رکوردهای این محیط ساختگی‌اند.</p>'
-                + case_connection + '</section>'
+                '<section class="rn-cases" id="rn-cases"'
+                + (' data-api-url="' + household_api_url + '"' if household_api_url else '')
+                + '><h2>پرونده‌های متصل به حساب</h2>'
+                '<p data-case-copy>نمایش از API احراز‌شده؛ رکوردهای این محیط ساختگی‌اند.</p>'
+                + ('<p class="rn-empty" role="status">در حال دریافت پرونده‌ها…</p>'
+                   if household_api_url else
+                   '<p class="rn-empty">سرویس پرونده خانوار در این محیط پیکربندی نشده است.</p>')
+                + '</section>'
                 '<nav class="rn-bottom-nav" aria-label="ناوبری روناس">'
                 + ''.join(nav_items) + '</nav>'
             )

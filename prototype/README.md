@@ -23,6 +23,8 @@ No real household names/addresses, consents, partner or market data should be en
 
 Browse locally using prototype/ui/index.html and prototype/ui/admin.html. These are **interactive local-only Persian RTL demonstrations** for fixed synthetic placeholders DEMO-H01 and DEMO-SOURCE-01. Navigation and limited demo state transitions work with local JavaScript; pages contain no forms, free-text fields, fetch calls, external resources, real personal data, trade, payment, operational identity or permission checking. The admin sidebar is NOT access control. Specific screen fields and channel choices are prototypes, not approved product/technical schemas.
 
+To preview the Figma-style household app without Keycloak, start the same loopback static server above and open http://127.0.0.1:8765/household.html. Its bottom navigation and sample actions move among local screens. This static preview is only a visual/navigation demo; it does not call the authenticated BFF or any backend API. All sample actions are non-persistent.
+
 ## Figma household app — authenticated interactive demo, LOCAL/TEST only
 
 The Figma household home frame (file `4HnAorkgWDzuJkTVd3wK7Q`, node `154:85`) is adapted into the authenticated BFF root route. A signed Keycloak browser session with the `household` role can navigate from the home screen into the household app's demo routes: `/app/assistant`, `/app/training`, `/app/greenhouse`, `/app/market`, `/app/equipment`, `/app/account`, plus sample lesson, observation, product, cart, order, notification and privacy screens. The fixed, allowlisted routes use fabricated sample content. Household bottom navigation and home/service/quick-action links all open destinations within this app instead of depending on seller or buyer role grants.

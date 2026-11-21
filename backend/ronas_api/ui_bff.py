@@ -234,8 +234,8 @@ def page(title: str, body: str, *, logged_in: bool, code: int = 200,
                 '<link rel="stylesheet" href="/assets/ronas.css">'
                 '</head><body class="figma-home-body"><div class="rn-device">'
                 '<header class="rn-header">'
-                '<button class="rn-notifications" type="button" disabled aria-label="اعلان‌ها؛ هنوز اعلانی ثبت نشده">'
-                '<img src="/assets/figma-home/bell.svg" alt=""></button>'
+            '<a class="rn-notifications" href="/app/notifications" aria-label="اعلان‌ها">'
+            '<img src="/assets/figma-home/bell.svg" alt=""></a>'
                 '<img class="rn-logo" src="/assets/figma-home/ronas-logo.png" alt="روناس؛ کشاورزی ثروت‌آفرین">'
                 '</header>'
                 '<div class="rn-demo"><strong>نسخه نمایشی متصل</strong> · داده‌ها ساختگی‌اند؛ ثبت و عملیات واقعی فعال نیست.</div>'
@@ -1688,6 +1688,117 @@ def build_authenticated_ui_router(
             return page("روناس — پیش‌نمای تأمین‌کننده صادرات (DEMO)",
                         body, logged_in=True)
 
+    @router.get("/app/{screen}")
+    def household_demo_screen(
+        screen: str,
+        request: Request,
+        sid: str | None = Cookie(default=None, alias=cookie_name),
+    ) -> HTMLResponse:
+        """Allowlisted, household-only interactive screens with fixed sample data."""
+        try:
+            session = flow.session(sid)
+        except InvalidToken:
+            raise HTTPException(401, detail="INVALID_SESSION") from None
+        if "household" not in session.roles:
+            raise HTTPException(404, detail="PREVIEW_NOT_FOUND")
+
+        screens = {
+            "assistant": ("دستیار روناس", "راهنمای نمونه برای شروع کشت؛ این محتوا توصیهٔ تخصصی یا تصمیم کشت نیست.",
+                [("از کجا شروع کنم؟", "ابتدا وضعیت گلخانه، آب و فضای کشت خود را بررسی کنید.", "/app/greenhouse", "مشاهده گلخانه"),
+                 ("برنامهٔ امروز", "بازدید از رطوبت خاک و ثبت مشاهده، نمونه‌های آموزشی امروز هستند.", "/app/observation", "ثبت مشاهده نمونه"),
+                 ("یادگیری آبیاری", "درس نمونهٔ آبیاری ریحان را در بخش آموزش ببینید.", "/app/lesson", "رفتن به درس")]),
+            "training": ("آموزش کشت", "دوره‌ها و درس‌های نمایشی روناس با داده‌های ساختگی.",
+                [("آبیاری ریحان", "درس نمونه · ۱۲ دقیقه · سطح مقدماتی", "/app/lesson", "مشاهده درس"),
+                 ("آشنایی با گلخانه", "راهنمای گام‌به‌گام آماده‌سازی گلخانهٔ نمونه.", "/app/greenhouse", "مشاهده راهنما")]),
+            "lesson": ("درس نمونه: آبیاری ریحان", "این محتوای آموزشی صرفاً نمونهٔ نمایشی است و جایگزین نظر کارشناس نیست.",
+                [("ادامهٔ آموزش", "برای مرور نکته‌های نگهداری، به راهنمای نمونه بروید.", "/app/assistant", "راهنمای دستیار"),
+                 ("مشاهده کارهای امروز", "چک‌لیست نمونهٔ روزانه گلخانه.", "/app/greenhouse", "کارهای امروز")]),
+            "greenhouse": ("گلخانهٔ من", "نمایش نمونه از وضعیت گلخانه؛ این اعداد از حسگر یا پروندهٔ واقعی نیامده‌اند.",
+                [("گلخانه بهار", "وضعیت نمایشی · ۲ بستر کشت · آخرین بازدید: امروز", "/app/observation", "ثبت مشاهده نمونه"),
+                 ("ریحان", "مرحلهٔ نمایشی رشد: برگ‌دهی · مساحت نمونه: ۲۴ مترمربع", "/app/harvest", "برنامهٔ برداشت نمونه"),
+                 ("گزارش‌های روزانه", "گزارش‌های فرضی برای آشنایی با روند ثبت.", "/app/observation", "مشاهده گزارش‌ها")]),
+            "observation": ("ثبت مشاهدهٔ گلخانه", "فرم نمایشی؛ با انتخاب دکمه فقط صفحهٔ تأیید نمونه باز می‌شود و چیزی ذخیره نمی‌شود.",
+                [("رطوبت خاک", "مقدار نمونه: مناسب · محل: بستر شمارهٔ ۱", "/app/observation?done=1", "ثبت نمونه"),
+                 ("دیدن کارهای امروز", "فهرست نمونهٔ کارهای گلخانه.", "/app/greenhouse", "بازگشت به گلخانه")]),
+            "harvest": ("برداشت نمونه", "اطلاعات برداشت فرضی هستند و سفارش یا فروش واقعی ایجاد نمی‌کنند.",
+                [("ریحان تازه", "مقدار آمادهٔ نمونه: ۸ کیلوگرم · زمان پیشنهادی: این هفته", "/app/market", "مشاهده بازار نمونه"),
+                 ("راهنمای برداشت", "نکته‌های آموزشی برداشت را ببینید.", "/app/lesson", "رفتن به آموزش")]),
+            "market": ("بازار محصولات", "کاتالوگ ساختگی برای نمایش مسیر خرید؛ قیمت، موجودی و خرید واقعی فعال نیست.",
+                [("ریحان تازه", "بستهٔ نمونهٔ ۵۰۰ گرمی · ۸۵٬۰۰۰ تومان", "/app/product", "جزئیات محصول"),
+                 ("سبزی خوردن", "بستهٔ نمونهٔ ۴۰۰ گرمی · ۷۰٬۰۰۰ تومان", "/app/product", "جزئیات محصول"),
+                 ("سبد نمونه", "محصولی به سبد واقعی اضافه نشده است.", "/app/cart", "مشاهده سبد")]),
+            "product": ("ریحان تازه", "محصول نمونهٔ بازار روناس · قیمت و موجودی فرضی.",
+                [("افزودن به سبد نمونه", "این دکمه تنها صفحهٔ سبد نمایشی را باز می‌کند.", "/app/cart", "رفتن به سبد"),
+                 ("بازگشت به بازار", "مشاهدهٔ فهرست محصولات نمونه.", "/app/market", "ادامه در بازار")]),
+            "cart": ("سبد خرید نمونه", "سبد خالی است؛ در این نسخه سفارش و پرداخت واقعی انجام نمی‌شود.",
+                [("ادامه خرید", "دیدن محصولات نمونهٔ بازار.", "/app/market", "بازگشت به بازار"),
+                 ("پیگیری سفارش‌ها", "نمایش وضعیت سفارش‌های فرضی.", "/app/orders", "سفارش‌های من")]),
+            "orders": ("سفارش‌های من", "فقط وضعیت‌های نمونه نمایش داده می‌شوند؛ سفارش واقعی وجود ندارد.",
+                [("سفارش نمونهٔ RN-2048", "در حال آماده‌سازی · تاریخ نمایشی ۱۴۰۵/۰۸/۲۸", "/app/order-detail", "پیگیری سفارش"),
+                 ("بازار محصولات", "بازگشت به فهرست محصولات نمونه.", "/app/market", "رفتن به بازار")]),
+            "order-detail": ("پیگیری سفارش نمونه", "شناسه RN-2048 ساختگی است و به شرکت حمل‌ونقل متصل نیست.",
+                [("ثبت در سامانه", "نمایشی · ۱۴۰۵/۰۸/۲۷", "/app/orders", "سفارش‌های من"),
+                 ("آماده‌سازی", "نمایشی · در انتظار تحویل", "/app/orders", "بازگشت")]),
+            "equipment": ("تجهیزات کشاورزی", "فهرست نمونه برای مرور تجهیزات؛ درخواست خرید واقعی فعال نیست.",
+                [("آبیاری قطره‌ای", "بستهٔ نمونه برای گلخانهٔ کوچک", "/app/equipment-detail", "مشاهده جزئیات"),
+                 ("گلدان کشت", "مدل نمونه · مناسب فضای محدود", "/app/equipment-detail", "مشاهده جزئیات")]),
+            "equipment-detail": ("آبیاری قطره‌ای", "مشخصات و قیمت این تجهیز فرضی هستند.",
+                [("درخواست نمونه", "برای دیدن جریان نمایشی درخواست، ادامه دهید.", "/app/equipment-request", "ادامه درخواست"),
+                 ("بازگشت به تجهیزات", "مشاهدهٔ فهرست تجهیزات نمونه.", "/app/equipment", "بازگشت")]),
+            "equipment-request": ("درخواست تجهیزات نمونه", "درخواست آزمایشی ثبت نمی‌شود و به فروشنده ارسال نخواهد شد.",
+                [("وضعیت درخواست", "پیش‌نویس نمایشی · بدون ارسال", "/app/equipment", "بازگشت به تجهیزات")]),
+            "account": ("حساب کاربری", "نمایش حساب نمونه؛ اطلاعات هویتی در این صفحه ذخیره نشده‌اند.",
+                [("اعلان‌ها", "پیام‌های نمونهٔ اپلیکیشن.", "/app/notifications", "مشاهده اعلان‌ها"),
+                 ("تنظیمات و حریم خصوصی", "تنظیمات نمایشی حساب.", "/app/privacy", "مشاهده تنظیمات"),
+                 ("باشگاه روناس", "محتوای نمونهٔ باشگاه و یادگیری.", "/app/club", "ورود به باشگاه")]),
+            "notifications": ("اعلان‌ها", "اعلان‌های نمونه؛ هیچ رویداد واقعی رخ نداده است.",
+                [("یادآوری بازدید گلخانه", "امروز · یادآوری نمایشی", "/app/greenhouse", "مشاهده گلخانه"),
+                 ("درس تازه", "آبیاری ریحان · محتوای آموزشی نمونه", "/app/lesson", "مشاهده درس")]),
+            "privacy": ("تنظیمات و حریم خصوصی", "صفحهٔ نمایشی؛ تنظیمات حساب تغییر نمی‌کنند.",
+                [("حریم خصوصی", "جزئیات دسترسی در نسخهٔ عملیاتی تکمیل می‌شود.", "/app/account", "بازگشت به حساب"),
+                 ("داده‌های نمونه", "داده‌های این نسخه فرضی‌اند و به حساب واقعی متصل نیستند.", "/", "بازگشت به خانه")]),
+            "club": ("باشگاه روناس", "محتوای نمونه برای یادگیری و آشنایی با جامعهٔ کشاورزی.",
+                [("درس آبیاری ریحان", "آموزش نمونهٔ کوتاه.", "/app/lesson", "مشاهده درس"),
+                 ("مشاهده گلخانه", "بازگشت به فضای کشت نمونه.", "/app/greenhouse", "گلخانه من")]),
+        }
+        if screen not in screens:
+            raise HTTPException(404, detail="DEMO_SCREEN_NOT_FOUND")
+        title, intro, cards = screens[screen]
+        done = request.query_params.get("done") == "1" and screen == "observation"
+        notice = ('<p class="rn-demo-notice" role="status">مشاهدهٔ نمونه ثبت شد؛ '
+                  'این فقط نمایش است و در جایی ذخیره نشده.</p>' if done else '')
+        content = [
+            '<section class="rn-screen"><a class="rn-screen-back" href="/">← بازگشت به خانه</a>'
+            + '<h1>' + escape(title) + '</h1><p>' + escape(intro) + '</p>' + notice
+            + '<div class="rn-screen-grid">'
+        ]
+        content.extend(
+            '<article class="rn-screen-card"><h2>' + escape(card_title)
+            + '</h2><p>' + escape(description) + '</p><a href="' + escape(url, quote=True)
+            + '">' + escape(action) + ' ←</a></article>'
+            for card_title, description, url, action in cards
+        )
+        content.append('</div></section>')
+        household_nav = (
+            ("assistant", "دستیار", "assistant.svg"), ("training", "آموزش", "education.svg"),
+            ("greenhouse", "گلخانه", "crop.svg"), ("market", "بازار", "market.svg"),
+            ("equipment", "تجهیزات", "nav-equipment.svg"), ("account", "حساب", "account.svg"),
+        )
+        active = {"lesson": "training", "observation": "greenhouse", "harvest": "greenhouse",
+                  "product": "market", "cart": "market", "orders": "market",
+                  "order-detail": "market", "equipment-detail": "equipment",
+                  "equipment-request": "equipment", "notifications": "account",
+                  "privacy": "account", "club": "training"}.get(screen, screen)
+        nav = ['<a class="rn-nav-item" href="/"><img src="/assets/figma-home/home.svg" alt=""><span>خانه</span></a>']
+        nav.extend(
+            '<a class="rn-nav-item' + (' rn-nav-active' if key == active else '')
+            + '" href="/app/' + key + '"' + (' aria-current="page"' if key == active else '')
+            + '><img src="/assets/figma-home/' + icon + '" alt=""><span>' + label + '</span></a>'
+            for key, label, icon in household_nav
+        )
+        content.append('<nav class="rn-bottom-nav" aria-label="ناوبری روناس">' + ''.join(nav) + '</nav>')
+        return page("روناس — " + title, ''.join(content), logged_in=True, figma_home=True)
+
     @router.get("/")
     def public_ui(
         sid: str | None = Cookie(default=None, alias=cookie_name),
@@ -1705,74 +1816,32 @@ def build_authenticated_ui_router(
                         'این نسخه فقط داده ساختگی نمایش می‌دهد.</p>', logged_in=False)
         active = [(name, label) for name, label in USER_ROLES.items() if name in grants]
         if "household" in grants:
-            progress_api = (
-                technical_review_ledger is not None
-                and owned_case_ledger is technical_review_ledger
+            household_nav = (
+                ("assistant", "دستیار", "assistant.svg"),
+                ("training", "آموزش", "education.svg"),
+                ("greenhouse", "گلخانه", "crop.svg"),
+                ("market", "بازار", "market.svg"),
+                ("equipment", "تجهیزات", "nav-equipment.svg"),
+                ("account", "حساب", "account.svg"),
             )
-            household_api_url = (
-                '/api/v1/domestic/household-intake/my-drafts/technical-progress?limit=20'
-                if progress_api else
-                '/api/v1/domestic/household-intake/my-drafts?limit=20'
-                if owned_case_ledger is not None else ''
-            )
-            if household_api_url and household_after_ref is not None:
-                household_api_url += '&after_ref=' + quote(household_after_ref, safe='')
-            if progress_api:
-                household_api_url += '&technical_state=' + quote(
-                    household_technical_state, safe=''
-                )
-            roles_nav = (
-                ("household", "کشت", "crop.svg"),
-                ("local_buyer", "بازار", "market.svg"),
-                ("equipment_seller", "تجهیزات", "nav-equipment.svg"),
-                ("agronomy_expert", "کارشناس", "education.svg"),
-                ("export_supplier", "صادرات", "account.svg"),
-            )
-            nav_items = []
-            for role, label, icon in roles_nav:
-                if role in grants:
-                    nav_items.append(
-                        '<a class="rn-nav-item" href="/workspace/'
-                        + quote(role) + '"><img src="/assets/figma-home/'
-                        + icon + '" alt=""><span>' + escape(label)
-                        + '</span></a>'
-                    )
-                else:
-                    nav_items.append(
-                        '<span class="rn-nav-item rn-nav-disabled" aria-disabled="true">'
-                        '<img src="/assets/figma-home/' + icon + '" alt=""><span>'
-                        + escape(label) + '</span></span>'
-                    )
-            nav_items.insert(
-                0,
+            nav_items = [
                 '<a class="rn-nav-item rn-nav-active" href="/" aria-current="page">'
-                '<img src="/assets/figma-home/home.svg" alt=""><span>خانه</span></a>',
+                '<img src="/assets/figma-home/home.svg" alt=""><span>خانه</span></a>'
+            ]
+            nav_items.extend(
+                '<a class="rn-nav-item" href="/app/' + key + '"><img src="/assets/figma-home/'
+                + icon + '" alt=""><span>' + label + '</span></a>'
+                for key, label, icon in household_nav
             )
-            service_access = {
-                "بازار محصولات": ("local_buyer", "بازار محصولات", "سبد", "basket.svg"),
-                "تجهیزات کشاورزی": ("equipment_seller", "تجهیزات کشاورزی", "انتخاب و سفارش", "equipment.svg"),
-            }
-            service_cards = []
-            for _, (role, title, subtitle, icon) in service_access.items():
-                if role in grants:
-                    service_cards.append(
-                        '<a class="rn-service" href="/workspace/' + quote(role) + '">'
-                        '<span class="rn-service-icon"><img src="/assets/figma-home/'
-                        + icon + '" alt=""></span><strong>' + escape(title)
-                        + '</strong><small>' + escape(subtitle) + '</small></a>'
-                    )
-                else:
-                    service_cards.append(
-                        '<div class="rn-service rn-service-disabled" aria-disabled="true">'
-                        '<span class="rn-service-icon"><img src="/assets/figma-home/'
-                        + icon + '" alt=""></span><strong>' + escape(title)
-                        + '</strong><small>تا تکمیل مجوزهای لازم غیرفعال</small></div>'
-                    )
-            data_state = (
-                '<span id="rn-api-status" class="rn-connected">در حال اتصال به API پرونده‌ها…</span>'
-                if owned_case_ledger is not None else
-                '<span id="rn-api-status" class="rn-disconnected">API پرونده‌ها پیکربندی نشده</span>'
-            )
+            service_cards = [
+                '<a class="rn-service" href="/app/equipment"><span class="rn-service-icon">'
+                '<img src="/assets/figma-home/equipment.svg" alt=""></span>'
+                '<strong>تجهیزات کشاورزی</strong><small>مشاهده و انتخاب نمونه</small></a>',
+                '<a class="rn-service" href="/app/market"><span class="rn-service-icon">'
+                '<img src="/assets/figma-home/basket.svg" alt=""></span>'
+                '<strong>بازار محصولات</strong><small>محصولات نمونه روناس</small></a>',
+            ]
+            data_state = '<span id="rn-api-status" class="rn-connected">اطلاعات نمونه</span>'
             body = (
                 '<section class="rn-welcome"><h1>خانواده سبزتر، هر روز نزدیک‌تر</h1>'
                 '<p>وضعیت گلخانه و مسیر بعدی تولیدت را یکجا ببین.</p></section>'
@@ -1783,36 +1852,32 @@ def build_authenticated_ui_router(
                 '<div class="rn-hero-copy"><small>تولید خانگی، با همراهی روناس</small>'
                 '<h2>گلخانه من، در مسیر رشد</h2>'
                 '<p>مدیریت کشت، تجهیزات و محصولات در یک تجربه یکپارچه</p>'
-                '<a href="/workspace/household">مدیریت گلخانه</a></div></section>'
+                '<a href="/app/greenhouse">مدیریت گلخانه</a></div></section>'
                 '<section class="rn-summary" aria-labelledby="rn-summary-title">'
                 '<div class="rn-section-title"><h2 id="rn-summary-title">خلاصه وضعیت</h2>'
                 + data_state + '</div>'
                 '<div class="rn-metrics">'
-                '<article><small>پرونده‌های من</small><strong id="rn-metric-cases">—</strong>'
-                '<span id="rn-metric-cases-note">در حال دریافت از API</span></article>'
-                '<article><small>وضعیت رضایت</small><strong id="rn-metric-consent">—</strong>'
-                '<span id="rn-metric-consent-note">در حال دریافت از API</span></article>'
-                '<article><small>برنامه کشت</small><strong id="rn-metric-plan">—</strong>'
-                '<span id="rn-metric-plan-note">در حال دریافت از API</span></article>'
+                '<article><small>گلخانه‌های من</small><strong>۱</strong>'
+                '<span>گلخانهٔ نمونه</span></article>'
+                '<article><small>وضعیت کشت</small><strong>فعال</strong>'
+                '<span>دادهٔ فرضی</span></article>'
+                '<article><small>کارهای امروز</small><strong>۳</strong>'
+                '<span>چک‌لیست نمونه</span></article>'
                 '</div></section>'
-                '<section class="rn-assistant" aria-label="دستیار هوشمند روناس؛ غیرفعال">'
+                '<a class="rn-assistant rn-assistant-link" href="/app/assistant" aria-label="رفتن به دستیار نمونه روناس">'
                 '<span class="rn-assistant-icon"><img src="/assets/figma-home/sparkles.svg" alt=""></span>'
-                '<h2>دستیار هوشمند روناس</h2><p>پیشنهاد کشت یا راهنمایی علمی در این نسخه فعال نیست.</p>'
-                '<span class="rn-disabled-label">در انتظار تکمیل و تأیید فنی</span></section>'
+                '<h2>دستیار هوشمند روناس</h2><p>راهنمای نمونه برای شروع کشت و کارهای گلخانه</p>'
+                '<span class="rn-disabled-label">مشاهده راهنمای نمونه ←</span></a>'
                 '<section class="rn-services"><h2>خدمات روناس</h2><div class="rn-services-grid">'
                 + ''.join(service_cards) + '</div></section>'
                 '<section class="rn-quick"><h2>دسترسی سریع</h2><div>'
-                '<a class="rn-primary-action" href="#rn-cases">مشاهده پرونده‌های من</a>'
-                '<span class="rn-secondary-action" aria-disabled="true">ثبت مشاهده جدید · غیرفعال</span>'
+                '<a class="rn-primary-action" href="/app/greenhouse">کارهای امروز</a>'
+                '<a class="rn-secondary-action" href="/app/observation">ثبت مشاهده جدید</a>'
                 '</div></section>'
-                '<section class="rn-cases" id="rn-cases"'
-                + (' data-api-url="' + household_api_url + '"' if household_api_url else '')
-                + '><h2>پرونده‌های متصل به حساب</h2>'
-                '<p data-case-copy>نمایش از API احراز‌شده؛ رکوردهای این محیط ساختگی‌اند.</p>'
-                + ('<p class="rn-empty" role="status">در حال دریافت پرونده‌ها…</p>'
-                   if household_api_url else
-                   '<p class="rn-empty">سرویس پرونده خانوار در این محیط پیکربندی نشده است.</p>')
-                + '</section>'
+                '<section class="rn-cases" id="rn-cases"><h2>نمونه وضعیت گلخانه</h2>'
+                '<p>این اطلاعات فرضی‌اند و با API یا حسگر واقعی ارتباط ندارند.</p>'
+                '<ul><li><a href="/app/greenhouse">گلخانه بهار · وضعیت نمونه: فعال</a></li>'
+                '<li><a href="/app/observation">رطوبت خاک · نیازمند بازدید نمونه</a></li></ul></section>'
                 '<nav class="rn-bottom-nav" aria-label="ناوبری روناس">'
                 + ''.join(nav_items) + '</nav>'
             )

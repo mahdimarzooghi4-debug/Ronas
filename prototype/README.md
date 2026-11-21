@@ -23,6 +23,12 @@ No real household names/addresses, consents, partner or market data should be en
 
 Browse locally using prototype/ui/index.html and prototype/ui/admin.html. These are **interactive local-only Persian RTL demonstrations** for fixed synthetic placeholders DEMO-H01 and DEMO-SOURCE-01. Navigation and limited demo state transitions work with local JavaScript; pages contain no forms, free-text fields, fetch calls, external resources, real personal data, trade, payment, operational identity or permission checking. The admin sidebar is NOT access control. Specific screen fields and channel choices are prototypes, not approved product/technical schemas.
 
+## Figma home connected to the authenticated BFF — LOCAL/TEST only
+
+The Figma household home frame (file `4HnAorkgWDzuJkTVd3wK7Q`, node `154:85`) is being adapted into the authenticated BFF root route. When the signed Keycloak browser session includes the `household` role, the page uses the repository-local Figma image/SVG assets, and its household case list is rendered from the explicitly injected server-side synthetic case ledger. The browser never receives an API bearer token. Role navigation is shown only for roles present in the verified session; the BFF still checks every destination server-side.
+
+This route is available only when `create_app(...)` is explicitly configured with a browser flow for LOCAL/TEST. The default runtime still does not mount the BFF. No live identity service, operational datastore, real household data, consent collection, crop recommendation, seller activity, market, or payment is activated. UI elements for those capabilities are informational or disabled. The separate static `prototype/ui/` remains an offline demonstration and does not call the API.
+
 CORE-D1-A examples: the household interface introduces consent and cultivation context without collecting any data. The Domestic admin area views a dummy intake record; no crop-plan approval or expert impersonation occurs. CORE-E0-A: research with unknown product/destination, a dummy cited source and unverified rights is visible within Export admin #11, without reinstating role #8 as a portal. Buyer, QC, logistics, payments and contracts stay deferred or API-only as decided.
 
 The two pre-existing Python modules in prototype/ronas_core are immutable in-memory draft validators and are NOT connected to these pages. The prototype establishes no FastAPI, React, Native, database, auth, frontend framework or operational architecture choice.

@@ -141,7 +141,8 @@ STAGE_UPLOAD_SCRIPT = r"""document.addEventListener('submit', async event => {
 def page(title: str, body: str, *, logged_in: bool, code: int = 200,
          local_test_form: bool = False,
          login_return_path: str = "/",
-         stage_upload_script: bool = False) -> HTMLResponse:
+         stage_upload_script: bool = False,
+         figma_home: bool = False) -> HTMLResponse:
     logout = (
         '<button type="button" id="ronas-logout">خروج امن</button>'
         '<p id="logout-message" role="status" aria-live="polite"></p>'
@@ -150,7 +151,23 @@ def page(title: str, body: str, *, logged_in: bool, code: int = 200,
             + quote(login_return_path, safe='') + '">ورود با Keycloak</a>'
         )
     )
-    html = ('<!doctype html><html lang="fa" dir="rtl"><head>'
+    if figma_home:
+        html = ('<!doctype html><html lang="fa" dir="rtl"><head>'
+                '<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+                '<title>' + escape(title) + '</title>'
+                '<link rel="stylesheet" href="/assets/ronas.css">'
+                '</head><body class="figma-home-body"><div class="rn-device">'
+                '<header class="rn-header">'
+                '<button class="rn-notifications" type="button" disabled aria-label="اعلان‌ها؛ هنوز اعلانی ثبت نشده">'
+                '<img src="/assets/figma-home/bell.svg" alt=""></button>'
+                '<img class="rn-logo" src="/assets/figma-home/ronas-logo.png" alt="روناس؛ کشاورزی ثروت‌آفرین">'
+                '</header>'
+                '<div class="rn-demo"><strong>نسخه نمایشی متصل</strong> · داده‌ها ساختگی‌اند؛ ثبت و عملیات واقعی فعال نیست.</div>'
+                '<main class="rn-main" id="main">' + body + '</main>'
+                + ('<div class="rn-logout">' + logout + '</div>' if logged_in else '')
+                + '</div><script src="/assets/ronas-auth.js" defer></script></body></html>')
+    else:
+        html = ('<!doctype html><html lang="fa" dir="rtl"><head>'
             '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>' + escape(title) + '</title>'
             '<link rel="stylesheet" href="/assets/ronas.css">'
@@ -167,7 +184,7 @@ def page(title: str, body: str, *, logged_in: bool, code: int = 200,
             + '</body></html>')
     response = HTMLResponse(html, status_code=code)
     response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; style-src 'self'; script-src 'self'; "
+        "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; "
         "connect-src 'self'; base-uri 'none'; form-action "
         + ("'self'" if local_test_form else "'none'")
         + "; frame-ancestors 'none'; object-src 'none'"
@@ -402,6 +419,37 @@ def build_authenticated_ui_router(
         if not STYLE.is_file():
             raise HTTPException(503, detail="UI_ASSET_NOT_AVAILABLE")
         return PlainTextResponse(STYLE.read_text(encoding="utf-8"), media_type="text/css")
+
+    FIGMA_HOME_ASSETS = {
+        "ronas-logo.png": ("image/png", "ronas-logo.png"),
+        "greenhouse-hero.png": ("image/png", "greenhouse-hero.png"),
+        "bell.svg": ("image/svg+xml", "bell.svg"),
+        "status-dot.svg": ("image/svg+xml", "status-dot.svg"),
+        "equipment.svg": ("image/svg+xml", "equipment.svg"),
+        "basket.svg": ("image/svg+xml", "basket.svg"),
+        "wallet.svg": ("image/svg+xml", "wallet.svg"),
+        "sparkles.svg": ("image/svg+xml", "sparkles.svg"),
+        "home.svg": ("image/svg+xml", "home.svg"),
+        "assistant.svg": ("image/svg+xml", "assistant.svg"),
+        "education.svg": ("image/svg+xml", "education.svg"),
+        "nav-equipment.svg": ("image/svg+xml", "nav-equipment.svg"),
+        "market.svg": ("image/svg+xml", "market.svg"),
+        "crop.svg": ("image/svg+xml", "crop.svg"),
+        "account.svg": ("image/svg+xml", "account.svg"),
+    }
+    FIGMA_HOME_ASSET_DIR = STYLE.parent / "assets"
+
+    @router.get("/assets/figma-home/{asset_name}")
+    def figma_home_asset(asset_name: str) -> Response:
+        asset = FIGMA_HOME_ASSETS.get(asset_name)
+        if asset is None:
+            raise HTTPException(404, detail="UI_ASSET_NOT_FOUND")
+        media_type, filename = asset
+        path = FIGMA_HOME_ASSET_DIR / filename
+        if not path.is_file():
+            raise HTTPException(503, detail="UI_ASSET_NOT_AVAILABLE")
+        return Response(path.read_bytes(), media_type=media_type,
+                        headers={"Cache-Control": "public, max-age=3600"})
 
     @router.get("/assets/ronas-auth.js")
     def client_script() -> PlainTextResponse:
@@ -1574,6 +1622,103 @@ def build_authenticated_ui_router(
                         '<p>برای مشاهده بخش مربوط به نقش خود، با Keycloak وارد شوید. '
                         'این نسخه فقط داده ساختگی نمایش می‌دهد.</p>', logged_in=False)
         active = [(name, label) for name, label in USER_ROLES.items() if name in grants]
+        if "household" in grants:
+            principal = Principal(session.subject, session.roles)
+            case_connection = (
+                household_worklist(principal, household_after_ref,
+                                   household_technical_state)
+                if owned_case_ledger is not None else
+                '<p class="rn-empty">سرویس پرونده خانوار در این محیط پیکربندی نشده است.</p>'
+            )
+            roles_nav = (
+                ("household", "کشت", "crop.svg"),
+                ("local_buyer", "بازار", "market.svg"),
+                ("equipment_seller", "تجهیزات", "nav-equipment.svg"),
+                ("agronomy_expert", "کارشناس", "education.svg"),
+                ("export_supplier", "صادرات", "account.svg"),
+            )
+            nav_items = []
+            for role, label, icon in roles_nav:
+                if role in grants:
+                    nav_items.append(
+                        '<a class="rn-nav-item" href="/workspace/'
+                        + quote(role) + '"><img src="/assets/figma-home/'
+                        + icon + '" alt=""><span>' + escape(label)
+                        + '</span></a>'
+                    )
+                else:
+                    nav_items.append(
+                        '<span class="rn-nav-item rn-nav-disabled" aria-disabled="true">'
+                        '<img src="/assets/figma-home/' + icon + '" alt=""><span>'
+                        + escape(label) + '</span></span>'
+                    )
+            nav_items.insert(
+                0,
+                '<a class="rn-nav-item rn-nav-active" href="/" aria-current="page">'
+                '<img src="/assets/figma-home/home.svg" alt=""><span>خانه</span></a>',
+            )
+            service_access = {
+                "بازار محصولات": ("local_buyer", "بازار محصولات", "سبد", "basket.svg"),
+                "تجهیزات کشاورزی": ("equipment_seller", "تجهیزات کشاورزی", "انتخاب و سفارش", "equipment.svg"),
+            }
+            service_cards = []
+            for _, (role, title, subtitle, icon) in service_access.items():
+                if role in grants:
+                    service_cards.append(
+                        '<a class="rn-service" href="/workspace/' + quote(role) + '">'
+                        '<span class="rn-service-icon"><img src="/assets/figma-home/'
+                        + icon + '" alt=""></span><strong>' + escape(title)
+                        + '</strong><small>' + escape(subtitle) + '</small></a>'
+                    )
+                else:
+                    service_cards.append(
+                        '<div class="rn-service rn-service-disabled" aria-disabled="true">'
+                        '<span class="rn-service-icon"><img src="/assets/figma-home/'
+                        + icon + '" alt=""></span><strong>' + escape(title)
+                        + '</strong><small>تا تکمیل مجوزهای لازم غیرفعال</small></div>'
+                    )
+            data_state = (
+                '<span class="rn-connected">اتصال به دفتر آزمایشی برقرار</span>'
+                if owned_case_ledger is not None else
+                '<span class="rn-disconnected">سرویس داده متصل نیست</span>'
+            )
+            body = (
+                '<section class="rn-welcome"><h1>خانواده سبزتر، هر روز نزدیک‌تر</h1>'
+                '<p>وضعیت گلخانه و مسیر بعدی تولیدت را یکجا ببین.</p></section>'
+                '<section class="rn-hero" aria-label="مدیریت گلخانه">'
+                '<img class="rn-hero-image" src="/assets/figma-home/greenhouse-hero.png" alt="گلخانه‌ای سرسبز">'
+                '<div class="rn-hero-shade"></div>'
+                '<span class="rn-hero-status"><img src="/assets/figma-home/status-dot.svg" alt="">گلخانه فعال</span>'
+                '<div class="rn-hero-copy"><small>تولید خانگی، با همراهی روناس</small>'
+                '<h2>گلخانه من، در مسیر رشد</h2>'
+                '<p>مدیریت کشت، تجهیزات و محصولات در یک تجربه یکپارچه</p>'
+                '<a href="/workspace/household">مدیریت گلخانه</a></div></section>'
+                '<section class="rn-summary" aria-labelledby="rn-summary-title">'
+                '<div class="rn-section-title"><h2 id="rn-summary-title">خلاصه وضعیت</h2>'
+                + data_state + '</div>'
+                '<div class="rn-metrics">'
+                '<article><small>پرونده‌های من</small><strong>DEMO</strong><span>فقط آزمایشی</span></article>'
+                '<article><small>وضعیت رضایت</small><strong>ثبت نشده</strong><span>هیچ داده واقعی دریافت نشده</span></article>'
+                '<article><small>برنامه کشت</small><strong>تأیید نشده</strong><span>تصمیم متخصص لازم است</span></article>'
+                '</div></section>'
+                '<section class="rn-assistant" aria-label="دستیار هوشمند روناس؛ غیرفعال">'
+                '<span class="rn-assistant-icon"><img src="/assets/figma-home/sparkles.svg" alt=""></span>'
+                '<h2>دستیار هوشمند روناس</h2><p>پیشنهاد کشت یا راهنمایی علمی در این نسخه فعال نیست.</p>'
+                '<span class="rn-disabled-label">در انتظار تکمیل و تأیید فنی</span></section>'
+                '<section class="rn-services"><h2>خدمات روناس</h2><div class="rn-services-grid">'
+                + ''.join(service_cards) + '</div></section>'
+                '<section class="rn-quick"><h2>دسترسی سریع</h2><div>'
+                '<a class="rn-primary-action" href="#rn-cases">مشاهده پرونده‌های من</a>'
+                '<span class="rn-secondary-action" aria-disabled="true">ثبت مشاهده جدید · غیرفعال</span>'
+                '</div></section>'
+                '<section class="rn-cases" id="rn-cases"><h2>پرونده‌های متصل به حساب</h2>'
+                '<p>نمایش فقط از نشست احراز‌شده و دفتر سمت سرور؛ همه رکوردهای این محیط ساختگی‌اند.</p>'
+                + case_connection + '</section>'
+                '<nav class="rn-bottom-nav" aria-label="ناوبری روناس">'
+                + ''.join(nav_items) + '</nav>'
+            )
+            return page("روناس — خانه خانوار", body, logged_in=True,
+                        figma_home=True)
         cards = ''
         for name, label in active:
             if name == "household" and owned_case_ledger is not None:
